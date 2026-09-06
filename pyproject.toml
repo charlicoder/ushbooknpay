@@ -1,0 +1,135 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ushbooknpay"
+version = "1.0.0"
+description = "USHSPA Booking & Payment Microservice"
+requires-python = ">=3.12"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+
+    # Data validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "email-validator>=2.2.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+
+    # Redis
+    "redis[hiredis]>=5.2.0",
+
+    # AWS
+    "aioboto3>=13.0.0",
+    "boto3>=1.35.0",
+
+    # HTTP client
+    "httpx>=0.27.0",
+
+    # Auth / Security
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "cryptography>=43.0.0",
+
+    # Datetime & timezone
+    "python-dateutil>=2.9.0",
+    "pytz>=2024.2",
+
+    # Structured logging
+    "structlog>=24.4.0",
+
+    # Task scheduling (outbox background loop)
+    "anyio>=4.6.0",
+
+    # Payment providers
+    "requests>=2.32.0",   # MyFatoorah / Tap SDKs use requests internally
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-benchmark>=4.0.0",
+    "httpx>=0.27.0",          # AsyncClient for TestClient
+    "factory-boy>=3.3.0",
+    "faker>=33.0.0",
+    "locust>=2.32.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "types-python-dateutil",
+    "types-pytz",
+    "types-requests",
+    "asyncmock>=0.4.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+# ──────────────────────────────────────────
+# Pytest
+# ──────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "--tb=short",
+    "--strict-markers",
+    "-q",
+]
+markers = [
+    "unit: Pure unit tests with no I/O",
+    "service: Service-level tests with mocked dependencies",
+    "performance: Performance benchmarks",
+    "load: Locust load tests",
+]
+
+# ──────────────────────────────────────────
+# Ruff (linting + formatting)
+# ──────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "B",         # flake8-bugbear
+    "C4",        # flake8-comprehensions
+    "UP",        # pyupgrade
+    "SIM",       # flake8-simplify
+    "TCH",       # flake8-type-checking
+    "ANN",       # flake8-annotations
+]
+ignore = [
+    "ANN101",   # missing self type annotation
+    "ANN102",   # missing cls type annotation
+    "ANN401",   # allow Any
+    "B008",     # do not perform function calls in default arguments (FastAPI Depends)
+]
+
+[tool.ruff.isort]
+known-first-party = ["app"]
+
+# ──────────────────────────────────────────
+# Mypy
+# ──────────────────────────────────────────
+[tool.mypy]
+python_version = "3.14"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+warn_required_dynamic_aliases = true
