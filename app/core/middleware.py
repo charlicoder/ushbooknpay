@@ -240,8 +240,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         if 200 <= response.status_code < 300:
             try:
                 response_body_bytes = b""
-                async for chunk in response.body_iterator:  # type: ignore[attr-defined]
-                    response_body_bytes += chunk
+                if hasattr(response, "body_iterator"):
+                    async for chunk in response.body_iterator:  # type: ignore[attr-defined]
+                        response_body_bytes += chunk
+                elif hasattr(response, "body"):
+                    response_body_bytes = response.body
 
                 response_body = json.loads(response_body_bytes.decode())
                 await self._redis.setex(
@@ -262,5 +265,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 )
             except Exception as exc:
                 logger.warning("idempotency_cache_store_error", error=str(exc))
+                return Response(
+                    content=response_body_bytes,
+                    status_code=response.status_code,
+                    headers=dict(response.headers),
+                )
 
         return response

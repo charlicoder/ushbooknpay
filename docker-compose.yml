@@ -7,8 +7,12 @@ services:
       dockerfile: Dockerfile
     container_name: ushbooknpay
     restart: unless-stopped
+    ports:
+      - "8003:8003"
     expose:
       - "8003"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     networks:

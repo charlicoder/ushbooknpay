@@ -26,7 +26,12 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings, get_settings
-from app.core.exceptions import GatewayError, GatewayTimeoutError
+from app.core.exceptions import (
+    AuthorizationError,
+    GatewayError,
+    GatewayTimeoutError,
+    NotFoundError,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -92,6 +97,10 @@ class USHAuthClient:
                     f"ushauth authentication/authorization failed for {path}",
                     detail=exc.response.text[:500],
                 )
+            raise GatewayError(
+                f"ushauth returned {exc.response.status_code} for {path}",
+                detail=exc.response.text[:500],
+            )
     async def _post(self, path: str, json_data: dict[str, Any] | None = None) -> dict[str, Any]:
         """Execute a POST request to ushauth and return parsed JSON."""
         url = f"{self._settings.ushauth_base_url.rstrip('/')}{path}"
