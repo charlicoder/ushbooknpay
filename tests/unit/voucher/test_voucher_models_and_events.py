@@ -170,12 +170,116 @@ def test_voucher_sqs_events_contain_payment_url():
             payment_id="100624710000000255",
             payment_data={"status": "paid"},
             payment_url="https://portal.myfatoorah.com/pay/123",
+            booking_data={"appointment_date": "2026-09-10", "booking_ref": "BK-999"},
         )
         payload = json.loads(event.to_json())
         assert payload["payment_id"] == "100624710000000255"
         assert payload["payment_data"] == {"status": "paid"}
         assert payload["payment_url"] == "https://portal.myfatoorah.com/pay/123"
+        assert payload["booking_data"] == {"appointment_date": "2026-09-10", "booking_ref": "BK-999"}
         # Verify renamed SQS event fields
         assert "sender_data" in payload
         assert "recipient_data" in payload
         assert "recipient_id" in payload
+
+
+def test_gift_voucher_model_snapshot_with_booking_data():
+    """Verify to_snapshot includes booking_data dictionary."""
+    b_data = {"appointment_date": "2026-09-10", "branch_name": "Salmiya"}
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        service_data={},
+        total_amount=Decimal("45.000"),
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Alice"},
+        booking_data=b_data,
+    )
+    snap = voucher.to_snapshot()
+    assert snap["booking_data"] == b_data
+
+
+def test_create_and_update_voucher_schemas_with_booking_data():
+    """Verify schemas accept and serialize booking_data."""
+    b_id = uuid.uuid4()
+    b_data = {"booking_ref": "BK-12345", "appointment_date": "2026-09-15"}
+
+    create_req = CreateGiftVoucherRequest(
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("45.000"),
+        booking_id=b_id,
+        booking_data=b_data,
+    )
+    assert create_req.booking_id == b_id
+    assert create_req.booking_data == b_data
+
+    update_req = UpdateGiftVoucherStatusRequest(
+        status="redeemed",
+        booking_id=b_id,
+        booking_data=b_data,
+    )
+    assert update_req.booking_id == b_id
+    assert update_req.booking_data == b_data
+
+    # Response schema
+    resp = GiftVoucherResponse(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        service_data={},
+        branch_id=None,
+        branch_data={},
+        service_arrangement_id=None,
+        service_arrangement_data={},
+        addons=[],
+        extra_time=0,
+        expire_date="2026-11-01T00:00:00Z",
+        status="active",
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Alice"},
+        recipient_phone="+96599999999",
+        recipient_data={},
+        created_by=None,
+        total_duration=60,
+        total_amount="50.000",
+        currency="KWD",
+        gift_message=None,
+        gift_template=None,
+        secret_code="123456",
+        public_token="token123",
+        redeemed_booking_id=None,
+        redeemed_at=None,
+        booking_id=b_id,
+        booking_data=b_data,
+        payment_id="100624710000000255",
+        payment_data={"provider": "tap"},
+        payment_url="https://checkout.tap.company/pay/123",
+        created_at="2026-09-04T00:00:00Z",
+        updated_at="2026-09-04T00:00:00Z",
+    )
+    assert resp.booking_id == b_id
+    assert resp.booking_data == b_data
+
+    # List item schema
+    item = GiftVoucherListItem(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        service_data={},
+        branch_id=None,
+        status="active",
+        total_amount="50.000",
+        currency="KWD",
+        expire_date="2026-11-01T00:00:00Z",
+        recipient_phone="+96599999999",
+        recipient_data={},
+        public_token="token123",
+        redeemed_at=None,
+        booking_id=b_id,
+        booking_data=b_data,
+        payment_id="100624710000000255",
+        payment_data={"provider": "tap"},
+        payment_url="https://checkout.tap.company/pay/123",
+        created_at="2026-09-04T00:00:00Z",
+        updated_at="2026-09-04T00:00:00Z",
+    )
+    assert item.booking_id == b_id
+    assert item.booking_data == b_data

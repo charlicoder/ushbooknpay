@@ -673,6 +673,7 @@ class VoucherActiveEvent(BaseEvent):
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
     booking_id: str | None = None
+    booking_data: dict[str, Any] = field(default_factory=dict)
     redeemed_booking_id: str | None = None
     redeemed_at: str | None = None
     created_by: str | None = None
@@ -732,6 +733,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
     booking_id: str | None = None
+    booking_data: dict[str, Any] = field(default_factory=dict)
     redeemed_booking_id: str | None = None
     redeemed_at: str | None = None
     created_by: str | None = None
@@ -797,6 +799,7 @@ class VoucherRedeemedEvent(BaseEvent):
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
     booking_id: str | None = None
+    booking_data: dict[str, Any] = field(default_factory=dict)
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

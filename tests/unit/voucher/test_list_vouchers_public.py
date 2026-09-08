@@ -61,6 +61,7 @@ def _make_mock_voucher(
     v.redeemed_booking_id = None
     v.redeemed_at = None
     v.booking_id = None
+    v.booking_data = {}
     v.payment_id = "PAY-12345"
     v.payment_data = {"status": "paid"}
     v.payment_url = "https://checkout.example.com/12345"

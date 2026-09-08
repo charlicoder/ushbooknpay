@@ -201,6 +201,7 @@ async def test_list_my_received_vouchers_success():
     voucher_mock.redeemed_booking_id = None
     voucher_mock.redeemed_at = None
     voucher_mock.booking_id = None
+    voucher_mock.booking_data = {}
     voucher_mock.payment_id = "100624710000000255"
     voucher_mock.payment_data = None
     voucher_mock.payment_url = None

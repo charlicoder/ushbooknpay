@@ -121,6 +121,10 @@ class CreateGiftVoucherRequest(BaseModel):
         default=None,
         description="Optional booking that triggered creation of this voucher.",
     )
+    booking_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional booking data snapshot that triggered creation of this voucher.",
+    )
     payment_url: str | None = Field(
         default=None,
         description="Optional payment gateway redirect/checkout URL.",
@@ -168,6 +172,10 @@ class UpdateGiftVoucherStatusRequest(BaseModel):
     booking_id: uuid.UUID | None = Field(
         default=None,
         description="Set when status becomes 'redeemed' — the booking UUID used for redemption.",
+    )
+    booking_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional booking data snapshot when redeeming or updating voucher.",
     )
 
     @field_validator("status")
@@ -217,6 +225,7 @@ class GiftVoucherResponse(BaseModel):
     redeemed_booking_id: uuid.UUID | None
     redeemed_at: datetime | None
     booking_id: uuid.UUID | None
+    booking_data: dict[str, Any] | None = None
     # payment_id is a plain gateway reference string (not UUID)
     payment_id: str | None
     payment_data: dict[str, Any] | None
@@ -283,6 +292,8 @@ class GiftVoucherListItem(BaseModel):
     secret_code: str | None = None
     public_token: str
     redeemed_at: datetime | None
+    booking_id: uuid.UUID | None = None
+    booking_data: dict[str, Any] | None = None
     # payment_id is a plain gateway reference string (not UUID)
     payment_id: str | None
     payment_data: dict[str, Any] | None

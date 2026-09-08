@@ -7,12 +7,12 @@ services:
       dockerfile: Dockerfile
     container_name: ushbooknpay
     restart: unless-stopped
-    ports:
-      - "8003:8003"
+    expose:
+      - "8003"
     env_file:
       - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      - ushspa-network
     volumes:
       - .:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
@@ -23,3 +23,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+networks:
+  ushspa-network:
+    external: true

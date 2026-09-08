@@ -78,6 +78,7 @@ class GiftVoucherService:
         gift_message: str | None = None,
         gift_template: str | None = None,
         booking_id: uuid.UUID | None = None,
+        booking_data: dict[str, Any] | None = None,
         created_by: uuid.UUID | None = None,
         payment_url: str | None = None,
     ) -> GiftVoucher:
@@ -107,6 +108,7 @@ class GiftVoucherService:
             gift_message:             Optional personalised message.
             gift_template:            Optional template identifier.
             booking_id:               Optional booking that triggered creation.
+            booking_data:             Optional booking snapshot that triggered creation.
             created_by:               Optional staff UUID (for admin-created vouchers).
             payment_url:              Optional payment gateway checkout URL.
 
@@ -134,6 +136,7 @@ class GiftVoucherService:
             gift_message=gift_message,
             gift_template=gift_template,
             booking_id=booking_id,
+            booking_data=booking_data or {},
             created_by=created_by,
             payment_url=payment_url,
             status=GiftVoucherStatus.CREATED.value,
@@ -161,6 +164,7 @@ class GiftVoucherService:
         payment_data: dict[str, Any] | None = None,
         payment_url: str | None = None,
         booking_id: uuid.UUID | None = None,
+        booking_data: dict[str, Any] | None = None,
         actor_id: str | None = None,
     ) -> GiftVoucher:
         """
@@ -178,6 +182,7 @@ class GiftVoucherService:
                           Stored alongside payment_id for audit.
             payment_url:  Payment gateway redirect/checkout URL.
             booking_id:   Set when redeeming — the booking using the voucher.
+            booking_data: Snapshot of booking data when redeeming or updating status.
             actor_id:     Optional string identifier of who made the change (for logs).
 
         Returns:
@@ -219,6 +224,9 @@ class GiftVoucherService:
         if target_status == GiftVoucherStatus.REDEEMED and booking_id:
             voucher.redeemed_booking_id = booking_id
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
+
+        if booking_data is not None:
+            voucher.booking_data = booking_data
 
         await self._repo.flush()
 

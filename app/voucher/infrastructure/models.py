@@ -175,6 +175,7 @@ class GiftVoucher(Base):
         ForeignKey("bookings.id", ondelete="SET NULL"),
         nullable=True,
     )
+    booking_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
 
     # ── Payment ───────────────────────────────────────────────────────────
     # Stored as a plain string (no UUID, no FK) to accommodate gateway-specific
@@ -252,6 +253,7 @@ class GiftVoucher(Base):
             "redeemed_booking_id": str(self.redeemed_booking_id) if self.redeemed_booking_id else None,
             "redeemed_at": self.redeemed_at.isoformat() if self.redeemed_at else None,
             "booking_id": str(self.booking_id) if self.booking_id else None,
+            "booking_data": self.booking_data or {},
             # payment_id is a plain gateway reference string (not UUID)
             "payment_id": self.payment_id or None,
             "payment_data": self.payment_data or {},

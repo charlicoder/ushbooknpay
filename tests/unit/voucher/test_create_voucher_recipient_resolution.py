@@ -84,6 +84,7 @@ def _make_mock_voucher() -> MagicMock:
     v.redeemed_booking_id = None
     v.redeemed_at = None
     v.booking_id = None
+    v.booking_data = {}
     v.payment_id = None
     v.payment_data = None
     v.payment_url = None

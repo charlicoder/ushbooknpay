@@ -86,6 +86,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         redeemed_booking_id=v.redeemed_booking_id,
         redeemed_at=v.redeemed_at,
         booking_id=v.booking_id,
+        booking_data=v.booking_data or {},
         payment_id=v.payment_id,
         payment_data=v.payment_data,
         payment_url=v.payment_url,
@@ -143,6 +144,8 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         secret_code=v.secret_code,
         public_token=v.public_token,
         redeemed_at=v.redeemed_at,
+        booking_id=v.booking_id,
+        booking_data=v.booking_data or {},
         payment_id=v.payment_id,
         payment_data=v.payment_data,
         payment_url=v.payment_url,
@@ -249,6 +252,7 @@ async def create_gift_voucher(
             gift_message=body.gift_message,
             gift_template=body.gift_template,
             booking_id=body.booking_id,
+            booking_data=body.booking_data,
             created_by=sender_id,
             payment_url=body.payment_url,
         )
@@ -574,6 +578,7 @@ async def update_voucher_status(
             payment_data=body.payment_data,
             payment_url=body.payment_url,
             booking_id=body.booking_id,
+            booking_data=body.booking_data,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
