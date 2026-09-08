@@ -93,7 +93,7 @@ alembic upgrade head
 
 ### 4. Start the service
 ```bash
-uvicorn app.main:app --reload --port 8001
+uvicorn app.main:app --reload --port 8003
 ```
 
 ### 5. API Documentation
