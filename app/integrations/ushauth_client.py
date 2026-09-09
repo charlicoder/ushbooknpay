@@ -63,6 +63,11 @@ class USHAuthClient:
             "USHSPA-TOKEN": self._settings.USHSPA_TOKEN,
             "Accept": "application/json",
             "Content-Type": "application/json",
+            # Tell ushauth's Django SecurityMiddleware that this inter-service request
+            # arrived over a secure channel (TLS is terminated at the load balancer).
+            # Without this header, ushauth's SECURE_SSL_REDIRECT=True returns a 301
+            # redirect to https:// for every plain HTTP inter-container call.
+            "X-Forwarded-Proto": "https",
         }
 
     async def _get(self, path: str, params: dict | None = None) -> dict[str, Any]:

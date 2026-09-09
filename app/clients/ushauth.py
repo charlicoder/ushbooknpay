@@ -54,6 +54,11 @@ async def get_or_create_customer(
         "Accept": "application/json",
         "X-USHSPA-TOKEN": settings.USHSPA_TOKEN,
         "USHSPA-TOKEN": settings.USHSPA_TOKEN,
+        # Tell ushauth's Django SecurityMiddleware that this inter-service request
+        # arrived over a secure channel (TLS is terminated at the load balancer).
+        # Without this header, ushauth's SECURE_SSL_REDIRECT=True returns a 301
+        # redirect to https:// for every plain HTTP inter-container call.
+        "X-Forwarded-Proto": "https",
     }
 
     async with httpx.AsyncClient(timeout=settings.GATEWAY_TIMEOUT) as client:
