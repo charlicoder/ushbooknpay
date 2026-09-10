@@ -88,6 +88,8 @@ def _make_mock_voucher() -> MagicMock:
     v.payment_id = None
     v.payment_data = None
     v.payment_url = None
+    v.payment_provider = None
+    v.payment_through = None
     v.created_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
     v.updated_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
     return v

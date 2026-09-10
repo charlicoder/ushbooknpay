@@ -205,6 +205,8 @@ async def test_list_my_received_vouchers_success():
     voucher_mock.payment_id = "100624710000000255"
     voucher_mock.payment_data = None
     voucher_mock.payment_url = None
+    voucher_mock.payment_provider = None
+    voucher_mock.payment_through = None
     voucher_mock.created_at = datetime.now(timezone.utc)
     voucher_mock.updated_at = datetime.now(timezone.utc)
 

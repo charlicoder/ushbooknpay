@@ -23,7 +23,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.voucher.domain.value_objects import GiftVoucherStatus
+from app.voucher.domain.value_objects import (
+    GiftVoucherStatus,
+    VoucherPaymentProvider,
+    VoucherPaymentThrough,
+)
 
 
 # ── Nested sub-schemas ────────────────────────────────────────────────────────
@@ -129,11 +133,45 @@ class CreateGiftVoucherRequest(BaseModel):
         default=None,
         description="Optional payment gateway redirect/checkout URL.",
     )
+    payment_provider: str | None = Field(
+        default=None,
+        description=(
+            "Payment gateway used to process this voucher. "
+            "Valid values: MyFatoorah, DirectLink, Deema, Other."
+        ),
+    )
+    payment_through: str | None = Field(
+        default=None,
+        description=(
+            "Sales channel for this voucher. "
+            "Valid values: ushspa (app/web), desk (reception/front desk)."
+        ),
+    )
 
     @field_validator("currency")
     @classmethod
     def normalise_currency(cls, v: str) -> str:
         return "KWD" if v in ("KD", "KWD") else v.upper()
+
+    @field_validator("payment_provider")
+    @classmethod
+    def validate_payment_provider(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        valid = [p.value for p in VoucherPaymentProvider]
+        if v not in valid:
+            raise ValueError(f"Invalid payment_provider {v!r}. Valid values: {valid}")
+        return v
+
+    @field_validator("payment_through")
+    @classmethod
+    def validate_payment_through(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        valid = [p.value for p in VoucherPaymentThrough]
+        if v not in valid:
+            raise ValueError(f"Invalid payment_through {v!r}. Valid values: {valid}")
+        return v
 
 
 class UpdateGiftVoucherStatusRequest(BaseModel):
@@ -177,6 +215,20 @@ class UpdateGiftVoucherStatusRequest(BaseModel):
         default=None,
         description="Optional booking data snapshot when redeeming or updating voucher.",
     )
+    payment_provider: str | None = Field(
+        default=None,
+        description=(
+            "Payment gateway used to process this voucher. "
+            "Valid values: MyFatoorah, DirectLink, Deema, Other."
+        ),
+    )
+    payment_through: str | None = Field(
+        default=None,
+        description=(
+            "Sales channel for this voucher. "
+            "Valid values: ushspa (app/web), desk (reception/front desk)."
+        ),
+    )
 
     @field_validator("status")
     @classmethod
@@ -186,6 +238,26 @@ class UpdateGiftVoucherStatusRequest(BaseModel):
         except ValueError:
             valid = [s.value for s in GiftVoucherStatus]
             raise ValueError(f"Invalid status {v!r}. Valid values: {valid}")
+        return v
+
+    @field_validator("payment_provider")
+    @classmethod
+    def validate_payment_provider(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        valid = [p.value for p in VoucherPaymentProvider]
+        if v not in valid:
+            raise ValueError(f"Invalid payment_provider {v!r}. Valid values: {valid}")
+        return v
+
+    @field_validator("payment_through")
+    @classmethod
+    def validate_payment_through(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        valid = [p.value for p in VoucherPaymentThrough]
+        if v not in valid:
+            raise ValueError(f"Invalid payment_through {v!r}. Valid values: {valid}")
         return v
 
 
@@ -230,6 +302,8 @@ class GiftVoucherResponse(BaseModel):
     payment_id: str | None
     payment_data: dict[str, Any] | None
     payment_url: str | None = None
+    payment_provider: str | None = None
+    payment_through: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -298,6 +372,8 @@ class GiftVoucherListItem(BaseModel):
     payment_id: str | None
     payment_data: dict[str, Any] | None
     payment_url: str | None = None
+    payment_provider: str | None = None
+    payment_through: str | None = None
     created_at: datetime
     updated_at: datetime
 

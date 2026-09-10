@@ -40,7 +40,11 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.voucher.domain.value_objects import GiftVoucherStatus
+from app.voucher.domain.value_objects import (
+    GiftVoucherStatus,
+    VoucherPaymentProvider,
+    VoucherPaymentThrough,
+)
 
 
 def _default_expire_date() -> datetime:
@@ -186,6 +190,10 @@ class GiftVoucher(Base):
     payment_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     # Payment gateway checkout/redirect URL (e.g., invoice URL or hosted payment session)
     payment_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Payment gateway / provider used to process the voucher (e.g. MyFatoorah, Deema)
+    payment_provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Channel through which the voucher was sold: 'ushspa' (app/web) or 'desk' (reception)
+    payment_through: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
     # ── Audit timestamps ──────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
@@ -209,6 +217,8 @@ class GiftVoucher(Base):
         Index("ix_gift_vouchers_created_at", "created_at"),
         # Composite for "my sent vouchers filtered by status"
         Index("ix_gift_vouchers_sender_status", "sender_id", "status"),
+        Index("ix_gift_vouchers_payment_provider", "payment_provider"),
+        Index("ix_gift_vouchers_payment_through", "payment_through"),
     )
 
     def __repr__(self) -> str:
@@ -258,6 +268,8 @@ class GiftVoucher(Base):
             "payment_id": self.payment_id or None,
             "payment_data": self.payment_data or {},
             "payment_url": self.payment_url or None,
+            "payment_provider": self.payment_provider or None,
+            "payment_through": self.payment_through or None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

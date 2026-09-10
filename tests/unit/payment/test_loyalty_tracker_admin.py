@@ -300,7 +300,7 @@ async def test_redeem_reward_publishes_sqs_event():
     mock_reward.earned_from_booking_id = uuid.uuid4()
     mock_reward.redeemed_in_booking_id = None
     mock_reward.redeemed_at = None
-    mock_reward.expires_at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+    mock_reward.expires_at = datetime(2026, 12, 31, 12, 0, tzinfo=timezone.utc)
     mock_reward.created_at = datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
 
     svc._repo.get_reward = AsyncMock(return_value=mock_reward)

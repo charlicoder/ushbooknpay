@@ -65,6 +65,8 @@ def _make_mock_voucher(
     v.payment_id = "PAY-12345"
     v.payment_data = {"status": "paid"}
     v.payment_url = "https://checkout.example.com/12345"
+    v.payment_provider = "MyFatoorah"
+    v.payment_through = "ushspa"
     v.created_at = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
     v.updated_at = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
     return v

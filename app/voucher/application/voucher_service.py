@@ -81,6 +81,8 @@ class GiftVoucherService:
         booking_data: dict[str, Any] | None = None,
         created_by: uuid.UUID | None = None,
         payment_url: str | None = None,
+        payment_provider: str | None = None,
+        payment_through: str | None = None,
     ) -> GiftVoucher:
         """
         Create a new GiftVoucher in status=created.
@@ -111,6 +113,8 @@ class GiftVoucherService:
             booking_data:             Optional booking snapshot that triggered creation.
             created_by:               Optional staff UUID (for admin-created vouchers).
             payment_url:              Optional payment gateway checkout URL.
+            payment_provider:         Payment gateway used (MyFatoorah, DirectLink, Deema, Other).
+            payment_through:          Sales channel (ushspa, desk).
 
         Returns:
             The newly created, flushed GiftVoucher ORM instance.
@@ -139,6 +143,8 @@ class GiftVoucherService:
             booking_data=booking_data or {},
             created_by=created_by,
             payment_url=payment_url,
+            payment_provider=payment_provider,
+            payment_through=payment_through,
             status=GiftVoucherStatus.CREATED.value,
         )
         self._repo.add(voucher)
@@ -150,6 +156,8 @@ class GiftVoucherService:
             sender_id=str(sender_id),
             service_id=str(service_id),
             amount=str(total_amount),
+            payment_provider=payment_provider,
+            payment_through=payment_through,
         )
         return voucher
 
@@ -165,6 +173,8 @@ class GiftVoucherService:
         payment_url: str | None = None,
         booking_id: uuid.UUID | None = None,
         booking_data: dict[str, Any] | None = None,
+        payment_provider: str | None = None,
+        payment_through: str | None = None,
         actor_id: str | None = None,
     ) -> GiftVoucher:
         """
@@ -174,16 +184,18 @@ class GiftVoucherService:
         Emits SQS events for: active, payment_pending, redeemed.
 
         Args:
-            voucher_id:   UUID of the voucher to update.
-            new_status:   Target status string (must be a GiftVoucherStatus value).
-            payment_id:   Gateway payment reference string (e.g. "100624710000000255").
-                          Set when activating a voucher after payment success.
-            payment_data: Full payment provider response snapshot (JSONB).
-                          Stored alongside payment_id for audit.
-            payment_url:  Payment gateway redirect/checkout URL.
-            booking_id:   Set when redeeming — the booking using the voucher.
-            booking_data: Snapshot of booking data when redeeming or updating status.
-            actor_id:     Optional string identifier of who made the change (for logs).
+            voucher_id:       UUID of the voucher to update.
+            new_status:       Target status string (must be a GiftVoucherStatus value).
+            payment_id:       Gateway payment reference string (e.g. \"100624710000000255\").
+                              Set when activating a voucher after payment success.
+            payment_data:     Full payment provider response snapshot (JSONB).
+                              Stored alongside payment_id for audit.
+            payment_url:      Payment gateway redirect/checkout URL.
+            booking_id:       Set when redeeming — the booking using the voucher.
+            booking_data:     Snapshot of booking data when redeeming or updating status.
+            payment_provider: Payment gateway used (MyFatoorah, DirectLink, Deema, Other).
+            payment_through:  Sales channel (ushspa, desk).
+            actor_id:         Optional string identifier of who made the change (for logs).
 
         Returns:
             The updated GiftVoucher.
@@ -213,6 +225,12 @@ class GiftVoucherService:
         # ── Set ancillary fields on key transitions ──────────────────────
         if payment_url is not None:
             voucher.payment_url = payment_url
+
+        if payment_provider is not None:
+            voucher.payment_provider = payment_provider
+
+        if payment_through is not None:
+            voucher.payment_through = payment_through
 
         if target_status == GiftVoucherStatus.ACTIVE:
             # Store gateway reference string and full response snapshot

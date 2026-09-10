@@ -90,6 +90,8 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         payment_id=v.payment_id,
         payment_data=v.payment_data,
         payment_url=v.payment_url,
+        payment_provider=v.payment_provider,
+        payment_through=v.payment_through,
         created_at=v.created_at,
         updated_at=v.updated_at,
     )
@@ -149,6 +151,8 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         payment_id=v.payment_id,
         payment_data=v.payment_data,
         payment_url=v.payment_url,
+        payment_provider=v.payment_provider,
+        payment_through=v.payment_through,
         created_at=v.created_at,
         updated_at=v.updated_at,
     )
@@ -255,6 +259,8 @@ async def create_gift_voucher(
             booking_data=body.booking_data,
             created_by=sender_id,
             payment_url=body.payment_url,
+            payment_provider=body.payment_provider,
+            payment_through=body.payment_through,
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -579,6 +585,8 @@ async def update_voucher_status(
             payment_url=body.payment_url,
             booking_id=body.booking_id,
             booking_data=body.booking_data,
+            payment_provider=body.payment_provider,
+            payment_through=body.payment_through,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc

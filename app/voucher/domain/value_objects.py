@@ -40,3 +40,31 @@ class GiftVoucherStatus(str, Enum):
             GiftVoucherStatus.EXPIRED,
             GiftVoucherStatus.CANCELLED,
         )
+
+
+class VoucherPaymentProvider(str, Enum):
+    """
+    Payment gateway / provider used to process the voucher purchase.
+
+    MyFatoorah  — Kuwait-based payment aggregator (KNET, Visa, MasterCard, etc.)
+    DirectLink  — Direct bank link / KNET direct integration
+    Deema       — Deema BNPL (Buy Now Pay Later) provider
+    Other       — Any other provider not listed above
+    """
+
+    MYFATOORAH = "MyFatoorah"
+    DIRECTLINK = "DirectLink"
+    DEEMA = "Deema"
+    OTHER = "Other"
+
+
+class VoucherPaymentThrough(str, Enum):
+    """
+    Channel through which the voucher was sold.
+
+    ushspa  — sold via the USHSPA mobile app or web platform
+    desk    — sold at the spa reception / front desk (cash/POS)
+    """
+
+    USHSPA = "ushspa"
+    DESK = "desk"
