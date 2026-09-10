@@ -85,6 +85,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         public_token=v.public_token,
         redeemed_booking_id=v.redeemed_booking_id,
         redeemed_at=v.redeemed_at,
+        redeemed_by=v.redeemed_by,
         booking_id=v.booking_id,
         booking_data=v.booking_data or {},
         payment_id=v.payment_id,
@@ -146,6 +147,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         secret_code=v.secret_code,
         public_token=v.public_token,
         redeemed_at=v.redeemed_at,
+        redeemed_by=v.redeemed_by,
         booking_id=v.booking_id,
         booking_data=v.booking_data or {},
         payment_id=v.payment_id,
@@ -153,6 +155,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         payment_url=v.payment_url,
         payment_provider=v.payment_provider,
         payment_through=v.payment_through,
+        created_by=v.created_by,
         created_at=v.created_at,
         updated_at=v.updated_at,
     )
@@ -165,9 +168,30 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
     "/",
     summary="Create a gift voucher",
     description=(
-        "Create a new gift voucher for a service. Status starts as 'created'. "
-        "After the sender completes payment, update the status to 'active' via "
-        "PATCH /{voucher_id}/status/ so the secret code is delivered to the recipient."
+        "Create a new gift voucher for a service.\n\n"
+        "### Key Parameters:\n"
+        "- **service_id** (UUID, required): The external UUID of the spa service being gifted.\n"
+        "- **total_amount** (Decimal/String, required): Total price of the voucher in KWD.\n"
+        "- **sender_id** (UUID, optional): UUID of the customer purchasing/sending the voucher. If omitted, defaults to the authenticated user from the JWT token.\n"
+        "- **sender_data** (object, optional): Snapshot of sender contact details (`name`, `phone_number`). Defaults to authenticated customer profile if empty.\n"
+        "- **recipient_phone** (string, optional): Recipient mobile number (e.g. `+965...`) for automated SMS delivery of the 6-digit redemption secret code upon activation.\n"
+        "- **recipient_id** (UUID, optional): Recipient customer UUID in ushauth (automatically resolved or created if `recipient_phone` is provided).\n"
+        "- **recipient_data** (object, optional): Snapshot of recipient details (`name`, `email`, `phone_number`).\n"
+        "- **status** (string, optional): Initial voucher status (`created`, `payment_pending`, `active`). Defaults to `created`. If created as `active`, triggers recipient notification immediately.\n"
+        "- **payment_id** (string, optional): Payment gateway transaction/invoice ID (e.g. `100624710000000255`).\n"
+        "- **payment_data** (object, optional): Full gateway provider response snapshot (JSONB) stored for complete audit records.\n"
+        "- **payment_url** (string, optional): Payment gateway hosted checkout/redirect URL.\n"
+        "- **payment_provider** (string, optional): Payment gateway: `MyFatoorah`, `DirectLink`, `Deema`, `Other`.\n"
+        "- **payment_through** (string, optional): Channel through which the voucher was sold: `ushspa` (app/web), `desk` (reception/front desk).\n"
+        "- **branch_id** / **branch_data** (optional): Branch where the service will be rendered.\n"
+        "- **service_arrangement_id** / **service_arrangement_data** (optional): Room/package arrangement.\n"
+        "- **addons** (list, optional): Add-on snapshots `[{'addon_id': ..., 'name': ..., 'price': ..., 'duration': ...}]`.\n"
+        "- **extra_time** / **price_for_extra_time** (optional): Extra service minutes and unit price.\n"
+        "- **gift_message** (string, optional): Personalised gift greeting displayed on the gift card.\n"
+        "- **gift_template** (string, optional): Visual card template theme identifier.\n"
+        "- **expire_date** (datetime, optional): Explicit expiry date/time. Defaults to +60 days.\n"
+        "- **booking_id** / **booking_data** (optional): Triggering booking reference.\n"
+        "- **created_by** (UUID, optional): Staff or admin identifier who authored the voucher.\n"
     ),
     status_code=status.HTTP_201_CREATED,
 )
@@ -177,7 +201,9 @@ async def create_gift_voucher(
     session: DBSession,
 ) -> JSONResponse:
     """Create a new gift voucher for the authenticated customer."""
-    sender_id = uuid.UUID(current_user.sub)
+    # created_by is automatically set to the authenticated API requester
+    created_by = uuid.UUID(current_user.sub)
+    sender_id = body.sender_id or created_by
     settings = get_settings()
 
     # Build sender_data from both body-supplied data and JWT profile
@@ -257,10 +283,14 @@ async def create_gift_voucher(
             gift_template=body.gift_template,
             booking_id=body.booking_id,
             booking_data=body.booking_data,
-            created_by=sender_id,
+            created_by=created_by,
+            payment_id=body.payment_id,
+            payment_data=body.payment_data,
             payment_url=body.payment_url,
             payment_provider=body.payment_provider,
             payment_through=body.payment_through,
+            status=body.status,
+            expire_date=body.expire_date,
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -554,6 +584,46 @@ async def public_voucher_page(
 # ── Voucher ID parameterized endpoints (defined after all static routes) ───────
 
 
+def _resolve_api_requester(request: Request, explicit_id: uuid.UUID | None = None) -> uuid.UUID | None:
+    """
+    Resolve the User UUID of the API requester.
+
+    Checks:
+    1. Explicit ID passed in request body
+    2. Custom requester headers (X-User-Id, X-Customer-Id, etc.)
+    3. JWT Bearer token claims in Authorization header
+    """
+    if explicit_id is not None:
+        return explicit_id
+
+    for header in ("X-User-Id", "x-user-id", "X-Requester-Id", "x-requester-id", "X-Customer-Id"):
+        val = request.headers.get(header)
+        if val:
+            try:
+                return uuid.UUID(val)
+            except ValueError:
+                pass
+
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            import base64
+            import json
+
+            parts = token.split(".")
+            if len(parts) >= 2:
+                padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                jwt_claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                sub = jwt_claims.get("sub") or jwt_claims.get("user_id") or jwt_claims.get("customer_id")
+                if sub:
+                    return uuid.UUID(str(sub))
+        except Exception:
+            pass
+
+    return None
+
+
 @router.patch(
     "/{voucher_id}/status/",
     summary="Update voucher status (internal)",
@@ -561,7 +631,8 @@ async def public_voucher_page(
         "Advance a gift voucher's status. "
         "Called internally by the payment webhook (active/payment_pending) "
         "or the booking confirmation flow (redeemed). "
-        "Also supports: cancelled, expired, fulfilled."
+        "Also supports: cancelled, expired, fulfilled. "
+        "When status is changed to 'redeemed', redeemed_at and redeemed_by are automatically updated."
     ),
 )
 @router.patch(
@@ -573,9 +644,23 @@ async def update_voucher_status(
     body: UpdateGiftVoucherStatusRequest,
     _: RequireAppToken,
     session: DBSession,
+    request: Request,
 ) -> JSONResponse:
     """Update a gift voucher's status. Requires USHSPA-TOKEN."""
     svc = GiftVoucherService(session)
+
+    redeemed_by = None
+    if body.status == "redeemed":
+        redeemed_by = _resolve_api_requester(request, body.redeemed_by)
+        if redeemed_by is None and body.booking_id is not None:
+            try:
+                from app.booking.infrastructure.models import Booking
+                booking = await session.get(Booking, body.booking_id)
+                if booking and getattr(booking, "customer_id", None):
+                    redeemed_by = booking.customer_id
+            except Exception:
+                pass
+
     try:
         voucher = await svc.update_status(
             voucher_id,
@@ -587,6 +672,7 @@ async def update_voucher_status(
             booking_data=body.booking_data,
             payment_provider=body.payment_provider,
             payment_through=body.payment_through,
+            redeemed_by=redeemed_by,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc

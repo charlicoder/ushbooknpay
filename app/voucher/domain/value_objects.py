@@ -41,6 +41,17 @@ class GiftVoucherStatus(str, Enum):
             GiftVoucherStatus.CANCELLED,
         )
 
+    @classmethod
+    def normalise(cls, val: str | None) -> str | None:
+        """Normalise input string to a valid status value, or return original/None."""
+        if not val or not str(val).strip():
+            return None
+        cleaned = str(val).strip().lower()
+        for member in cls:
+            if member.value == cleaned:
+                return member.value
+        return str(val).strip()
+
 
 class VoucherPaymentProvider(str, Enum):
     """
@@ -57,6 +68,32 @@ class VoucherPaymentProvider(str, Enum):
     DEEMA = "Deema"
     OTHER = "Other"
 
+    @classmethod
+    def normalise(cls, val: str | None) -> str | None:
+        """
+        Normalise provider string to canonical PascalCase value.
+        Handles case insensitivity ('directlink' -> 'DirectLink'),
+        separators ('direct_link' -> 'DirectLink'), and common aliases ('myfatora' -> 'MyFatoorah').
+        """
+        if not val or not str(val).strip():
+            return None
+        cleaned = str(val).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        lookup = {
+            "myfatoorah": cls.MYFATOORAH.value,
+            "myfatora": cls.MYFATOORAH.value,
+            "fatoorah": cls.MYFATOORAH.value,
+            "directlink": cls.DIRECTLINK.value,
+            "direct": cls.DIRECTLINK.value,
+            "deema": cls.DEEMA.value,
+            "other": cls.OTHER.value,
+        }
+        if cleaned in lookup:
+            return lookup[cleaned]
+        for member in cls:
+            if member.value.lower() == cleaned:
+                return member.value
+        return str(val).strip()
+
 
 class VoucherPaymentThrough(str, Enum):
     """
@@ -68,3 +105,28 @@ class VoucherPaymentThrough(str, Enum):
 
     USHSPA = "ushspa"
     DESK = "desk"
+
+    @classmethod
+    def normalise(cls, val: str | None) -> str | None:
+        """
+        Normalise payment_through string to canonical value ('ushspa' or 'desk').
+        Handles case insensitivity ('DESK' -> 'desk') and common aliases ('app' -> 'ushspa').
+        """
+        if not val or not str(val).strip():
+            return None
+        cleaned = str(val).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+        lookup = {
+            "ushspa": cls.USHSPA.value,
+            "app": cls.USHSPA.value,
+            "web": cls.USHSPA.value,
+            "desk": cls.DESK.value,
+            "pos": cls.DESK.value,
+            "reception": cls.DESK.value,
+            "frontdesk": cls.DESK.value,
+        }
+        if cleaned in lookup:
+            return lookup[cleaned]
+        for member in cls:
+            if member.value.lower() == cleaned:
+                return member.value
+        return str(val).strip()

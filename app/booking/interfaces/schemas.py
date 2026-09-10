@@ -132,6 +132,22 @@ class CreateBookingRequest(BaseModel):
     appointment_start: datetime | None = Field(default=None)
     booking_type: BookingType | str | None = Field(default=BookingType.BRANCH, alias="bookingType")
 
+    @field_validator(
+        "customer_id",
+        "service_id",
+        "branch_id",
+        "service_arrangement_id",
+        "therapist_id",
+        "reward_id",
+        "voucher_id",
+        mode="before",
+    )
+    @classmethod
+    def coerce_empty_uuid_to_none(cls, v: Any) -> Any:
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
     @field_validator("appointment_date", mode="before")
     @classmethod
     def sanitize_appointment_date(cls, v: Any) -> str | None:
@@ -269,6 +285,13 @@ class UpdateBookingRequest(BaseModel):
         alias="voucherData",
         description="Snapshot of the gift voucher at redemption time.",
     )
+
+    @field_validator("therapist_id", "voucher_id", mode="before")
+    @classmethod
+    def coerce_empty_uuid_to_none(cls, v: Any) -> Any:
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
 
     @field_validator("appointment_start")
     @classmethod

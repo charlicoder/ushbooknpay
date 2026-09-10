@@ -34,7 +34,11 @@ from app.events.contracts import (
 )
 from app.events.sqs_client import get_sqs_client
 from app.voucher.domain.state_machine import GiftVoucherStateMachine
-from app.voucher.domain.value_objects import GiftVoucherStatus
+from app.voucher.domain.value_objects import (
+    GiftVoucherStatus,
+    VoucherPaymentProvider,
+    VoucherPaymentThrough,
+)
 from app.voucher.infrastructure.models import GiftVoucher
 from app.voucher.infrastructure.repository import GiftVoucherRepository
 
@@ -80,12 +84,16 @@ class GiftVoucherService:
         booking_id: uuid.UUID | None = None,
         booking_data: dict[str, Any] | None = None,
         created_by: uuid.UUID | None = None,
+        payment_id: str | None = None,
+        payment_data: dict[str, Any] | None = None,
         payment_url: str | None = None,
         payment_provider: str | None = None,
         payment_through: str | None = None,
+        status: str | None = None,
+        expire_date: datetime | None = None,
     ) -> GiftVoucher:
         """
-        Create a new GiftVoucher in status=created.
+        Create a new GiftVoucher.
 
         A unique secret_code and public_token are auto-generated on the model.
 
@@ -112,13 +120,20 @@ class GiftVoucherService:
             booking_id:               Optional booking that triggered creation.
             booking_data:             Optional booking snapshot that triggered creation.
             created_by:               Optional staff UUID (for admin-created vouchers).
+            payment_id:               Optional gateway transaction reference (e.g. '100624710000000255').
+            payment_data:             Optional full gateway response snapshot (JSONB).
             payment_url:              Optional payment gateway checkout URL.
             payment_provider:         Payment gateway used (MyFatoorah, DirectLink, Deema, Other).
             payment_through:          Sales channel (ushspa, desk).
+            status:                   Initial status ('created', 'payment_pending', 'active'). Defaults to 'created'.
+            expire_date:              Optional explicit expiration timestamp. Defaults to +60 days.
 
         Returns:
             The newly created, flushed GiftVoucher ORM instance.
         """
+        initial_status = status or GiftVoucherStatus.CREATED.value
+        payment_provider = VoucherPaymentProvider.normalise(payment_provider)
+        payment_through = VoucherPaymentThrough.normalise(payment_through)
         voucher = GiftVoucher(
             service_id=service_id,
             service_data=service_data,
@@ -142,11 +157,20 @@ class GiftVoucherService:
             booking_id=booking_id,
             booking_data=booking_data or {},
             created_by=created_by,
+            payment_id=payment_id,
+            payment_data=payment_data,
             payment_url=payment_url,
             payment_provider=payment_provider,
             payment_through=payment_through,
-            status=GiftVoucherStatus.CREATED.value,
+            status=initial_status,
         )
+        if expire_date is not None:
+            voucher.expire_date = expire_date
+
+        if initial_status == GiftVoucherStatus.REDEEMED.value:
+            voucher.redeemed_at = datetime.now(tz=timezone.utc)
+            voucher.redeemed_by = created_by
+
         self._repo.add(voucher)
         await self._repo.flush()
 
@@ -156,9 +180,16 @@ class GiftVoucherService:
             sender_id=str(sender_id),
             service_id=str(service_id),
             amount=str(total_amount),
+            status=initial_status,
             payment_provider=payment_provider,
             payment_through=payment_through,
         )
+
+        if initial_status == GiftVoucherStatus.ACTIVE.value:
+            asyncio.create_task(
+                self._emit_status_event(voucher, GiftVoucherStatus.ACTIVE)
+            )
+
         return voucher
 
     # ── Status transitions ────────────────────────────────────────────────────
@@ -175,6 +206,7 @@ class GiftVoucherService:
         booking_data: dict[str, Any] | None = None,
         payment_provider: str | None = None,
         payment_through: str | None = None,
+        redeemed_by: uuid.UUID | None = None,
         actor_id: str | None = None,
     ) -> GiftVoucher:
         """
@@ -186,7 +218,7 @@ class GiftVoucherService:
         Args:
             voucher_id:       UUID of the voucher to update.
             new_status:       Target status string (must be a GiftVoucherStatus value).
-            payment_id:       Gateway payment reference string (e.g. \"100624710000000255\").
+            payment_id:       Gateway payment reference string (e.g. "100624710000000255").
                               Set when activating a voucher after payment success.
             payment_data:     Full payment provider response snapshot (JSONB).
                               Stored alongside payment_id for audit.
@@ -195,6 +227,7 @@ class GiftVoucherService:
             booking_data:     Snapshot of booking data when redeeming or updating status.
             payment_provider: Payment gateway used (MyFatoorah, DirectLink, Deema, Other).
             payment_through:  Sales channel (ushspa, desk).
+            redeemed_by:      UUID of the user redeeming the voucher (auto-set to API requester).
             actor_id:         Optional string identifier of who made the change (for logs).
 
         Returns:
@@ -227,10 +260,10 @@ class GiftVoucherService:
             voucher.payment_url = payment_url
 
         if payment_provider is not None:
-            voucher.payment_provider = payment_provider
+            voucher.payment_provider = VoucherPaymentProvider.normalise(payment_provider)
 
         if payment_through is not None:
-            voucher.payment_through = payment_through
+            voucher.payment_through = VoucherPaymentThrough.normalise(payment_through)
 
         if target_status == GiftVoucherStatus.ACTIVE:
             # Store gateway reference string and full response snapshot
@@ -239,9 +272,13 @@ class GiftVoucherService:
             if payment_data is not None:
                 voucher.payment_data = payment_data
 
-        if target_status == GiftVoucherStatus.REDEEMED and booking_id:
-            voucher.redeemed_booking_id = booking_id
+        if target_status == GiftVoucherStatus.REDEEMED:
+            # Auto-update redeemed_at timestamp and redeemed_by user
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
+            if booking_id:
+                voucher.redeemed_booking_id = booking_id
+            if redeemed_by is not None:
+                voucher.redeemed_by = redeemed_by
 
         if booking_data is not None:
             voucher.booking_data = booking_data

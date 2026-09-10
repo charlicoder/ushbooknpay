@@ -83,6 +83,7 @@ def _make_mock_voucher() -> MagicMock:
     v.public_token = "tok_xyz"
     v.redeemed_booking_id = None
     v.redeemed_at = None
+    v.redeemed_by = None
     v.booking_id = None
     v.booking_data = {}
     v.payment_id = None

@@ -7,7 +7,10 @@ including payment_id (string), payment_data (dict), and payment_url (str).
 
 import json
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
+
+import pytest
 
 from app.events.contracts import (
     VoucherActiveEvent,
@@ -99,6 +102,33 @@ def test_create_voucher_schema_new_fields():
     # New field names should be present
     assert hasattr(req, "sender_data")
     assert hasattr(req, "recipient_data")
+
+
+def test_create_voucher_request_with_sender_and_payment_data():
+    """Verify CreateGiftVoucherRequest accepts sender_id, payment_data, payment_id, status, etc."""
+    from datetime import datetime, timezone
+    sender_id = uuid.uuid4()
+    created_by = uuid.uuid4()
+    req = CreateGiftVoucherRequest(
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("50.000"),
+        sender_id=sender_id,
+        created_by=created_by,
+        payment_id="100624710000000255",
+        payment_data={"invoiceId": "100624710000000255", "provider": "myfatoorah"},
+        payment_provider="MyFatoorah",
+        payment_through="desk",
+        status="active",
+        expire_date=datetime(2026, 12, 31, tzinfo=timezone.utc),
+    )
+    assert req.sender_id == sender_id
+    assert req.created_by == created_by
+    assert req.payment_id == "100624710000000255"
+    assert req.payment_data == {"invoiceId": "100624710000000255", "provider": "myfatoorah"}
+    assert req.payment_provider == "MyFatoorah"
+    assert req.payment_through == "desk"
+    assert req.status == "active"
+    assert req.expire_date == datetime(2026, 12, 31, tzinfo=timezone.utc)
 
 
 def test_voucher_response_schemas_with_payment_url():
@@ -283,3 +313,257 @@ def test_create_and_update_voucher_schemas_with_booking_data():
     )
     assert item.booking_id == b_id
     assert item.booking_data == b_data
+
+
+def test_gift_voucher_snapshot_and_schemas_include_redeemed_by_and_created_by():
+    """Verify to_snapshot, GiftVoucherResponse, and GiftVoucherListItem include redeemed_by and created_by."""
+    v_id = uuid.uuid4()
+    creator_id = uuid.uuid4()
+    redeemer_id = uuid.uuid4()
+    voucher = GiftVoucher(
+        id=v_id,
+        service_id=uuid.uuid4(),
+        service_data={"name": "Signature Massage"},
+        total_amount=Decimal("45.000"),
+        sender_id=uuid.uuid4(),
+        created_by=creator_id,
+        redeemed_by=redeemer_id,
+        redeemed_at=datetime(2026, 9, 10, 15, 0, tzinfo=timezone.utc),
+    )
+    snap = voucher.to_snapshot()
+    assert snap["created_by"] == str(creator_id)
+    assert snap["redeemed_by"] == str(redeemer_id)
+    assert snap["redeemed_at"] is not None
+
+    resp = GiftVoucherResponse(
+        id=v_id,
+        service_id=uuid.uuid4(),
+        service_data={},
+        branch_id=None,
+        branch_data={},
+        service_arrangement_id=None,
+        service_arrangement_data={},
+        addons=[],
+        extra_time=0,
+        expire_date="2026-11-01T00:00:00Z",
+        status="redeemed",
+        sender_id=uuid.uuid4(),
+        sender_data={},
+        recipient_phone=None,
+        recipient_data={},
+        created_by=creator_id,
+        redeemed_by=redeemer_id,
+        redeemed_at="2026-09-10T15:00:00Z",
+        total_duration=60,
+        total_amount="45.000",
+        currency="KWD",
+        gift_message=None,
+        gift_template=None,
+        secret_code="123456",
+        public_token="token123",
+        redeemed_booking_id=None,
+        booking_id=None,
+        payment_id=None,
+        payment_data=None,
+        created_at="2026-09-01T00:00:00Z",
+        updated_at="2026-09-10T15:00:00Z",
+    )
+    assert resp.created_by == creator_id
+    assert resp.redeemed_by == redeemer_id
+    assert resp.redeemed_at is not None
+
+    item = GiftVoucherListItem(
+        id=v_id,
+        service_id=uuid.uuid4(),
+        service_data={},
+        branch_id=None,
+        status="redeemed",
+        total_amount="45.000",
+        currency="KWD",
+        expire_date="2026-11-01T00:00:00Z",
+        recipient_phone=None,
+        recipient_data={},
+        public_token="token123",
+        created_by=creator_id,
+        redeemed_by=redeemer_id,
+        redeemed_at="2026-09-10T15:00:00Z",
+        payment_id=None,
+        payment_data=None,
+        created_at="2026-09-01T00:00:00Z",
+        updated_at="2026-09-10T15:00:00Z",
+    )
+    assert item.created_by == creator_id
+    assert item.redeemed_by == redeemer_id
+
+
+@pytest.mark.asyncio
+async def test_update_status_redeemed_auto_updates_redeemed_at_and_redeemed_by():
+    """When transitioning to redeemed, redeemed_at and redeemed_by are automatically set."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.voucher.application.voucher_service import GiftVoucherService
+
+    mock_session = AsyncMock()
+    svc = GiftVoucherService(mock_session)
+
+    v_id = uuid.uuid4()
+    voucher = GiftVoucher(
+        id=v_id,
+        service_id=uuid.uuid4(),
+        service_data={},
+        total_amount=Decimal("50.000"),
+        sender_id=uuid.uuid4(),
+        status="active",
+        created_by=uuid.uuid4(),
+    )
+    assert voucher.redeemed_at is None
+    assert voucher.redeemed_by is None
+
+    svc._repo.get_by_id = AsyncMock(return_value=voucher)
+    svc._repo.flush = AsyncMock()
+
+    api_requester_id = uuid.uuid4()
+    updated = await svc.update_status(
+        voucher_id=v_id,
+        new_status="redeemed",
+        redeemed_by=api_requester_id,
+    )
+
+    assert updated.status == "redeemed"
+    assert updated.redeemed_at is not None
+    assert updated.redeemed_by == api_requester_id
+
+
+def test_create_voucher_empty_booking_id_and_lowercase_payment_provider():
+    """Verify that empty string booking_id coerces to None and lowercase payment_provider normalises."""
+    req = CreateGiftVoucherRequest(
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("45.000"),
+        booking_id="",
+        payment_provider="directlink",
+        payment_through="ushspa",
+    )
+    assert req.booking_id is None
+    assert req.payment_provider == "DirectLink"
+    assert req.payment_through == "ushspa"
+
+
+def test_create_voucher_empty_string_coercion_across_optional_fields():
+    """Verify empty strings across all optional fields coerce cleanly to None."""
+    req = CreateGiftVoucherRequest(
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("45.000"),
+        branch_id="",
+        service_arrangement_id="",
+        recipient_id="",
+        sender_id="",
+        created_by="",
+        booking_id="",
+        booking_data="",
+        payment_data="",
+        payment_id="",
+        payment_url="",
+        gift_message="",
+        gift_template="",
+        recipient_phone="",
+        expire_date="",
+        status="",
+        payment_provider="",
+        payment_through="",
+    )
+    assert req.branch_id is None
+    assert req.service_arrangement_id is None
+    assert req.recipient_id is None
+    assert req.sender_id is None
+    assert req.created_by is None
+    assert req.booking_id is None
+    assert req.booking_data is None
+    assert req.payment_data is None
+    assert req.payment_id is None
+    assert req.payment_url is None
+    assert req.gift_message is None
+    assert req.gift_template is None
+    assert req.recipient_phone is None
+    assert req.expire_date is None
+    assert req.status is None
+    assert req.payment_provider is None
+    assert req.payment_through is None
+
+
+def test_payment_provider_and_through_normalisation():
+    """Verify provider and channel case-insensitivity and alias normalization."""
+    from app.voucher.domain.value_objects import VoucherPaymentProvider, VoucherPaymentThrough
+
+    assert VoucherPaymentProvider.normalise("directlink") == "DirectLink"
+    assert VoucherPaymentProvider.normalise("DIRECTLINK") == "DirectLink"
+    assert VoucherPaymentProvider.normalise("direct_link") == "DirectLink"
+    assert VoucherPaymentProvider.normalise("direct-link") == "DirectLink"
+    assert VoucherPaymentProvider.normalise("myfatoorah") == "MyFatoorah"
+    assert VoucherPaymentProvider.normalise("myfatora") == "MyFatoorah"
+    assert VoucherPaymentProvider.normalise("fatoorah") == "MyFatoorah"
+    assert VoucherPaymentProvider.normalise("deema") == "Deema"
+    assert VoucherPaymentProvider.normalise("other") == "Other"
+    assert VoucherPaymentProvider.normalise("") is None
+    assert VoucherPaymentProvider.normalise(None) is None
+
+    assert VoucherPaymentThrough.normalise("ushspa") == "ushspa"
+    assert VoucherPaymentThrough.normalise("USHSPA") == "ushspa"
+    assert VoucherPaymentThrough.normalise("app") == "ushspa"
+    assert VoucherPaymentThrough.normalise("web") == "ushspa"
+    assert VoucherPaymentThrough.normalise("desk") == "desk"
+    assert VoucherPaymentThrough.normalise("DESK") == "desk"
+    assert VoucherPaymentThrough.normalise("pos") == "desk"
+    assert VoucherPaymentThrough.normalise("reception") == "desk"
+    assert VoucherPaymentThrough.normalise("") is None
+    assert VoucherPaymentThrough.normalise(None) is None
+
+
+def test_update_voucher_status_empty_strings_and_normalisation():
+    """Verify UpdateGiftVoucherStatusRequest handles empty strings and normalises provider."""
+    req = UpdateGiftVoucherStatusRequest(
+        status="ACTIVE",
+        booking_id="",
+        redeemed_by="",
+        payment_id="",
+        payment_url="",
+        payment_data="",
+        payment_provider="directlink",
+        payment_through="desk",
+    )
+    assert req.status == "active"
+    assert req.booking_id is None
+    assert req.redeemed_by is None
+    assert req.payment_id is None
+    assert req.payment_url is None
+    assert req.payment_data is None
+    assert req.payment_provider == "DirectLink"
+    assert req.payment_through == "desk"
+
+
+def test_validation_exception_handler_serializes_value_error_without_crashing():
+    """Verify validation errors containing ValueError in ctx are serialized to JSON without TypeError."""
+    from starlette.testclient import TestClient
+    from app.main import app
+    from app.core.security import TokenPayload, require_authenticated_user
+
+    app.dependency_overrides[require_authenticated_user] = lambda: TokenPayload(sub=str(uuid.uuid4()))
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        # Send a request with an invalid payment_provider to trigger ValueError in validator
+        resp = client.post(
+            "/api/v1/vouchers/",
+            json={
+                "service_id": str(uuid.uuid4()),
+                "total_amount": "45.000",
+                "payment_provider": "unsupported_gateway",
+            },
+        )
+        assert resp.status_code == 422
+        data = resp.json()
+        assert data["success"] is False
+        assert data["error"]["code"] == "VALIDATION_ERROR"
+        assert "Invalid payment_provider" in str(data["error"]["detail"])
+    finally:
+        app.dependency_overrides.pop(require_authenticated_user, None)
+
+
+

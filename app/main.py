@@ -24,8 +24,10 @@ from typing import Any
 
 import structlog
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.api.v1.router import api_router
 from app.booking.infrastructure.models import Booking, BookingStatusHistory, TemporaryHold  # noqa: F401
@@ -183,6 +185,16 @@ def create_application() -> FastAPI:
             },
         )
 
+    def _sanitize_for_json(obj: Any) -> Any:
+        """Recursively convert non-serializable objects (such as Exception instances in ctx['error']) to serializable strings."""
+        if isinstance(obj, Exception):
+            return str(obj)
+        if isinstance(obj, dict):
+            return {k: _sanitize_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, set)):
+            return [_sanitize_for_json(v) for v in obj]
+        return obj
+
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
         request: Request, exc: RequestValidationError
@@ -194,7 +206,23 @@ def create_application() -> FastAPI:
                 "error": {
                     "code": "VALIDATION_ERROR",
                     "message": "Request validation failed.",
-                    "detail": exc.errors(),
+                    "detail": jsonable_encoder(_sanitize_for_json(exc.errors())),
+                },
+            },
+        )
+
+    @app.exception_handler(ValidationError)
+    async def pydantic_validation_exception_handler(
+        request: Request, exc: ValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "success": False,
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Validation failed.",
+                    "detail": jsonable_encoder(_sanitize_for_json(exc.errors())),
                 },
             },
         )

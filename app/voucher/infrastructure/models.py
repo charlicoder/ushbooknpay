@@ -171,6 +171,10 @@ class GiftVoucher(Base):
     redeemed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The user (customer/staff) who redeemed the voucher (auto-set from API requester)
+    redeemed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
 
     # ── Cross-references ──────────────────────────────────────────────────
     # Optional: the booking that *triggered* creation of this voucher
@@ -219,6 +223,8 @@ class GiftVoucher(Base):
         Index("ix_gift_vouchers_sender_status", "sender_id", "status"),
         Index("ix_gift_vouchers_payment_provider", "payment_provider"),
         Index("ix_gift_vouchers_payment_through", "payment_through"),
+        Index("ix_gift_vouchers_redeemed_by", "redeemed_by"),
+        Index("ix_gift_vouchers_created_by", "created_by"),
     )
 
     def __repr__(self) -> str:
@@ -262,6 +268,7 @@ class GiftVoucher(Base):
             "public_token": self.public_token,
             "redeemed_booking_id": str(self.redeemed_booking_id) if self.redeemed_booking_id else None,
             "redeemed_at": self.redeemed_at.isoformat() if self.redeemed_at else None,
+            "redeemed_by": str(self.redeemed_by) if self.redeemed_by else None,
             "booking_id": str(self.booking_id) if self.booking_id else None,
             "booking_data": self.booking_data or {},
             # payment_id is a plain gateway reference string (not UUID)

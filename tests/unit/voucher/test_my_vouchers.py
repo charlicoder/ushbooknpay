@@ -200,6 +200,8 @@ async def test_list_my_received_vouchers_success():
     voucher_mock.public_token = "pubtok123"
     voucher_mock.redeemed_booking_id = None
     voucher_mock.redeemed_at = None
+    voucher_mock.redeemed_by = None
+    voucher_mock.created_by = None
     voucher_mock.booking_id = None
     voucher_mock.booking_data = {}
     voucher_mock.payment_id = "100624710000000255"

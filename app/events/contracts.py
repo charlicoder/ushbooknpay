@@ -672,10 +672,13 @@ class VoucherActiveEvent(BaseEvent):
     payment_id: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
+    payment_provider: str | None = None
+    payment_through: str | None = None
     booking_id: str | None = None
     booking_data: dict[str, Any] = field(default_factory=dict)
     redeemed_booking_id: str | None = None
     redeemed_at: str | None = None
+    redeemed_by: str | None = None
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -732,10 +735,13 @@ class VoucherPaymentPendingEvent(BaseEvent):
     payment_id: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
+    payment_provider: str | None = None
+    payment_through: str | None = None
     booking_id: str | None = None
     booking_data: dict[str, Any] = field(default_factory=dict)
     redeemed_booking_id: str | None = None
     redeemed_at: str | None = None
+    redeemed_by: str | None = None
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -792,12 +798,15 @@ class VoucherRedeemedEvent(BaseEvent):
     # ── Redemption ────────────────────────────────────────────────────
     redeemed_booking_id: str | None = None
     redeemed_at: str | None = None
+    redeemed_by: str | None = None
 
     # ── Payment & timestamps ──────────────────────────────────────────
     # payment_id is a gateway reference string (e.g. "100624710000000255"), not UUID
     payment_id: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
+    payment_provider: str | None = None
+    payment_through: str | None = None
     booking_id: str | None = None
     booking_data: dict[str, Any] = field(default_factory=dict)
     created_by: str | None = None
