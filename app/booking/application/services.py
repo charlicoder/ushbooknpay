@@ -287,6 +287,8 @@ class BookingService:
         idempotency_key: str | None = None,
         booking_type: str = "branch_service",
         payment_type: str = "service",
+        status: str = BookingStatus.REQUESTED.value,
+        payment_status: str = PaymentStatus.NOT_INITIATED.value,
         loyalty_data: dict | None = None,
         reward_id: uuid.UUID | None = None,
         voucher_id: uuid.UUID | None = None,
@@ -298,8 +300,8 @@ class BookingService:
 
         Checks idempotency key first to handle duplicate requests.
         Performs double-booking detection with row-level locking.
-        Creates a temporary hold for the appointment slot.
-        Writes a BookingCreatedEvent to SQS within the same flow.
+        Creates a temporary hold for the appointment slot (unless already confirmed).
+        Writes a BookingCreatedEvent (and BookingConfirmedEvent if confirmed) to SQS within the same flow.
         """
         # ── Idempotency check ────────────────────────────────────────────
         if idempotency_key:
@@ -350,7 +352,8 @@ class BookingService:
             fees=pricing.fees,
             total_amount=pricing.total,
             currency=pricing.currency,
-            status=BookingStatus.REQUESTED.value,
+            status=status,
+            payment_status=payment_status,
             booking_type=booking_type,
             payment_type=payment_type,
             addons=addons or [],
@@ -364,11 +367,10 @@ class BookingService:
             created_by=created_by,
         )
 
-
         booking = await self._repo.create(booking)
 
-        # ── Temporary hold (only for branch bookings with a service arrangement) ─
-        if service_arrangement_id is not None:
+        # ── Temporary hold (only for unconfirmed branch bookings with a service arrangement) ─
+        if service_arrangement_id is not None and booking.status != BookingStatus.CONFIRMED.value:
             hold = TemporaryHold(
                 booking_id=booking.id,
                 therapist_id=therapist_id,
@@ -380,8 +382,13 @@ class BookingService:
             await self._repo.create_hold(hold)
 
         # ── Status history ────────────────────────────────────────────────
+        initial_status_enum = (
+            BookingStatus(booking.status)
+            if booking.status in BookingStatus._value2member_map_
+            else BookingStatus.REQUESTED
+        )
         await self._record_status_change(
-            booking, None, BookingStatus.REQUESTED, source="customer"
+            booking, None, initial_status_enum, source=created_by or "customer"
         )
 
         # ── Enqueue SQS event for Booking.Created ─────────────────────────
@@ -414,16 +421,22 @@ class BookingService:
 
         logger.info("booking_created", booking_id=str(booking.id))
 
-        # If a loyalty booking arrives already confirmed+rewarded, fire the event immediately.
-        if (
-            booking.booking_type == "loyalty"
-            and booking.status == BookingStatus.CONFIRMED.value
-            and booking.payment_status == PaymentStatus.REWARDED.value
-        ):
+        # If a booking arrives already confirmed, fire BookingLoyaltyEvent or BookingConfirmedEvent immediately.
+        if booking.status == BookingStatus.CONFIRMED.value:
             ev_data = _build_booking_event_data(booking)
-            await self._enqueue_event(BookingLoyaltyEvent(**ev_data))
+            if (
+                booking.booking_type == "loyalty"
+                and booking.payment_status == PaymentStatus.REWARDED.value
+            ):
+                await self._enqueue_event(BookingLoyaltyEvent(**ev_data))
+            else:
+                await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+        elif booking.status == BookingStatus.PAYMENT_PENDING.value:
+            ev_data = _build_booking_event_data(booking)
+            await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
 
         return booking
+
 
     # ── Use Case 2: Update Booking (REST PATCH / PUT) ───────────────────────
 

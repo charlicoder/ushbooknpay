@@ -302,6 +302,53 @@ async def create_booking(
     else:
         payment_type_str = "service"
 
+    # ── Status & Payment Status Resolution ────────────────────────────
+    status_str: str | None = None
+    if body.status:
+        raw_status = (
+            body.status.value
+            if hasattr(body.status, "value")
+            else str(body.status)
+        ).strip().lower()
+        if raw_status in BookingStatus._value2member_map_:
+            status_str = raw_status
+
+    pstatus_str: str | None = None
+    if body.payment_status:
+        raw_pstatus = (
+            body.payment_status.value
+            if hasattr(body.payment_status, "value")
+            else str(body.payment_status)
+        ).strip().lower()
+        if raw_pstatus in ("paid", "success"):
+            pstatus_str = PaymentStatus.SUCCESS.value
+        elif raw_pstatus in PaymentStatus._value2member_map_:
+            pstatus_str = raw_pstatus
+
+    # Auto-derive payment_status from payment_data if not explicitly supplied
+    if not pstatus_str and body.payment_data:
+        if (
+            body.payment_data.get("is_paid") is True
+            or str(body.payment_data.get("status", "")).lower() in ("paid", "success")
+        ):
+            pstatus_str = PaymentStatus.SUCCESS.value
+
+    # Auto-infer relationships between status and payment_status
+    if booking_type_str == "loyalty":
+        if not pstatus_str:
+            pstatus_str = PaymentStatus.REWARDED.value
+        if not status_str:
+            status_str = BookingStatus.CONFIRMED.value
+    elif status_str == BookingStatus.CONFIRMED.value:
+        if not pstatus_str:
+            pstatus_str = PaymentStatus.SUCCESS.value
+    elif pstatus_str == PaymentStatus.SUCCESS.value:
+        if not status_str:
+            status_str = BookingStatus.CONFIRMED.value
+
+    final_status = status_str or BookingStatus.REQUESTED.value
+    final_payment_status = pstatus_str or PaymentStatus.NOT_INITIATED.value
+
     service_arrangement_id = str(body.service_arrangement_id) if body.service_arrangement_id else None
 
     therapist_id_str = str(body.therapist_id) if body.therapist_id else None
@@ -606,6 +653,8 @@ async def create_booking(
             idempotency_key=idempotency_key,
             booking_type=booking_type_str,
             payment_type=payment_type_str,
+            status=final_status,
+            payment_status=final_payment_status,
             loyalty_data=body.loyalty_data,
             reward_id=body.reward_id,
             voucher_id=body.voucher_id,
@@ -632,6 +681,8 @@ async def create_booking(
             final_amount=str(booking.total_amount),
             status=booking.status,
             payment_status=booking.payment_status,
+            payment_type=booking.payment_type,
+            payment_data=booking.payment_data,
             is_eligible_for_loyalty=bool((booking.service_data or {}).get("is_eligible_for_loyalty", False)),
             loyalty_data=getattr(booking, "loyalty_data", None),
             reward_id=str(booking.reward_id) if getattr(booking, "reward_id", None) else None,
@@ -639,6 +690,7 @@ async def create_booking(
             voucher_data=getattr(booking, "voucher_data", None),
         ),
     )
+
 
 
 @router.get(

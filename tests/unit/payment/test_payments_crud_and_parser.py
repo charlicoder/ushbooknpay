@@ -462,3 +462,32 @@ def test_event_contracts_with_voucher_and_optional_booking():
     assert ev_succ.booking_id is None
     assert ev_succ.voucher_id == "v-1"
     assert ev_succ.payment_for == "gift_voucher"
+
+
+def test_payment_creation_with_optional_payment_method():
+    """Verify that Payment model and CreatePaymentRequest allow payment_method to be None/omitted."""
+    import uuid
+    from app.payment.infrastructure.models import Payment
+    from app.payment.interfaces.schemas import CreatePaymentRequestSchema
+
+    # 1. Schema test
+    req = CreatePaymentRequestSchema(
+        customer_id=uuid.uuid4(),
+        total_amount=Decimal("50.000"),
+        total_duration=60,
+        currency="KWD",
+        # payment_method omitted
+    )
+    assert req.payment_method is None
+
+    # 2. Model test
+    payment = Payment(
+        customer_id=req.customer_id,
+        total_amount=req.total_amount,
+        total_duration=req.total_duration,
+        currency=req.currency,
+        payment_method=None,
+        payment_for=None,
+    )
+    assert payment.payment_method is None
+    assert payment.payment_for is None

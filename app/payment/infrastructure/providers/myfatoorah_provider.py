@@ -127,7 +127,8 @@ class MyFatoorahProvider:
                 code="MYFATOORAH_INITIATE_FAILED",
             )
 
-        payment_method_id = _PAYMENT_METHOD_MAP.get(request.payment_method.lower(), 2)
+        method_str = (request.payment_method or "card").strip().lower()
+        payment_method_id = _PAYMENT_METHOD_MAP.get(method_str, 2)
 
         # Step 2: ExecutePayment
         execute_payload = {

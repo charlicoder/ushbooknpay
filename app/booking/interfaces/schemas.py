@@ -139,6 +139,51 @@ class CreateBookingRequest(BaseModel):
             "Auto-derived from booking_type if omitted."
         ),
     )
+    status: BookingStatus | str | None = Field(
+        default=None,
+        description=(
+            "Initial booking status: requested (default), payment_pending, confirmed, etc. "
+            "Case-insensitive."
+        ),
+    )
+    payment_status: PaymentStatus | str | None = Field(
+        default=None,
+        alias="paymentStatus",
+        description=(
+            "Initial payment status: not_initiated (default), pending, success, etc. "
+            "Case-insensitive; 'paid' is normalized to 'success'."
+        ),
+    )
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def sanitize_status(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, BookingStatus):
+            return v
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in BookingStatus._value2member_map_:
+                return BookingStatus(s)
+            return s
+        return v
+
+    @field_validator("payment_status", mode="before")
+    @classmethod
+    def sanitize_payment_status(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, PaymentStatus):
+            return v
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s == "paid":
+                return PaymentStatus.SUCCESS
+            if s in PaymentStatus._value2member_map_:
+                return PaymentStatus(s)
+            return s
+        return v
 
     @field_validator(
         "customer_id",
@@ -513,6 +558,8 @@ class CreateBookingDataResponse(BaseModel):
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
+    payment_type: str | None = None
+    payment_data: dict[str, Any] | None = None
 
 
 class CreateBookingResponse(BaseModel):

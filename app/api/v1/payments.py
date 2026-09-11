@@ -516,7 +516,7 @@ async def create_payment(
                 await booking_service.confirm_booking(
                     payment.booking_id,
                     payment_id=str(payment.id),
-                    payments_meta=payment_meta_snapshot,
+                    payment_data=payment_meta_snapshot,
                     correlation_id=payment.payment_id or str(payment.id),
                 )
             except Exception as exc:
@@ -874,7 +874,7 @@ async def update_payment(
                 await booking_service.confirm_booking(
                     payment.booking_id,
                     payment_id=str(payment.id),
-                    payments_meta=payment_meta_snapshot,
+                    payment_data=payment_meta_snapshot,
                     correlation_id=payment.payment_id or str(payment.id),
                 )
             except Exception as exc:
@@ -1209,7 +1209,7 @@ async def myfatoorah_webhook(
             await booking_service.confirm_booking(
                 payment.booking_id,
                 payment_id=str(payment.id),
-                payments_meta=payment_meta_snapshot,
+                payment_data=payment_meta_snapshot,
                 correlation_id=payment.payment_id or str(payment.id),
             )
         except Exception as exc:

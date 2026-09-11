@@ -126,6 +126,31 @@ def test_booking_payment_data_schema():
     assert req.payment_data["payment_gateway"] == "KNET"
 
 
+def test_create_booking_request_with_status_and_payment_status():
+    """Verify that CreateBookingRequest accepts status and payment_status in payload."""
+    from app.booking.domain.value_objects import BookingStatus, PaymentStatus
+    from app.booking.interfaces.schemas import CreateBookingRequest
+
+    payload = {
+        "service_arrangement_id": "5f414197-2fe7-45c1-97ed-7e802525832e",
+        "status": "confirmed",
+        "payment_status": "success",
+    }
+    req = CreateBookingRequest(**payload)
+    assert req.status == BookingStatus.CONFIRMED
+    assert req.payment_status == PaymentStatus.SUCCESS
+
+    # Case-insensitivity & aliases (paymentStatus, PAID -> SUCCESS)
+    payload_casing = {
+        "service_arrangement_id": "5f414197-2fe7-45c1-97ed-7e802525832e",
+        "status": "CONFIRMED",
+        "paymentStatus": "PAID",
+    }
+    req2 = CreateBookingRequest(**payload_casing)
+    assert req2.status == BookingStatus.CONFIRMED
+    assert req2.payment_status == PaymentStatus.SUCCESS
+
+
 def test_update_booking_status_request_payload_with_payment_data():
     """Verify that UpdateBookingStatusRequest parses the exact payload from user request."""
     from app.booking.interfaces.schemas import UpdateBookingStatusRequest
