@@ -102,13 +102,13 @@ def test_create_booking_request_payload_parsing():
 
 
 
-def test_booking_payments_meta_schema():
-    """Verify that CreateBookingRequest and BookingDetailResponse support payments_meta."""
+def test_booking_payment_data_schema():
+    """Verify that CreateBookingRequest and BookingDetailResponse support payment_data."""
     from app.booking.interfaces.schemas import CreateBookingRequest, BookingDetailResponse, PricingBreakdownSchema
 
     payload = {
         "service_arrangement_id": "5f414197-2fe7-45c1-97ed-7e802525832e",
-        "payments_meta": {
+        "payment_data": {
             "payment_id": "100623710000000606",
             "invoice_id": "7103271",
             "transaction_id": "623710001297726",
@@ -120,13 +120,13 @@ def test_booking_payments_meta_schema():
     }
 
     req = CreateBookingRequest(**payload)
-    assert req.payments_meta["payment_id"] == "100623710000000606"
-    assert req.payments_meta["invoice_id"] == "7103271"
-    assert req.payments_meta["is_paid"] is True
-    assert req.payments_meta["payment_gateway"] == "KNET"
+    assert req.payment_data["payment_id"] == "100623710000000606"
+    assert req.payment_data["invoice_id"] == "7103271"
+    assert req.payment_data["is_paid"] is True
+    assert req.payment_data["payment_gateway"] == "KNET"
 
 
-def test_update_booking_status_request_payload_with_payments_meta():
+def test_update_booking_status_request_payload_with_payment_data():
     """Verify that UpdateBookingStatusRequest parses the exact payload from user request."""
     from app.booking.interfaces.schemas import UpdateBookingStatusRequest
     from app.booking.domain.value_objects import BookingStatus, PaymentStatus
@@ -136,7 +136,7 @@ def test_update_booking_status_request_payload_with_payments_meta():
         "payment_status": "success",
         "reason": "Payment Success",
         "source": "ushspa app",
-        "payments_meta": {
+        "payment_data": {
             "is_paid": True,
             "invoice_id": "7106562",
             "status": "Paid",
@@ -159,9 +159,9 @@ def test_update_booking_status_request_payload_with_payments_meta():
     assert req.payment_status == "success"
     assert req.reason == "Payment Success"
     assert req.source == "ushspa app"
-    assert req.payments_meta["invoice_id"] == "7106562"
-    assert req.payments_meta["payment_id"] == "100623810000000483"
-    assert req.payments_meta["is_paid"] is True
+    assert req.payment_data["invoice_id"] == "7106562"
+    assert req.payment_data["payment_id"] == "100623810000000483"
+    assert req.payment_data["is_paid"] is True
 
 
 def test_booking_detail_response_includes_appointment_date():

@@ -61,7 +61,7 @@ router = APIRouter(prefix="/bookings", tags=["Bookings"])
 def _booking_to_list_item(b: object) -> BookingListItem:
     """Map ORM Booking to BookingListItem."""
     b_type = getattr(b, "booking_type", "branch")
-    booking_type_val = b_type if isinstance(b_type, str) else "branch"
+    booking_type_val = b_type if isinstance(b_type, str) else "branch_service"
     raw_base_price = getattr(b, "base_price", None)
     raw_app_date = getattr(b, "appointment_date", None) or getattr(b, "appointment_start", None)
     return BookingListItem(
@@ -85,9 +85,10 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         addons_duration=getattr(b, "addons_duration", None),
         base_price=str(raw_base_price) if raw_base_price is not None else None,
         booking_type=booking_type_val,
+        payment_type=getattr(b, "payment_type", "service") or "service",
         status=b.status,
         payment_status=b.payment_status,
-        payments_meta=b.payments_meta or {},
+        payment_data=b.payment_data or {},
         total_amount=str(b.total_amount),
         currency=b.currency,
         is_eligible_for_loyalty=bool((b.service_data or {}).get("is_eligible_for_loyalty", False)),
@@ -154,10 +155,11 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         addons_duration=getattr(b, "addons_duration", None),
         base_price=str(raw_base_price) if raw_base_price is not None else None,
         price_for_extra_minutes=str(b.price_for_extra_minutes),
-        booking_type=getattr(b, "booking_type", "branch") or "branch",
+        booking_type=getattr(b, "booking_type", "branch_service") or "branch_service",
+        payment_type=getattr(b, "payment_type", "service") or "service",
         status=b.status,
         payment_status=b.payment_status,
-        payments_meta=b.payments_meta or {},
+        payment_data=b.payment_data or {},
         pricing=PricingBreakdownSchema(
             arrangement_price=str(b.arrangement_price),
             price_for_extra_minutes=str(b.price_for_extra_minutes),
@@ -287,8 +289,19 @@ async def create_booking(
     booking_type_str = (
         body.booking_type.value
         if hasattr(body.booking_type, "value")
-        else str(body.booking_type or "branch")
+        else str(body.booking_type or "branch_service")
     )
+
+    # Auto-derive payment_type from booking_type when not explicitly provided
+    if body.payment_type:
+        payment_type_str = body.payment_type
+    elif booking_type_str == "gift_voucher":
+        payment_type_str = "gift_voucher"
+    elif booking_type_str == "loyalty":
+        payment_type_str = "rewarded"
+    else:
+        payment_type_str = "service"
+
     service_arrangement_id = str(body.service_arrangement_id) if body.service_arrangement_id else None
 
     therapist_id_str = str(body.therapist_id) if body.therapist_id else None
@@ -306,7 +319,7 @@ async def create_booking(
     # home   → check-booking-therapists-availability (validates therapist only)
     selected_therapist_id: uuid.UUID | None = None
 
-    if booking_type_str == "branch" and service_arrangement_id:
+    if booking_type_str in ("branch_service", "branch") and service_arrangement_id:
         # ── Branch booking: arrangement-level availability check ─────────
         try:
             avail_res = await ushauth.check_appointment_availability(
@@ -352,7 +365,7 @@ async def create_booking(
                 detail=f"Invalid therapist ID received from availability service: {selected_therapist_id_str}",
             )
 
-    elif booking_type_str == "home":
+    elif booking_type_str in ("home_service", "home"):
         # ── Home booking: therapist-only availability check ──────────────
         if not therapist_id_str:
             raise HTTPException(
@@ -589,9 +602,10 @@ async def create_booking(
             pricing=pricing,
             addons=addon_records,
             customer_notes=body.customer_notes or body.customer_message or None,
-            payments_meta=body.payments_meta,
+            payment_data=body.payment_data,
             idempotency_key=idempotency_key,
             booking_type=booking_type_str,
+            payment_type=payment_type_str,
             loyalty_data=body.loyalty_data,
             reward_id=body.reward_id,
             voucher_id=body.voucher_id,
@@ -804,7 +818,7 @@ async def update_booking(
         booking_id=booking_id,
         status=body.status,
         payment_status=body.payment_status,
-        payments_meta=body.payments_meta,
+        payment_data=body.payment_data,
         therapist_id=body.therapist_id,
         therapist_data=therapist_data,
         appointment_start=body.appointment_start,
@@ -933,9 +947,9 @@ async def update_booking_status(
                 payment_status = None
         else:
             payment_status = body.payment_status
-    elif body.payments_meta and (
-        body.payments_meta.get("is_paid") is True
-        or str(body.payments_meta.get("status", "")).lower() in ("paid", "success")
+    elif body.payment_data and (
+        body.payment_data.get("is_paid") is True
+        or str(body.payment_data.get("status", "")).lower() in ("paid", "success")
     ):
         payment_status = PaymentStatus.SUCCESS
 
@@ -943,7 +957,7 @@ async def update_booking_status(
         booking_id=booking_id,
         new_status=body.status,
         payment_status=payment_status,
-        payments_meta=body.payments_meta,
+        payment_data=body.payment_data,
         reason=body.reason,
         source=body.source,
         loyalty_data=body.loyalty_data,

@@ -60,7 +60,7 @@ def test_booking_confirmed_event_payload():
         appointment_date="2026-08-25",
         appointment_starttime="09:00",
         appointment_endtime="10:00",
-        payments_meta={
+        payment_data={
             "payment_id": "100623810000000483",
             "invoice_id": "7106562",
             "transaction_id": "623810001265311",
@@ -78,9 +78,9 @@ def test_booking_confirmed_event_payload():
     assert payload["appointment_starttime"] == "09:00"
     assert payload["appointment_endtime"] == "10:00"
     assert payload["customer_email"] == "test@example.com"
-    assert payload["payments_meta"]["payment_id"] == "100623810000000483"
-    assert payload["payments_meta"]["is_paid"] is True
-    assert payload["payments_meta"]["payment_gateway"] == "KNET"
+    assert payload["payment_data"]["payment_id"] == "100623810000000483"
+    assert payload["payment_data"]["is_paid"] is True
+    assert payload["payment_data"]["payment_gateway"] == "KNET"
     # is_eligible_for_loyalty must default to False and be present in payload
     assert "is_eligible_for_loyalty" in payload
     assert payload["is_eligible_for_loyalty"] is False
@@ -147,13 +147,13 @@ def test_booking_payment_pending_event_payload():
         duration_minutes=60,
         extra_minutes=15,
         total_duration=75,
-        booking_type="branch",
+        booking_type="branch_service",
         status="payment_pending",
         payment_status="pending",
         total_amount="35.000",
         currency="KWD",
         pricing={"total": "35.000", "currency": "KWD"},
-        payments_meta={"invoice_id": "7106562"},
+        payment_data={"invoice_id": "7106562"},
     )
     payload = json.loads(event.to_json())
 
@@ -198,7 +198,7 @@ def test_booking_completed_event_payload():
         appointment_endtime="15:00",
         duration_minutes=60,
         total_duration=60,
-        booking_type="branch",
+        booking_type="branch_service",
         status="completed",
         payment_status="paid",
         total_amount="40.000",

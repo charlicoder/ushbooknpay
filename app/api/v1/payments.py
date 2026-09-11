@@ -310,7 +310,7 @@ async def create_payment(
         payment_for = PaymentFor.normalise(payment_for_raw).value
     elif voucher_id:
         payment_for = PaymentFor.GIFT_VOUCHER.value
-    elif booking and getattr(booking, "booking_type", None) == "home":
+    elif booking and getattr(booking, "booking_type", None) in ("home_service", "home"):
         payment_for = PaymentFor.HOME_SERVICE.value
     elif booking:
         payment_for = PaymentFor.BRANCH_SERVICE.value
@@ -509,7 +509,7 @@ async def create_payment(
             "payment_provider": payment.payment_provider,
             "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
         }
-        booking.payments_meta = {**(booking.payments_meta or {}), **payment_meta_snapshot}
+        booking.payment_data = {**(booking.payment_data or {}), **payment_meta_snapshot}
         if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.booking_id:
             try:
                 booking_service = BookingService(session=session, settings=settings)

@@ -161,7 +161,7 @@ class RecordLoyaltyBookingRequest(BaseModel):
     )
     booking_id: uuid.UUID = Field(description="UUID of the confirmed booking.")
     booking_type: str = Field(
-        default="branch",
+        default="branch_service",
         description="Booking type — only 'branch' bookings count toward loyalty.",
     )
 

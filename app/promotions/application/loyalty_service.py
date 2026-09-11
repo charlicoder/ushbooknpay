@@ -84,7 +84,7 @@ class LoyaltyService:
         Raises:
             ValueError: If booking_type is not "branch".
         """
-        if booking_type != "branch":
+        if booking_type not in ("branch_service", "branch"):
             logger.info(
                 "loyalty_skipped_non_branch",
                 booking_id=str(booking_id),

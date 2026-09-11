@@ -53,10 +53,18 @@ class PaymentStatus(str, Enum):
 class BookingType(str, Enum):
     """Whether the booking is at a branch or at the customer's home."""
 
-    BRANCH = "branch"
-    HOME = "home"
+    BRANCH_SERVICE = "branch_service"
+    HOME_SERVICE = "home_service"
     LOYALTY = "loyalty"
     GIFT_VOUCHER = "gift_voucher"
+
+
+class PaymentType(str, Enum):
+    """How the booking was paid / why it was created."""
+
+    SERVICE = "service"           # Default — regular paid service booking
+    GIFT_VOUCHER = "gift_voucher" # Booking paid via gift voucher redemption
+    REWARDED = "rewarded"         # Loyalty reward redemption booking
 
 
 class ServiceType(str, Enum):

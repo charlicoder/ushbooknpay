@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.booking.domain.value_objects import BookingStatus, BookingType, PaymentStatus
+from app.booking.domain.value_objects import BookingStatus, BookingType, PaymentStatus, PaymentType
 
 
 # ── Shared sub-schemas ────────────────────────────────────────────────────────
@@ -130,7 +130,15 @@ class CreateBookingRequest(BaseModel):
     )
     display_time: str | None = Field(default=None, alias="displayTime")
     appointment_start: datetime | None = Field(default=None)
-    booking_type: BookingType | str | None = Field(default=BookingType.BRANCH, alias="bookingType")
+    booking_type: BookingType | str | None = Field(default=BookingType.BRANCH_SERVICE, alias="bookingType")
+    payment_type: str | None = Field(
+        default=None,
+        alias="paymentType",
+        description=(
+            "How the booking is paid. One of: service (default), gift_voucher, rewarded. "
+            "Auto-derived from booking_type if omitted."
+        ),
+    )
 
     @field_validator(
         "customer_id",
@@ -186,7 +194,7 @@ class CreateBookingRequest(BaseModel):
     total_price: str | Decimal | float | None = Field(default=None, alias="totalPrice")
     total_duration: int | None = Field(default=None, alias="totalDuration")
     currency: str = Field(default="KWD")
-    payments_meta: dict[str, Any] | None = Field(default=None, alias="paymentsMeta")
+    payment_data: dict[str, Any] | None = Field(default=None, alias="paymentData")
 
     # Loyalty booking fields (only sent when booking_type='loyalty')
     loyalty_data: dict[str, Any] | None = Field(
@@ -237,11 +245,17 @@ class UpdateBookingRequest(BaseModel):
         default=None,
         description="Payment status: not_initiated, initiated, pending, success, failed, cancelled, refunded, partially_refunded",
     )
-    payments_meta: dict[str, Any] | None = Field(
+    payment_data: dict[str, Any] | None = Field(
         default=None,
-        alias="paymentsMeta",
+        alias="paymentData",
         description="Payment details snapshot and metadata",
     )
+    payment_type: str | None = Field(
+        default=None,
+        alias="paymentType",
+        description="Payment type: service, gift_voucher, rewarded",
+    )
+
     therapist_id: uuid.UUID | None = Field(
         default=None,
         description="Reassign therapist (UUID)",
@@ -318,10 +332,15 @@ class UpdateBookingStatusRequest(BaseModel):
         default=None,
         description="Payment status: not_initiated, initiated, pending, success, failed, cancelled, refunded, partially_refunded",
     )
-    payments_meta: dict[str, Any] | None = Field(
+    payment_data: dict[str, Any] | None = Field(
         default=None,
-        alias="paymentsMeta",
+        alias="paymentData",
         description="Payment details snapshot and metadata",
+    )
+    payment_type: str | None = Field(
+        default=None,
+        alias="paymentType",
+        description="Payment type: service, gift_voucher, rewarded",
     )
     reason: str | None = Field(
         default=None, max_length=500, description="Reason for status change"
@@ -404,10 +423,11 @@ class BookingListItem(BaseModel):
     total_duration: int | None = None
     addons_duration: int | None = None
     base_price: str | None = None
-    booking_type: str = "branch"
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
     status: str
     payment_status: str
-    payments_meta: dict[str, Any] | None = None
+    payment_data: dict[str, Any] | None = None
     total_amount: str
     currency: str
     is_eligible_for_loyalty: bool = False
@@ -451,10 +471,11 @@ class BookingDetailResponse(BaseModel):
     addons_duration: int | None = None
     base_price: str | None = None
     price_for_extra_minutes: str = "0.000"
-    booking_type: str = "branch"
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
     status: str
     payment_status: str
-    payments_meta: dict[str, Any] | None = None
+    payment_data: dict[str, Any] | None = None
     pricing: PricingBreakdownSchema
     addons: list[AddonSchema]
     customer_notes: str | None = None

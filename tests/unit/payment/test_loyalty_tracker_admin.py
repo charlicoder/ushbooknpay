@@ -396,7 +396,7 @@ async def test_internal_record_loyalty_booking_serialization_before_commit():
         customer_id=mock_tracker.customer_id,
         service_id=mock_tracker.service_id,
         booking_id=uuid.uuid4(),
-        booking_type="branch",
+        booking_type="branch_service",
         is_eligible_for_loyalty=True,
     )
 

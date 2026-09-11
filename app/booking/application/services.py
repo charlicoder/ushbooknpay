@@ -94,7 +94,7 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     branch_dict = booking.branch_data or {}
     arr_dict = booking.service_arrangement_data or {}
     therapist_dict = booking.therapist_data or {}
-    payments_meta = booking.payments_meta or {}
+    payment_data = booking.payment_data or {}
 
     # Always ensure is_eligible_for_loyalty is present inside service_data so
     # every SQS consumer (ushnotice, loyalty service, etc.) reads a consistent shape.
@@ -111,25 +111,25 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     end_time_str = appt_end.strftime("%H:%M") if appt_end else ""
 
     booking_ref = (
-        payments_meta.get("invoice_reference")
-        or payments_meta.get("invoice_id")
-        or payments_meta.get("payment_id")
+        payment_data.get("invoice_reference")
+        or payment_data.get("invoice_id")
+        or payment_data.get("payment_id")
         or str(booking.id)
     )
 
     c_name = (
         _extract_customer_name(customer_dict)
-        or str(payments_meta.get("customer_name") or "")
+        or str(payment_data.get("customer_name") or "")
     )
     c_phone = str(
         customer_dict.get("phone_number")
         or customer_dict.get("phone")
-        or payments_meta.get("customer_mobile")
+        or payment_data.get("customer_mobile")
         or ""
     )
     c_email = str(
         customer_dict.get("email")
-        or payments_meta.get("customer_email")
+        or payment_data.get("customer_email")
         or ""
     )
 
@@ -165,8 +165,10 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "currency": booking.currency,
     }
 
-    b_type = getattr(booking, "booking_type", "branch")
-    booking_type_str = b_type if isinstance(b_type, str) else "branch"
+    b_type = getattr(booking, "booking_type", "branch_service")
+    booking_type_str = b_type if isinstance(b_type, str) else "branch_service"
+    p_type = getattr(booking, "payment_type", "service")
+    payment_type_str = p_type if isinstance(p_type, str) else "service"
 
     return {
         "booking_id": str(booking.id),
@@ -198,6 +200,7 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "extra_minutes": booking.extra_minutes,
         "total_duration": booking.duration_minutes + booking.extra_minutes,
         "booking_type": booking_type_str,
+        "payment_type": payment_type_str,
         "status": booking.status,
         "payment_status": booking.payment_status,
         "total_amount": str(booking.total_amount),
@@ -206,7 +209,7 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "addons": booking.addons or [],
         "customer_notes": booking.customer_notes,
         "internal_notes": booking.internal_notes,
-        "payments_meta": payments_meta,
+        "payment_data": payment_data,
         "is_eligible_for_loyalty": is_eligible_for_loyalty,  # top-level for backward compat
         "created_at": booking.created_at.isoformat() if getattr(booking, "created_at", None) else "",
         "updated_at": booking.updated_at.isoformat() if getattr(booking, "updated_at", None) else "",
@@ -280,9 +283,10 @@ class BookingService:
         pricing: PricingBreakdown,
         addons: list[dict] | None = None,
         customer_notes: str | None = None,
-        payments_meta: dict | None = None,
+        payment_data: dict | None = None,
         idempotency_key: str | None = None,
-        booking_type: str = "branch",
+        booking_type: str = "branch_service",
+        payment_type: str = "service",
         loyalty_data: dict | None = None,
         reward_id: uuid.UUID | None = None,
         voucher_id: uuid.UUID | None = None,
@@ -348,9 +352,10 @@ class BookingService:
             currency=pricing.currency,
             status=BookingStatus.REQUESTED.value,
             booking_type=booking_type,
+            payment_type=payment_type,
             addons=addons or [],
             customer_notes=customer_notes,
-            payments_meta=payments_meta or {},
+            payment_data=payment_data or {},
             idempotency_key=idempotency_key,
             loyalty_data=loyalty_data or {} if loyalty_data is not None else None,
             reward_id=reward_id,
@@ -358,6 +363,7 @@ class BookingService:
             voucher_data=voucher_data,
             created_by=created_by,
         )
+
 
         booking = await self._repo.create(booking)
 
@@ -427,7 +433,7 @@ class BookingService:
         *,
         status: BookingStatus | None = None,
         payment_status: PaymentStatus | None = None,
-        payments_meta: dict | None = None,
+        payment_data: dict | None = None,
         therapist_id: uuid.UUID | None = None,
         therapist_data: dict | None = None,
         appointment_start: datetime | None = None,
@@ -444,7 +450,7 @@ class BookingService:
         voucher_data: dict | None = None,
     ) -> Booking:
         """
-        Update booking fields (status, payment_status, payments_meta, timing, therapist, notes).
+        Update booking fields (status, payment_status, payment_data, timing, therapist, notes).
         Follows REST standard for partial/full update.
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
@@ -489,8 +495,8 @@ class BookingService:
         # ── Payment status & Meta ────────────────────────────────────────
         if payment_status is not None:
             booking.payment_status = payment_status.value
-        if payments_meta is not None:
-            booking.payments_meta = {**(booking.payments_meta or {}), **payments_meta}
+        if payment_data is not None:
+            booking.payment_data = {**(booking.payment_data or {}), **payment_data}
 
         # ── Loyalty fields ────────────────────────────────────────────
         if loyalty_data is not None:
@@ -567,7 +573,7 @@ class BookingService:
         booking_id: uuid.UUID,
         *,
         payment_id: str,
-        payments_meta: dict | None = None,
+        payment_data: dict | None = None,
         correlation_id: str | None = None,
     ) -> Booking:
         """
@@ -585,8 +591,8 @@ class BookingService:
 
         booking.status = BookingStatus.CONFIRMED.value
         booking.payment_status = PaymentStatus.SUCCESS.value
-        if payments_meta is not None:
-            booking.payments_meta = {**(booking.payments_meta or {}), **payments_meta}
+        if payment_data is not None:
+            booking.payment_data = {**(booking.payment_data or {}), **payment_data}
 
         await self._repo.update(booking)
         await self._repo.delete_hold(booking_id)
@@ -730,7 +736,7 @@ class BookingService:
         new_status: BookingStatus,
         *,
         payment_status: PaymentStatus | None = None,
-        payments_meta: dict | None = None,
+        payment_data: dict | None = None,
         reason: str | None = None,
         source: str = "admin",
         changed_by: str | None = None,
@@ -748,7 +754,7 @@ class BookingService:
             booking_id=booking_id,
             status=new_status,
             payment_status=payment_status,
-            payments_meta=payments_meta,
+            payment_data=payment_data,
             reason=reason,
             source=source,
             changed_by=changed_by,

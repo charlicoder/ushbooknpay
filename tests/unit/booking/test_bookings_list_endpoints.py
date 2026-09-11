@@ -48,12 +48,17 @@ def _create_mock_booking(
     b.base_price = "40.000"
     b.status = status
     b.payment_status = payment_status
-    b.payments_meta = {"invoice_id": "7106599", "payment_gateway": "KNET"}
+    b.payment_data = {"invoice_id": "7106599", "payment_gateway": "KNET"}
+    b.booking_type = "branch_service"
+    b.payment_type = "service"
     b.total_amount = "45.000"
     b.currency = "KWD"
     b.created_at = datetime(2026, 8, 26, 10, 0, tzinfo=timezone.utc)
     b.loyalty_data = None
     b.reward_id = None
+    b.voucher_id = None
+    b.voucher_data = None
+    b.created_by = None
     return b
 
 
@@ -64,7 +69,7 @@ def test_booking_to_list_item_serialization():
     assert item.customer_id == str(b.customer_id)
     assert item.status == "confirmed"
     assert item.payment_status == "success"
-    assert item.payments_meta["payment_gateway"] == "KNET"
+    assert item.payment_data["payment_gateway"] == "KNET"
     assert item.total_amount == "45.000"
     assert item.total_duration == 75
     assert item.addons_duration == 15

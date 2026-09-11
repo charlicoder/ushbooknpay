@@ -166,7 +166,8 @@ class BookingStatusUpdatedEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
-    booking_type: str = "branch"
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
     status: str = ""
     payment_status: str = ""
     total_amount: str = ""
@@ -175,7 +176,7 @@ class BookingStatusUpdatedEvent(BaseEvent):
     addons: list[dict[str, Any]] = field(default_factory=list)
     customer_notes: str | None = None
     internal_notes: str | None = None
-    payments_meta: dict[str, Any] = field(default_factory=dict)
+    payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
@@ -224,7 +225,8 @@ class BookingConfirmedEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
-    booking_type: str = "branch"
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
     status: str = "confirmed"
     payment_status: str = "paid"
     total_amount: str = ""
@@ -233,7 +235,7 @@ class BookingConfirmedEvent(BaseEvent):
     addons: list[dict[str, Any]] = field(default_factory=list)
     customer_notes: str | None = None
     internal_notes: str | None = None
-    payments_meta: dict[str, Any] = field(default_factory=dict)
+    payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
@@ -278,7 +280,8 @@ class BookingPaymentPendingEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
-    booking_type: str = "branch"
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
     status: str = "payment_pending"
     payment_status: str = "pending"
     total_amount: str = ""
@@ -287,7 +290,7 @@ class BookingPaymentPendingEvent(BaseEvent):
     addons: list[dict[str, Any]] = field(default_factory=list)
     customer_notes: str | None = None
     internal_notes: str | None = None
-    payments_meta: dict[str, Any] = field(default_factory=dict)
+    payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
@@ -358,7 +361,8 @@ class BookingCompletedEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
-    booking_type: str = "branch"
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
     status: str = "completed"
     payment_status: str = ""
     total_amount: str = ""
@@ -367,7 +371,7 @@ class BookingCompletedEvent(BaseEvent):
     addons: list[dict[str, Any]] = field(default_factory=list)
     customer_notes: str | None = None
     internal_notes: str | None = None
-    payments_meta: dict[str, Any] = field(default_factory=dict)
+    payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
@@ -560,6 +564,7 @@ class BookingLoyaltyEvent(BaseEvent):
     extra_minutes: int = 0
     total_duration: int = 0
     booking_type: str = "loyalty"
+    payment_type: str = "service"
     status: str = "confirmed"
     payment_status: str = "rewarded"
     total_amount: str = ""
@@ -568,7 +573,7 @@ class BookingLoyaltyEvent(BaseEvent):
     addons: list[dict[str, Any]] = field(default_factory=list)
     customer_notes: str | None = None
     internal_notes: str | None = None
-    payments_meta: dict[str, Any] = field(default_factory=dict)
+    payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = True
     created_at: str = ""
     updated_at: str = ""

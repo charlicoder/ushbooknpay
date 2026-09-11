@@ -40,6 +40,7 @@ from app.booking.domain.value_objects import (
     BookingStatus,
     BookingType,
     PaymentStatus,
+    PaymentType,
     ServiceType,
 )
 from app.core.database import Base
@@ -148,20 +149,30 @@ class Booking(Base):
         String(30), nullable=False, default=PaymentStatus.NOT_INITIATED.value
     )
 
-    # ── Booking Type ──────────────────────────────────────────────────────
+    # ── Booking Type ──────────────────────────────────────────────────────────
     booking_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, default=BookingType.BRANCH.value
+        String(20), nullable=False, default=BookingType.BRANCH_SERVICE.value
     )
 
-    # ── Idempotency ───────────────────────────────────────────────────────
+    # ── Payment Type ─────────────────────────────────────────────────────────
+    # Indicates how/why this booking was paid:
+    #   service      — regular paid service appointment (default)
+    #   gift_voucher — booking paid via gift voucher redemption
+    #   rewarded     — loyalty reward redemption (no charge)
+    payment_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PaymentType.SERVICE.value
+    )
+
+    # ── Idempotency ───────────────────────────────────────────────────────────
     idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # ── Notes ─────────────────────────────────────────────────────────────
+    # ── Notes ─────────────────────────────────────────────────────────────────
     customer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # ── Payment Details & Meta ────────────────────────────────────────────
-    payments_meta: Mapped[dict | None] = mapped_column(
+    # ── Payment Data ──────────────────────────────────────────────────────────
+    # Snapshot of payment gateway identifiers and status (was: payments_meta).
+    payment_data: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True, server_default=text("'{}'::jsonb")
     )
 
@@ -222,10 +233,20 @@ class Booking(Base):
         Index("ix_bookings_status", "status"),
         # Fast lookup by booking_type
         Index("ix_bookings_booking_type", "booking_type"),
+        # Fast lookup by payment_type
+        Index("ix_bookings_payment_type", "payment_type"),
         # Idempotency key uniqueness
         UniqueConstraint("idempotency_key", name="uq_bookings_idempotency_key"),
         # Enforce valid booking_type values
-        CheckConstraint("booking_type IN ('home', 'branch', 'loyalty', 'gift_voucher')", name="ck_bookings_booking_type"),
+        CheckConstraint(
+            "booking_type IN ('branch_service', 'home_service', 'loyalty', 'gift_voucher')",
+            name="ck_bookings_booking_type",
+        ),
+        # Enforce valid payment_type values
+        CheckConstraint(
+            "payment_type IN ('service', 'gift_voucher', 'rewarded')",
+            name="ck_bookings_payment_type",
+        ),
         # Prevent double-booking for therapist using PostgreSQL EXCLUDE
         # NOTE: Requires btree_gist extension. Applied in migration.
         # ExcludeConstraint is defined in the Alembic migration directly

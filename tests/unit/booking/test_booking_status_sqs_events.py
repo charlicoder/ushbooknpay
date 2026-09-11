@@ -59,13 +59,13 @@ def _create_dummy_booking(status: str = "requested") -> Booking:
     b.fees = Decimal("0.000")
     b.total_amount = Decimal("65.000")
     b.currency = "KWD"
-    b.booking_type = "branch"
+    b.booking_type = "branch_service"
     b.status = status
     b.payment_status = "pending"
     b.addons = [{"name": "Aromatherapy Oil", "price": "5.000"}]
     b.customer_notes = "Customer prefers lavender oil"
     b.internal_notes = "VIP customer"
-    b.payments_meta = {
+    b.payment_data = {
         "invoice_id": "INV-100200",
         "payment_id": "PAY-999888",
         "is_paid": True,
@@ -111,7 +111,7 @@ async def test_update_status_to_confirmed_dispatches_sqs_event():
     assert event.total_duration == 75
     assert event.total_amount == "65.000"
     assert event.currency == "KWD"
-    assert event.payments_meta["invoice_id"] == "INV-100200"
+    assert event.payment_data["invoice_id"] == "INV-100200"
 
 
 @pytest.mark.asyncio
