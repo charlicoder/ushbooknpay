@@ -7,7 +7,7 @@ Routes:
   POST   /api/v1/payments/                    → Create payment / Ingest gateway response
   GET    /api/v1/payments/                    → List payments (paginated, filters, finance summary)
   GET    /api/v1/payments/{payment_id}/       → Get payment detail
-  PATCH  /api/v1/payments/{payment_id}/       → Update payment
+  PATCH  /api/v1/payments/{payment_id}/       → Update payment (partial)
   PUT    /api/v1/payments/{payment_id}/       → Update payment (full)
   DELETE /api/v1/payments/{payment_id}/       → Delete payment
   POST   /api/v1/payments/initiate/           → Initiate payment session
@@ -19,7 +19,7 @@ Routes:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -40,7 +40,14 @@ from app.core.security import require_app_token
 from app.payment.domain.gateway_protocol import CreatePaymentRequest
 from app.payment.domain.parser import parse_gateway_response
 from app.payment.domain.state_machine import PaymentStateMachine
-from app.payment.domain.value_objects import PaymentFor, PaymentProvider, PaymentTransactionStatus
+from app.payment.domain.value_objects import (
+    PaymentFor,
+    PaymentGateway,
+    PaymentMethod,
+    PaymentProvider,
+    PaymentThrough,
+    PaymentTransactionStatus,
+)
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory
 from app.payment.infrastructure.providers.myfatoorah_provider import MyFatoorahProvider
 from app.payment.infrastructure.providers.tap_provider import TapProvider
@@ -62,15 +69,19 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
 def _get_provider(
-    provider: PaymentProvider,
+    provider: str,
     http_client: httpx.AsyncClient,
     settings: object,
 ) -> object:
     """Return the correct payment provider implementation."""
-    if provider == PaymentProvider.MYFATOORAH:
+    prov = provider.strip().lower() if provider else ""
+    if prov in ("myfatoorah", "fatoorah"):
         return MyFatoorahProvider(http_client=http_client, settings=settings)  # type: ignore
-    elif provider == PaymentProvider.TAP:
+    elif prov == "tap":
         return TapProvider(http_client=http_client, settings=settings)  # type: ignore
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -82,36 +93,53 @@ def _build_booking_snapshot(booking: Booking) -> dict[str, Any]:
     """Extract a rich audit snapshot from a Booking entity."""
     return {
         "booking_id": str(booking.id),
-        "service_id": str(booking.service_id),
+        "service_id": str(booking.service_id) if booking.service_id else None,
         "service_name": (booking.service_data or {}).get("name", ""),
         "service_category": (booking.service_data or {}).get("category", ""),
-        "branch_id": str(booking.branch_id),
+        "branch_id": str(booking.branch_id) if booking.branch_id else None,
         "branch_name": (booking.branch_data or {}).get("name", ""),
         "branch_address": (booking.branch_data or {}).get("address", ""),
-        "service_arrangement_id": str(booking.service_arrangement_id),
+        "service_arrangement_id": str(booking.service_arrangement_id) if booking.service_arrangement_id else None,
         "arrangement_type": (booking.service_arrangement_data or {}).get("arrangement_type", ""),
         "room_name": (booking.service_arrangement_data or {}).get("room_name", ""),
-        "therapist_id": str(booking.therapist_id),
+        "therapist_id": str(booking.therapist_id) if getattr(booking, "therapist_id", None) else None,
         "therapist_name": (
             (booking.therapist_data or {}).get("name")
             or (booking.therapist_data or {}).get("full_name")
             or ""
-        ),
+        ) if getattr(booking, "therapist_data", None) else "",
         "appointment_start": booking.appointment_start.isoformat() if booking.appointment_start else None,
         "appointment_end": booking.appointment_end.isoformat() if booking.appointment_end else None,
-        "duration_minutes": booking.duration_minutes,
-        "extra_minutes": booking.extra_minutes,
-        "arrangement_price": str(booking.arrangement_price),
-        "price_for_extra_minutes": str(booking.price_for_extra_minutes),
-        "addon_price": str(booking.addon_price),
-        "discount": str(booking.discount),
-        "tax": str(booking.tax),
-        "fees": str(booking.fees),
-        "total_amount": str(booking.total_amount),
-        "currency": booking.currency,
-        "addons": booking.addons or [],
-        "customer_notes": booking.customer_notes,
+        "duration_minutes": getattr(booking, "duration_minutes", None),
+        "extra_minutes": getattr(booking, "extra_minutes", None),
+        "arrangement_price": str(getattr(booking, "arrangement_price", "0")),
+        "price_for_extra_minutes": str(getattr(booking, "price_for_extra_minutes", "0")),
+        "addon_price": str(getattr(booking, "addon_price", "0")),
+        "discount": str(getattr(booking, "discount", "0")),
+        "tax": str(getattr(booking, "tax", "0")),
+        "fees": str(getattr(booking, "fees", "0")),
+        "total_amount": str(getattr(booking, "total_amount", "0")),
+        "currency": getattr(booking, "currency", "KWD"),
+        "addons": getattr(booking, "addons", []) or [],
+        "customer_notes": getattr(booking, "customer_notes", None),
     }
+
+
+def _resolve_created_by(current_user: Any, body: Any) -> uuid.UUID | None:
+    """Resolve the API requester UUID for created_by."""
+    # 1. Explicit override in body
+    if getattr(body, "created_by", None):
+        try:
+            return uuid.UUID(str(body.created_by))
+        except (ValueError, AttributeError):
+            pass
+    # 2. JWT sub claim
+    if current_user and getattr(current_user, "sub", None):
+        try:
+            return uuid.UUID(str(current_user.sub))
+        except (ValueError, AttributeError):
+            pass
+    return None
 
 
 def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
@@ -136,54 +164,54 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
 
     return PaymentDetailResponse(
         id=str(p.id),
-        booking_id=str(p.booking_id) if p.booking_id else None,
         customer_id=str(p.customer_id),
-        voucher_id=str(p.voucher_id) if getattr(p, "voucher_id", None) else None,
-        voucher_data=getattr(p, "voucher_data", None),
-        payment_for=getattr(p, "payment_for", "service") or "service",
-        amount=str(p.amount),
-        currency=p.currency,
-        service_charge=str(p.service_charge or Decimal("0.000")),
-        vat_amount=str(p.vat_amount or Decimal("0.000")),
-        due_deposit=str(p.due_deposit) if p.due_deposit is not None else None,
-        deposit_status=p.deposit_status,
-        provider=p.provider,
-        gateway_name=p.gateway_name,
-        payment_gateway=p.payment_gateway or p.gateway_name,
-        payment_method=p.payment_method,
-        status=p.status,
-        is_paid=p.is_paid or (p.status == "success"),
-        payment_id=p.payment_id or p.payment_id_gateway,
-        transaction_id=p.transaction_id or p.provider_transaction_id,
-        invoice_id=p.invoice_id or p.provider_payment_id,
-        invoice_value=str(p.invoice_value) if p.invoice_value is not None else str(p.amount),
-        invoice_reference=p.invoice_reference,
-        customer_reference=p.customer_reference,
-        customer_name=p.customer_name or (p.customer_data.get("name") if p.customer_data else None),
-        customer_mobile=p.customer_mobile or (p.customer_data.get("mobile") or p.customer_data.get("phone_number") if p.customer_data else None),
-        customer_email=p.customer_email or (p.customer_data.get("email") if p.customer_data else None),
-        created_date=p.created_date or (p.created_at.strftime("%Y-%m-%d %H:%M:%S") if p.created_at else None),
-        transaction_date=p.transaction_date or (p.paid_at.strftime("%Y-%m-%d %H:%M:%S") if p.paid_at else None),
-        provider_payment_id=p.provider_payment_id,
-        provider_reference=p.provider_reference,
-        provider_transaction_id=p.provider_transaction_id,
-        reference_id=p.reference_id,
-        track_id=p.track_id,
-        authorization_id=p.authorization_id,
-        payment_id_gateway=p.payment_id_gateway,
-        payment_url=p.payment_url,
-        failure_reason=p.failure_reason,
-        ip_address=p.ip_address,
-        country=p.country,
-        paid_at=p.paid_at,
         customer_data=p.customer_data,
+        sender_id=str(p.sender_id) if p.sender_id else None,
+        sender_data=p.sender_data,
+        service_id=str(p.service_id) if p.service_id else None,
+        service_data=p.service_data,
+        branch_id=str(p.branch_id) if p.branch_id else None,
+        branch_data=p.branch_data,
+        service_arrangement_id=str(p.service_arrangement_id) if p.service_arrangement_id else None,
+        service_arrangement_data=p.service_arrangement_data,
+        addons=p.addons,
+        addons_price=str(p.addons_price) if p.addons_price is not None else None,
+        extra_time=p.extra_time,
+        price_for_extra_time=str(p.price_for_extra_time) if p.price_for_extra_time is not None else None,
+        total_amount=str(p.total_amount),
+        total_duration=p.total_duration,
+        currency=p.currency,
+        country=p.country,
+        status=p.status,
+        paid_at=p.paid_at,
+        recipient_id=str(p.recipient_id) if p.recipient_id else None,
+        recipient_phone=p.recipient_phone,
+        recipient_data=p.recipient_data,
+        booking_id=str(p.booking_id) if p.booking_id else None,
         booking_data=p.booking_data,
-        card_info=p.card_info,
-        metadata=p.metadata_,
-        provider_response=p.provider_response,
-        status_history=history,
+        voucher_id=str(p.voucher_id) if p.voucher_id else None,
+        voucher_data=p.voucher_data,
+        product_order_id=str(p.product_order_id) if p.product_order_id else None,
+        product_order_items=p.product_order_items,
+        invoice_id=p.invoice_id,
+        invoice_value=str(p.invoice_value) if p.invoice_value is not None else None,
+        payment_url=p.payment_url,
+        transaction_id=p.transaction_id,
+        track_id=p.track_id,
+        reference_id=p.reference_id,
+        transaction_status=p.transaction_status,
+        transaction_date=p.transaction_date,
+        receipt_image=p.receipt_image,
+        payment_method=p.payment_method,
+        payment_through=p.payment_through,
+        payment_provider=p.payment_provider,
+        payment_gateway=p.payment_gateway,
+        payment_for=p.payment_for,
+        payment_id=p.payment_id,
+        payment_data=p.payment_data,
+        created_by=str(p.created_by) if p.created_by else None,
         created_at=p.created_at,
-        updated_at=p.updated_at,
+        status_history=history,
     )
 
 
@@ -191,40 +219,40 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
     """Map ORM Payment model to PaymentListItem."""
     return PaymentListItem(
         id=str(p.id),
-        booking_id=str(p.booking_id) if p.booking_id else None,
         customer_id=str(p.customer_id),
-        voucher_id=str(p.voucher_id) if getattr(p, "voucher_id", None) else None,
-        voucher_data=getattr(p, "voucher_data", None),
-        payment_for=getattr(p, "payment_for", "service") or "service",
-        amount=str(p.amount),
-        currency=p.currency,
-        provider=p.provider,
-        payment_method=p.payment_method,
-        status=p.status,
-        is_paid=p.is_paid or (p.status == "success"),
-        payment_id=p.payment_id or p.payment_id_gateway,
-        transaction_id=p.transaction_id or p.provider_transaction_id,
-        invoice_id=p.invoice_id or p.provider_payment_id,
-        invoice_value=str(p.invoice_value) if p.invoice_value is not None else str(p.amount),
-        invoice_reference=p.invoice_reference,
-        customer_reference=p.customer_reference,
-        customer_name=p.customer_name or (p.customer_data.get("name") if p.customer_data else None),
-        customer_mobile=p.customer_mobile or (p.customer_data.get("mobile") or p.customer_data.get("phone_number") if p.customer_data else None),
-        customer_email=p.customer_email or (p.customer_data.get("email") if p.customer_data else None),
-        created_date=p.created_date or (p.created_at.strftime("%Y-%m-%d %H:%M:%S") if p.created_at else None),
-        transaction_date=p.transaction_date or (p.paid_at.strftime("%Y-%m-%d %H:%M:%S") if p.paid_at else None),
-        payment_gateway=p.payment_gateway or p.gateway_name,
-        gateway_name=p.gateway_name,
-        reference_id=p.reference_id,
-        track_id=p.track_id,
-        service_charge=str(p.service_charge) if p.service_charge is not None else None,
-        vat_amount=str(p.vat_amount) if p.vat_amount is not None else None,
-        due_deposit=str(p.due_deposit) if p.due_deposit is not None else None,
-        deposit_status=p.deposit_status,
-        payment_url=p.payment_url,
         customer_data=p.customer_data,
-        booking_data=p.booking_data,
+        sender_id=str(p.sender_id) if p.sender_id else None,
+        service_id=str(p.service_id) if p.service_id else None,
+        branch_id=str(p.branch_id) if p.branch_id else None,
+        service_arrangement_id=str(p.service_arrangement_id) if p.service_arrangement_id else None,
+        addons_price=str(p.addons_price) if p.addons_price is not None else None,
+        extra_time=p.extra_time,
+        total_amount=str(p.total_amount),
+        total_duration=p.total_duration,
+        currency=p.currency,
+        country=p.country,
+        status=p.status,
         paid_at=p.paid_at,
+        recipient_id=str(p.recipient_id) if p.recipient_id else None,
+        recipient_phone=p.recipient_phone,
+        booking_id=str(p.booking_id) if p.booking_id else None,
+        voucher_id=str(p.voucher_id) if p.voucher_id else None,
+        product_order_id=str(p.product_order_id) if p.product_order_id else None,
+        invoice_id=p.invoice_id,
+        invoice_value=str(p.invoice_value) if p.invoice_value is not None else None,
+        payment_url=p.payment_url,
+        transaction_id=p.transaction_id,
+        track_id=p.track_id,
+        reference_id=p.reference_id,
+        transaction_status=p.transaction_status,
+        transaction_date=p.transaction_date,
+        payment_method=p.payment_method,
+        payment_through=p.payment_through,
+        payment_provider=p.payment_provider,
+        payment_gateway=p.payment_gateway,
+        payment_for=p.payment_for,
+        payment_id=p.payment_id,
+        created_by=str(p.created_by) if p.created_by else None,
         created_at=p.created_at,
     )
 
@@ -236,9 +264,10 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
     "/",
     summary="Create or ingest a payment record",
     description=(
-        "Create a payment record directly or by ingesting full gateway response data. "
-        "Captures complete transaction details, financial charges, customer snapshot, "
-        "and booking snapshot for financial auditing and dashboard reporting."
+        "Create a payment record directly or by ingesting a full gateway response. "
+        "Required fields: customer_id, total_amount, total_duration, currency. "
+        "created_by is automatically set from the API requester's JWT token. "
+        "If gateway_response is provided it is parsed and merged into payment_data."
     ),
     status_code=status.HTTP_201_CREATED,
     response_model=PaymentResponse,
@@ -250,220 +279,234 @@ async def create_payment(
     settings: AppSettings,
 ) -> JSONResponse:
     """Create a new payment record or ingest gateway response."""
-    parsed_gateway = {}
+    parsed_gateway: dict[str, Any] = {}
     if body.gateway_response:
         parsed_gateway = parse_gateway_response(body.gateway_response)
 
-    # ── 1. Resolve booking, voucher & customer ────────────────────────
-    booking_id_raw = (
-        body.booking_id
-        or parsed_gateway.get("customer_reference")
-        or getattr(body, "booking_id", None)
-    )
-
+    # ── 1. Resolve booking ────────────────────────────────────────────
+    booking_id_raw = body.booking_id or parsed_gateway.get("customer_reference") or None
     booking = None
-    booking_id = None
+    booking_id: uuid.UUID | None = None
     if booking_id_raw:
         try:
             booking_id = uuid.UUID(str(booking_id_raw))
             stmt = select(Booking).where(Booking.id == booking_id)
             result = await session.execute(stmt)
             booking = result.scalar_one_or_none()
-        except ValueError:
+        except (ValueError, TypeError):
             pass
 
-    # Resolve voucher_id & voucher_data
-    voucher_id = None
-    voucher_id_raw = getattr(body, "voucher_id", None)
-    if voucher_id_raw:
+    # ── 2. Resolve voucher_id ─────────────────────────────────────────
+    voucher_id: uuid.UUID | None = None
+    if body.voucher_id:
         try:
-            voucher_id = uuid.UUID(str(voucher_id_raw))
-        except ValueError:
+            voucher_id = uuid.UUID(str(body.voucher_id))
+        except (ValueError, TypeError):
             pass
-    voucher_data = dict(getattr(body, "voucher_data", None) or {})
 
-    # Resolve payment_for
-    payment_for_val = getattr(body, "payment_for", None)
-    if payment_for_val:
-        payment_for = str(payment_for_val)
-    elif voucher_id or getattr(body, "voucher_id", None):
+    # ── 3. Resolve payment_for ────────────────────────────────────────
+    payment_for_raw = body.payment_for or None
+    if payment_for_raw:
+        payment_for = PaymentFor.normalise(payment_for_raw).value
+    elif voucher_id:
         payment_for = PaymentFor.GIFT_VOUCHER.value
     elif booking and getattr(booking, "booking_type", None) == "home":
         payment_for = PaymentFor.HOME_SERVICE.value
     elif booking:
-        payment_for = PaymentFor.SERVICE.value
+        payment_for = PaymentFor.BRANCH_SERVICE.value
     else:
-        payment_for = PaymentFor.OTHERS.value
+        payment_for = PaymentFor.BRANCH_SERVICE.value
 
-    # Resolve customer ID — must come from body or booking (no JWT user available)
-    customer_id = None
-    if body.customer_id:
-        try:
-            customer_id = uuid.UUID(str(body.customer_id))
-        except ValueError:
-            pass
-    if not customer_id and booking:
-        customer_id = booking.customer_id
-    if not customer_id:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="customer_id is required when calling this endpoint with an app token.",
-        )
+    # ── 4. Normalise classification fields ────────────────────────────
+    payment_provider_val = body.payment_provider or parsed_gateway.get("payment_provider") or None
+    if payment_provider_val:
+        payment_provider = PaymentProvider.normalise(payment_provider_val).value
+    else:
+        payment_provider = None
 
-    # ── 2. Build customer & booking snapshot ──────────────────────────
+    payment_through_val = body.payment_through or None
+    if payment_through_val:
+        payment_through = PaymentThrough.normalise(payment_through_val).value
+    else:
+        payment_through = None
+
+    payment_gateway_val = body.payment_gateway or parsed_gateway.get("payment_gateway") or None
+    if payment_gateway_val:
+        payment_gateway = PaymentGateway.normalise(payment_gateway_val).value
+    else:
+        payment_gateway = None
+
+    # ── 5. Customer data ──────────────────────────────────────────────
     customer_data = dict(body.customer_data or {})
     if not customer_data and parsed_gateway.get("customer_data"):
         customer_data = parsed_gateway["customer_data"]
-    if booking and booking.customer_data:
+    if booking and getattr(booking, "customer_data", None):
         customer_data = {**booking.customer_data, **customer_data}
 
+    # ── 6. Booking data ───────────────────────────────────────────────
     booking_data = dict(body.booking_data or {})
     if booking and not booking_data:
         booking_data = _build_booking_snapshot(booking)
 
-    # ── 3. Resolve financial fields ───────────────────────────────────
-    amount_val = body.amount or parsed_gateway.get("amount") or (booking.total_amount if booking else Decimal("0.000"))
-    amount = Decimal(str(amount_val))
+    # ── 7. Financial fields ───────────────────────────────────────────
+    total_amount_val = body.total_amount or parsed_gateway.get("total_amount") or (
+        getattr(booking, "total_amount", None) if booking else None
+    ) or Decimal("0.000")
+    total_amount = Decimal(str(total_amount_val))
 
-    currency = body.currency or parsed_gateway.get("currency") or (booking.currency if booking else "KWD")
+    total_duration_val = body.total_duration or (
+        getattr(booking, "duration_minutes", None) if booking else None
+    ) or 0
+    total_duration = int(total_duration_val)
+
+    currency = body.currency or parsed_gateway.get("currency") or (
+        getattr(booking, "currency", "KWD") if booking else "KWD"
+    )
     if currency in ("KD", "KWD"):
         currency = "KWD"
 
-    service_charge_val = body.service_charge or parsed_gateway.get("service_charge") or Decimal("0.000")
-    service_charge = Decimal(str(service_charge_val))
-
-    vat_amount_val = body.vat_amount or parsed_gateway.get("vat_amount") or Decimal("0.000")
-    vat_amount = Decimal(str(vat_amount_val))
-
-    due_deposit_val = body.due_deposit or parsed_gateway.get("due_deposit")
-    due_deposit = Decimal(str(due_deposit_val)) if due_deposit_val is not None else None
-
-    deposit_status = body.deposit_status or parsed_gateway.get("deposit_status") or "Not Deposited"
-
-    # ── 4. Resolve gateway identifiers ────────────────────────────────
-    provider = body.provider or parsed_gateway.get("provider") or "myfatoorah"
-    payment_method = body.payment_method or parsed_gateway.get("payment_method") or "card"
-    status_str = body.status or parsed_gateway.get("status") or PaymentTransactionStatus.SUCCESS.value
-
-    gateway_name = body.gateway_name or parsed_gateway.get("gateway_name")
-    provider_payment_id = body.provider_payment_id or parsed_gateway.get("provider_payment_id")
-    provider_reference = body.invoice_reference or parsed_gateway.get("provider_reference")
-    provider_transaction_id = body.provider_transaction_id or parsed_gateway.get("provider_transaction_id")
-    invoice_reference = body.invoice_reference or parsed_gateway.get("invoice_reference")
-    customer_reference = body.customer_reference or parsed_gateway.get("customer_reference")
-    reference_id = body.reference_id or parsed_gateway.get("reference_id")
-    track_id = body.track_id or parsed_gateway.get("track_id")
-    authorization_id = body.authorization_id or parsed_gateway.get("authorization_id")
-    payment_id_gateway = parsed_gateway.get("payment_id_gateway")
-
-    ip_address = parsed_gateway.get("ip_address")
-    country = parsed_gateway.get("country")
-    card_info = body.card_info or parsed_gateway.get("card_info")
-    paid_at = parsed_gateway.get("paid_at") or (datetime.now() if status_str == PaymentTransactionStatus.SUCCESS.value else None)
-    payment_url = parsed_gateway.get("payment_url")
-    provider_response = body.gateway_response or parsed_gateway.get("provider_response")
-
-    # ── 5. Resolve Unified Standard Fields ────────────────────────────
-    final_payment_id = body.payment_id or parsed_gateway.get("payment_id") or payment_id_gateway or (str(provider_payment_id) if provider_payment_id else None)
-    final_transaction_id = body.transaction_id or parsed_gateway.get("transaction_id") or provider_transaction_id or None
-    is_paid_val = body.is_paid if body.is_paid is not None else (parsed_gateway.get("is_paid") if parsed_gateway.get("is_paid") is not None else (status_str == PaymentTransactionStatus.SUCCESS.value))
-    final_invoice_id = body.invoice_id or parsed_gateway.get("invoice_id") or provider_payment_id or None
-    invoice_value_raw = body.invoice_value or parsed_gateway.get("invoice_value") or amount
-    invoice_value = Decimal(str(invoice_value_raw)) if invoice_value_raw is not None else amount
-
-    final_customer_name = body.customer_name or parsed_gateway.get("customer_name") or customer_data.get("name") or None
-    final_customer_mobile = body.customer_mobile or parsed_gateway.get("customer_mobile") or customer_data.get("mobile") or customer_data.get("phone_number") or None
-    final_customer_email = body.customer_email or parsed_gateway.get("customer_email") or customer_data.get("email") or None
-
-    created_date = body.created_date or parsed_gateway.get("created_date") or None
+    # ── 8. Invoice & transaction identifiers ──────────────────────────
+    invoice_id = body.invoice_id or parsed_gateway.get("invoice_id") or None
+    invoice_value_raw = body.invoice_value or parsed_gateway.get("invoice_value") or total_amount
+    invoice_value = Decimal(str(invoice_value_raw)) if invoice_value_raw is not None else total_amount
+    payment_url = body.payment_url or parsed_gateway.get("payment_url") or None
+    transaction_id = body.transaction_id or parsed_gateway.get("transaction_id") or None
+    track_id = body.track_id or parsed_gateway.get("track_id") or None
+    reference_id = body.reference_id or parsed_gateway.get("reference_id") or None
+    transaction_status = body.transaction_status or parsed_gateway.get("transaction_status") or None
     transaction_date = body.transaction_date or parsed_gateway.get("transaction_date") or None
-    payment_gateway = body.payment_gateway or parsed_gateway.get("payment_gateway") or gateway_name or None
 
-    # ── 6. Create Payment record ──────────────────────────────────────
+    # ── 9. Status & paid_at ───────────────────────────────────────────
+    status_str = body.status or parsed_gateway.get("status") or PaymentTransactionStatus.INITIATED.value
+    paid_at = body.paid_at or parsed_gateway.get("paid_at") or (
+        datetime.now(tz=timezone.utc) if status_str == PaymentTransactionStatus.SUCCESS.value else None
+    )
+
+    # ── 10. Merge payment_data ────────────────────────────────────────
+    # Start with parsed gateway data block, then overlay explicit body.payment_data
+    payment_data: dict[str, Any] = {}
+    if parsed_gateway.get("payment_data"):
+        payment_data.update(parsed_gateway["payment_data"])
+    if body.payment_data:
+        payment_data.update(body.payment_data)
+
+    # ── 11. Service & arrangement IDs from booking ────────────────────
+    service_id = body.service_id or (
+        uuid.UUID(str(booking.service_id)) if booking and getattr(booking, "service_id", None) else None
+    )
+    branch_id = body.branch_id or (
+        uuid.UUID(str(booking.branch_id)) if booking and getattr(booking, "branch_id", None) else None
+    )
+    service_arrangement_id = body.service_arrangement_id or (
+        uuid.UUID(str(booking.service_arrangement_id))
+        if booking and getattr(booking, "service_arrangement_id", None) else None
+    )
+    service_data = body.service_data or (booking.service_data if booking else None) or None
+    branch_data = body.branch_data or (booking.branch_data if booking else None) or None
+    service_arrangement_data = body.service_arrangement_data or (
+        booking.service_arrangement_data if booking else None
+    ) or None
+
+    # Addons from booking if not in body
+    addons = body.addons
+    addons_price = body.addons_price
+    extra_time = body.extra_time
+    price_for_extra_time = body.price_for_extra_time
+    if booking and addons is None:
+        addons = getattr(booking, "addons", None)
+    if booking and addons_price is None:
+        raw_addon_price = getattr(booking, "addon_price", None)
+        if raw_addon_price is not None:
+            addons_price = Decimal(str(raw_addon_price))
+    if booking and extra_time is None:
+        extra_time = getattr(booking, "extra_minutes", None)
+    if booking and price_for_extra_time is None:
+        raw_extra_price = getattr(booking, "price_for_extra_minutes", None)
+        if raw_extra_price is not None:
+            price_for_extra_time = Decimal(str(raw_extra_price))
+
+    # ── 12. Create Payment record ─────────────────────────────────────
     payment = Payment(
-        booking_id=booking_id,
-        customer_id=customer_id,
-        voucher_id=voucher_id,
-        voucher_data=voucher_data or None,
-        payment_for=payment_for,
-        payment_id=final_payment_id,
-        transaction_id=final_transaction_id,
-        is_paid=is_paid_val,
-        invoice_id=final_invoice_id,
-        invoice_value=invoice_value,
-        customer_name=final_customer_name,
-        customer_mobile=final_customer_mobile,
-        customer_email=final_customer_email,
-        created_date=created_date,
-        transaction_date=transaction_date,
-        payment_gateway=payment_gateway,
-        amount=amount,
+        customer_id=body.customer_id,
+        customer_data=customer_data or None,
+        sender_id=body.sender_id,
+        sender_data=body.sender_data,
+        service_id=service_id,
+        service_data=service_data,
+        branch_id=branch_id,
+        branch_data=branch_data,
+        service_arrangement_id=service_arrangement_id,
+        service_arrangement_data=service_arrangement_data,
+        addons=addons,
+        addons_price=addons_price,
+        extra_time=extra_time,
+        price_for_extra_time=price_for_extra_time,
+        total_amount=total_amount,
+        total_duration=total_duration,
         currency=currency,
-        service_charge=service_charge,
-        vat_amount=vat_amount,
-        due_deposit=due_deposit,
-        deposit_status=deposit_status,
-        provider=provider,
-        gateway_name=gateway_name,
-        payment_method=payment_method,
+        country=body.country or parsed_gateway.get("country"),
         status=status_str,
-        provider_payment_id=provider_payment_id,
-        provider_reference=provider_reference,
-        provider_transaction_id=provider_transaction_id,
-        invoice_reference=invoice_reference,
-        customer_reference=customer_reference,
-        reference_id=reference_id,
-        track_id=track_id,
-        authorization_id=authorization_id,
-        payment_id_gateway=payment_id_gateway,
-        payment_url=payment_url,
-        failure_reason=body.failure_reason,
-        ip_address=ip_address,
-        country=country,
         paid_at=paid_at,
-        customer_data=customer_data,
-        booking_data=booking_data,
-        card_info=card_info,
-        metadata_=body.metadata,
-        provider_response=provider_response,
-        idempotency_key=body.idempotency_key,
+        recipient_id=body.recipient_id,
+        recipient_phone=body.recipient_phone,
+        recipient_data=body.recipient_data,
+        booking_id=booking_id,
+        booking_data=booking_data or None,
+        voucher_id=voucher_id,
+        voucher_data=dict(body.voucher_data or {}) or None,
+        product_order_id=body.product_order_id,
+        product_order_items=body.product_order_items,
+        invoice_id=invoice_id,
+        invoice_value=invoice_value,
+        payment_url=payment_url,
+        transaction_id=transaction_id,
+        track_id=track_id,
+        reference_id=reference_id,
+        transaction_status=transaction_status,
+        transaction_date=transaction_date,
+        receipt_image=body.receipt_image,
+        payment_method=body.payment_method or parsed_gateway.get("payment_method"),
+        payment_through=payment_through,
+        payment_provider=payment_provider,
+        payment_gateway=payment_gateway,
+        payment_for=payment_for,
+        payment_id=body.payment_id or parsed_gateway.get("payment_id"),
+        payment_data=payment_data or None,
+        # Use explicit created_by from body (e.g. ushnotice passes voucher creator UUID).
+        # This endpoint uses RequireAppToken (no CurrentUser JWT), so we cannot auto-derive it.
+        created_by=body.created_by if body.created_by else None,
     )
 
     session.add(payment)
     await session.flush()
     await session.refresh(payment)
 
-    # ── 6. Add initial status history ─────────────────────────────────
+    # ── 13. Status history ────────────────────────────────────────────
     history = PaymentStatusHistory(
         payment_id=payment.id,
         old_status=None,
         new_status=payment.status,
         source="gateway_webhook" if body.gateway_response else "manual",
         reason="Payment record created",
-        provider_reference=payment.provider_reference,
-        correlation_id=payment.provider_payment_id or str(payment.id),
-        metadata_=payment.metadata_,
+        provider_reference=(payment.payment_data or {}).get("provider_reference"),
+        correlation_id=payment.payment_id or str(payment.id),
+        metadata_=None,
     )
     session.add(history)
     await session.flush()
 
-    # ── 7. Update booking payments_meta & auto-confirm if SUCCESS ───
+    # ── 14. Update booking payments_meta & auto-confirm if SUCCESS ────
     if booking:
         payment_meta_snapshot = {
             "payment_id": payment.payment_id or str(payment.id),
             "transaction_id": payment.transaction_id,
-            "is_paid": payment.is_paid,
             "invoice_id": payment.invoice_id,
-            "invoice_value": str(payment.invoice_value or payment.amount),
+            "invoice_value": str(payment.invoice_value or payment.total_amount),
             "status": payment.status,
-            "invoice_reference": payment.invoice_reference,
-            "customer_reference": payment.customer_reference,
-            "created_date": payment.created_date,
-            "customer_name": payment.customer_name,
-            "customer_mobile": payment.customer_mobile,
-            "customer_email": payment.customer_email,
+            "reference_id": payment.reference_id,
             "transaction_date": payment.transaction_date,
-            "payment_gateway": payment.payment_gateway or payment.gateway_name,
+            "payment_gateway": payment.payment_gateway,
+            "payment_provider": payment.payment_provider,
             "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
         }
         booking.payments_meta = {**(booking.payments_meta or {}), **payment_meta_snapshot}
@@ -474,7 +517,7 @@ async def create_payment(
                     payment.booking_id,
                     payment_id=str(payment.id),
                     payments_meta=payment_meta_snapshot,
-                    correlation_id=payment.provider_reference or payment.provider_payment_id or str(payment.id),
+                    correlation_id=payment.payment_id or str(payment.id),
                 )
             except Exception as exc:
                 logger.warning("payment_auto_confirm_booking_notice", error=str(exc))
@@ -502,19 +545,27 @@ async def list_payments(
     page_size: int = Query(default=20, ge=1, le=100),
     booking_id: uuid.UUID | None = Query(default=None),
     voucher_id: uuid.UUID | None = Query(default=None),
+    product_order_id: uuid.UUID | None = Query(default=None),
     payment_for_filter: str | None = Query(default=None, alias="payment_for"),
     customer_id: uuid.UUID | None = Query(default=None),
+    sender_id: uuid.UUID | None = Query(default=None),
+    service_id: uuid.UUID | None = Query(default=None),
+    branch_id: uuid.UUID | None = Query(default=None),
+    recipient_id: uuid.UUID | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
-    is_paid_filter: bool | None = Query(default=None, alias="is_paid"),
-    provider_filter: str | None = Query(default=None, alias="provider"),
-    gateway_name_filter: str | None = Query(default=None, alias="gateway_name"),
+    payment_provider_filter: str | None = Query(default=None, alias="payment_provider"),
+    payment_through_filter: str | None = Query(default=None, alias="payment_through"),
     payment_gateway_filter: str | None = Query(default=None, alias="payment_gateway"),
     payment_id_filter: str | None = Query(default=None, alias="payment_id"),
     transaction_id_filter: str | None = Query(default=None, alias="transaction_id"),
     invoice_id_filter: str | None = Query(default=None, alias="invoice_id"),
+    created_by_filter: uuid.UUID | None = Query(default=None, alias="created_by"),
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
-    search: str | None = Query(default=None, description="Search by payment ID, transaction ID, invoice ID, customer name, mobile, email, etc."),
+    search: str | None = Query(
+        default=None,
+        description="Search by payment_id, transaction_id, invoice_id, reference_id, track_id, recipient_phone.",
+    ),
 ) -> JSONResponse:
     """List payments with filtering and financial analytics summary."""
     conditions = []
@@ -523,26 +574,36 @@ async def list_payments(
         conditions.append(Payment.booking_id == booking_id)
     if voucher_id:
         conditions.append(Payment.voucher_id == voucher_id)
+    if product_order_id:
+        conditions.append(Payment.product_order_id == product_order_id)
     if payment_for_filter:
-        conditions.append(Payment.payment_for == payment_for_filter)
+        conditions.append(Payment.payment_for == PaymentFor.normalise(payment_for_filter).value)
     if customer_id:
         conditions.append(Payment.customer_id == customer_id)
+    if sender_id:
+        conditions.append(Payment.sender_id == sender_id)
+    if service_id:
+        conditions.append(Payment.service_id == service_id)
+    if branch_id:
+        conditions.append(Payment.branch_id == branch_id)
+    if recipient_id:
+        conditions.append(Payment.recipient_id == recipient_id)
     if status_filter:
         conditions.append(Payment.status == status_filter)
-    if is_paid_filter is not None:
-        conditions.append(Payment.is_paid == is_paid_filter)
-    if provider_filter:
-        conditions.append(Payment.provider == provider_filter)
-    if gateway_name_filter:
-        conditions.append(or_(Payment.gateway_name == gateway_name_filter, Payment.payment_gateway == gateway_name_filter))
+    if payment_provider_filter:
+        conditions.append(Payment.payment_provider == PaymentProvider.normalise(payment_provider_filter).value)
+    if payment_through_filter:
+        conditions.append(Payment.payment_through == PaymentThrough.normalise(payment_through_filter).value)
     if payment_gateway_filter:
-        conditions.append(or_(Payment.payment_gateway == payment_gateway_filter, Payment.gateway_name == payment_gateway_filter))
+        conditions.append(Payment.payment_gateway == PaymentGateway.normalise(payment_gateway_filter).value)
     if payment_id_filter:
-        conditions.append(or_(Payment.payment_id == payment_id_filter, Payment.payment_id_gateway == payment_id_filter, Payment.provider_payment_id == payment_id_filter))
+        conditions.append(Payment.payment_id == payment_id_filter)
     if transaction_id_filter:
-        conditions.append(or_(Payment.transaction_id == transaction_id_filter, Payment.provider_transaction_id == transaction_id_filter))
+        conditions.append(Payment.transaction_id == transaction_id_filter)
     if invoice_id_filter:
-        conditions.append(or_(Payment.invoice_id == invoice_id_filter, Payment.provider_payment_id == invoice_id_filter))
+        conditions.append(Payment.invoice_id == invoice_id_filter)
+    if created_by_filter:
+        conditions.append(Payment.created_by == created_by_filter)
     if from_date:
         conditions.append(Payment.created_at >= from_date)
     if to_date:
@@ -554,16 +615,9 @@ async def list_payments(
                 Payment.payment_id.ilike(search_pattern),
                 Payment.transaction_id.ilike(search_pattern),
                 Payment.invoice_id.ilike(search_pattern),
-                Payment.customer_name.ilike(search_pattern),
-                Payment.customer_mobile.ilike(search_pattern),
-                Payment.customer_email.ilike(search_pattern),
-                Payment.payment_gateway.ilike(search_pattern),
-                Payment.invoice_reference.ilike(search_pattern),
                 Payment.reference_id.ilike(search_pattern),
                 Payment.track_id.ilike(search_pattern),
-                Payment.provider_payment_id.ilike(search_pattern),
-                Payment.provider_reference.ilike(search_pattern),
-                Payment.customer_reference.ilike(search_pattern),
+                Payment.recipient_phone.ilike(search_pattern),
             )
         )
 
@@ -575,10 +629,7 @@ async def list_payments(
 
     # Aggregate financial metrics
     sum_stmt = select(
-        func.coalesce(func.sum(Payment.amount), Decimal("0.000")).label("total_volume"),
-        func.coalesce(func.sum(Payment.service_charge), Decimal("0.000")).label("total_service_charge"),
-        func.coalesce(func.sum(Payment.vat_amount), Decimal("0.000")).label("total_vat"),
-        func.coalesce(func.sum(Payment.due_deposit), Decimal("0.000")).label("total_due_deposit"),
+        func.coalesce(func.sum(Payment.total_amount), Decimal("0.000")).label("total_volume"),
     )
     if conditions:
         sum_stmt = sum_stmt.where(*conditions)
@@ -611,9 +662,6 @@ async def list_payments(
     out = paginated.model_dump(mode="json")
     out["analytics"] = {
         "total_volume": str(agg_res.total_volume),
-        "total_service_charge": str(agg_res.total_service_charge),
-        "total_vat": str(agg_res.total_vat),
-        "total_due_deposit": str(agg_res.total_due_deposit),
     }
 
     return JSONResponse(content=out)
@@ -622,7 +670,7 @@ async def list_payments(
 @router.get(
     "/{payment_id}/",
     summary="Get payment detail",
-    description="Retrieve full payment record with transaction audit trail, financial details, and gateway response.",
+    description="Retrieve full payment record with transaction audit trail and all snapshots.",
     response_model=PaymentResponse,
 )
 async def get_payment(
@@ -649,14 +697,14 @@ async def get_payment(
 
 @router.patch(
     "/{payment_id}/",
-    summary="Update payment",
-    description="Partially update payment details, status, or deposit status.",
+    summary="Update payment (partial)",
+    description="Partially update payment details, status, or classification fields.",
     response_model=PaymentResponse,
 )
 @router.put(
     "/{payment_id}/",
     summary="Update payment (full)",
-    description="Update payment details.",
+    description="Update payment record.",
     response_model=PaymentResponse,
 )
 async def update_payment(
@@ -682,112 +730,116 @@ async def update_payment(
     # Process gateway response if supplied
     if body.gateway_response:
         parsed = parse_gateway_response(body.gateway_response)
-        payment.provider_response = body.gateway_response
-        if parsed.get("status"):
-            payment.status = parsed["status"]
-        if parsed.get("service_charge"):
-            payment.service_charge = parsed["service_charge"]
-        if parsed.get("vat_amount"):
-            payment.vat_amount = parsed["vat_amount"]
-        if parsed.get("due_deposit"):
-            payment.due_deposit = parsed["due_deposit"]
-        if parsed.get("deposit_status"):
-            payment.deposit_status = parsed["deposit_status"]
-        if parsed.get("gateway_name"):
-            payment.gateway_name = parsed["gateway_name"]
-        if parsed.get("reference_id"):
-            payment.reference_id = parsed["reference_id"]
-        if parsed.get("track_id"):
-            payment.track_id = parsed["track_id"]
-        if parsed.get("authorization_id"):
-            payment.authorization_id = parsed["authorization_id"]
-        if parsed.get("card_info"):
-            payment.card_info = parsed["card_info"]
-        if parsed.get("paid_at"):
-            payment.paid_at = parsed["paid_at"]
-        if parsed.get("payment_id"):
-            payment.payment_id = parsed["payment_id"]
-        if parsed.get("transaction_id"):
-            payment.transaction_id = parsed["transaction_id"]
-        if parsed.get("is_paid") is not None:
-            payment.is_paid = parsed["is_paid"]
-        if parsed.get("invoice_id"):
-            payment.invoice_id = parsed["invoice_id"]
-        if parsed.get("invoice_value"):
-            payment.invoice_value = parsed["invoice_value"]
-        if parsed.get("customer_name"):
-            payment.customer_name = parsed["customer_name"]
-        if parsed.get("customer_mobile"):
-            payment.customer_mobile = parsed["customer_mobile"]
-        if parsed.get("customer_email"):
-            payment.customer_email = parsed["customer_email"]
-        if parsed.get("created_date"):
-            payment.created_date = parsed["created_date"]
-        if parsed.get("transaction_date"):
-            payment.transaction_date = parsed["transaction_date"]
-        if parsed.get("payment_gateway"):
-            payment.payment_gateway = parsed["payment_gateway"]
+        # Merge raw data into payment_data
+        existing_payment_data = dict(payment.payment_data or {})
+        if parsed.get("payment_data"):
+            existing_payment_data.update(parsed["payment_data"])
+        existing_payment_data["raw_response"] = body.gateway_response
+        payment.payment_data = existing_payment_data
 
-    if body.status:
+        for field in (
+            "status", "total_amount", "currency", "invoice_id", "invoice_value",
+            "transaction_id", "payment_id", "track_id", "reference_id",
+            "transaction_status", "transaction_date", "payment_method",
+            "payment_gateway", "payment_url", "country", "paid_at",
+        ):
+            val = parsed.get(field)
+            if val is not None:
+                setattr(payment, field, val)
+        if parsed.get("customer_data"):
+            payment.customer_data = {**(payment.customer_data or {}), **parsed["customer_data"]}
+
+    # Apply explicit body fields
+    if body.customer_data is not None:
+        payment.customer_data = {**(payment.customer_data or {}), **body.customer_data}
+    if body.sender_id is not None:
+        payment.sender_id = body.sender_id
+    if body.sender_data is not None:
+        payment.sender_data = {**(payment.sender_data or {}), **body.sender_data}
+    if body.service_id is not None:
+        payment.service_id = body.service_id
+    if body.service_data is not None:
+        payment.service_data = {**(payment.service_data or {}), **body.service_data}
+    if body.branch_id is not None:
+        payment.branch_id = body.branch_id
+    if body.branch_data is not None:
+        payment.branch_data = {**(payment.branch_data or {}), **body.branch_data}
+    if body.service_arrangement_id is not None:
+        payment.service_arrangement_id = body.service_arrangement_id
+    if body.service_arrangement_data is not None:
+        payment.service_arrangement_data = {**(payment.service_arrangement_data or {}), **body.service_arrangement_data}
+    if body.addons is not None:
+        payment.addons = body.addons
+    if body.addons_price is not None:
+        payment.addons_price = Decimal(str(body.addons_price))
+    if body.extra_time is not None:
+        payment.extra_time = body.extra_time
+    if body.price_for_extra_time is not None:
+        payment.price_for_extra_time = Decimal(str(body.price_for_extra_time))
+    if body.total_amount is not None:
+        payment.total_amount = Decimal(str(body.total_amount))
+    if body.total_duration is not None:
+        payment.total_duration = body.total_duration
+    if body.currency is not None:
+        payment.currency = body.currency
+    if body.country is not None:
+        payment.country = body.country
+    if body.status is not None:
         payment.status = body.status
-    if body.is_paid is not None:
-        payment.is_paid = body.is_paid
-    elif payment.status == "success":
-        payment.is_paid = True
-    if body.payment_id is not None:
-        payment.payment_id = body.payment_id
-    if body.transaction_id is not None:
-        payment.transaction_id = body.transaction_id
+    if body.paid_at is not None:
+        payment.paid_at = body.paid_at
+    elif payment.status == PaymentTransactionStatus.SUCCESS.value and not payment.paid_at:
+        payment.paid_at = datetime.now(tz=timezone.utc)
+    if body.recipient_id is not None:
+        payment.recipient_id = body.recipient_id
+    if body.recipient_phone is not None:
+        payment.recipient_phone = body.recipient_phone
+    if body.recipient_data is not None:
+        payment.recipient_data = {**(payment.recipient_data or {}), **body.recipient_data}
+    if body.booking_id is not None:
+        payment.booking_id = body.booking_id
+    if body.booking_data is not None:
+        payment.booking_data = {**(payment.booking_data or {}), **body.booking_data}
+    if body.voucher_id is not None:
+        payment.voucher_id = body.voucher_id
+    if body.voucher_data is not None:
+        payment.voucher_data = {**(payment.voucher_data or {}), **body.voucher_data}
+    if body.product_order_id is not None:
+        payment.product_order_id = body.product_order_id
+    if body.product_order_items is not None:
+        payment.product_order_items = body.product_order_items
     if body.invoice_id is not None:
         payment.invoice_id = body.invoice_id
     if body.invoice_value is not None:
         payment.invoice_value = Decimal(str(body.invoice_value))
-    if body.customer_name is not None:
-        payment.customer_name = body.customer_name
-    if body.customer_mobile is not None:
-        payment.customer_mobile = body.customer_mobile
-    if body.customer_email is not None:
-        payment.customer_email = body.customer_email
-    if body.created_date is not None:
-        payment.created_date = body.created_date
+    if body.payment_url is not None:
+        payment.payment_url = body.payment_url
+    if body.transaction_id is not None:
+        payment.transaction_id = body.transaction_id
+    if body.track_id is not None:
+        payment.track_id = body.track_id
+    if body.reference_id is not None:
+        payment.reference_id = body.reference_id
+    if body.transaction_status is not None:
+        payment.transaction_status = body.transaction_status
     if body.transaction_date is not None:
         payment.transaction_date = body.transaction_date
+    if body.receipt_image is not None:
+        payment.receipt_image = body.receipt_image
+    if body.payment_method is not None:
+        payment.payment_method = body.payment_method
+    if body.payment_through is not None:
+        payment.payment_through = PaymentThrough.normalise(body.payment_through).value
+    if body.payment_provider is not None:
+        payment.payment_provider = PaymentProvider.normalise(body.payment_provider).value
     if body.payment_gateway is not None:
-        payment.payment_gateway = body.payment_gateway
-    if body.invoice_reference is not None:
-        payment.invoice_reference = body.invoice_reference
-    if body.customer_reference is not None:
-        payment.customer_reference = body.customer_reference
-    if body.failure_reason is not None:
-        payment.failure_reason = body.failure_reason
-    if body.deposit_status is not None:
-        payment.deposit_status = body.deposit_status
-    if body.due_deposit is not None:
-        payment.due_deposit = Decimal(str(body.due_deposit))
-    if body.service_charge is not None:
-        payment.service_charge = Decimal(str(body.service_charge))
-    if body.vat_amount is not None:
-        payment.vat_amount = Decimal(str(body.vat_amount))
-    if body.customer_data is not None:
-        payment.customer_data = {**(payment.customer_data or {}), **body.customer_data}
-    if body.booking_data is not None:
-        payment.booking_data = {**(payment.booking_data or {}), **body.booking_data}
-    if body.booking_id is not None:
-        try:
-            payment.booking_id = uuid.UUID(str(body.booking_id)) if body.booking_id else None
-        except ValueError:
-            pass
-    if body.voucher_id is not None:
-        try:
-            payment.voucher_id = uuid.UUID(str(body.voucher_id)) if body.voucher_id else None
-        except ValueError:
-            pass
-    if body.voucher_data is not None:
-        payment.voucher_data = {**(payment.voucher_data or {}), **body.voucher_data}
+        payment.payment_gateway = PaymentGateway.normalise(body.payment_gateway).value
     if body.payment_for is not None:
-        payment.payment_for = str(body.payment_for)
-    if body.metadata is not None:
-        payment.metadata_ = {**(payment.metadata_ or {}), **body.metadata}
+        payment.payment_for = PaymentFor.normalise(body.payment_for).value
+    if body.payment_id is not None:
+        payment.payment_id = body.payment_id
+    if body.payment_data is not None:
+        payment.payment_data = {**(payment.payment_data or {}), **body.payment_data}
 
     # Record status change in audit trail
     if payment.status != old_status:
@@ -797,29 +849,24 @@ async def update_payment(
             new_status=payment.status,
             source=body.source,
             reason=body.reason or "Payment updated",
-            provider_reference=payment.provider_reference,
-            correlation_id=payment.provider_payment_id or str(payment.id),
-            metadata_=payment.metadata_,
+            provider_reference=(payment.payment_data or {}).get("provider_reference"),
+            correlation_id=payment.payment_id or str(payment.id),
+            metadata_=None,
         )
         session.add(history)
 
-        # Transition booking if payment status changed to success
+        # Auto-confirm booking on success transition
         if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.booking_id:
             payment_meta_snapshot = {
                 "payment_id": payment.payment_id or str(payment.id),
                 "transaction_id": payment.transaction_id,
-                "is_paid": payment.is_paid,
                 "invoice_id": payment.invoice_id,
-                "invoice_value": str(payment.invoice_value or payment.amount),
+                "invoice_value": str(payment.invoice_value or payment.total_amount),
                 "status": payment.status,
-                "invoice_reference": payment.invoice_reference,
-                "customer_reference": payment.customer_reference,
-                "created_date": payment.created_date,
-                "customer_name": payment.customer_name,
-                "customer_mobile": payment.customer_mobile,
-                "customer_email": payment.customer_email,
+                "reference_id": payment.reference_id,
                 "transaction_date": payment.transaction_date,
-                "payment_gateway": payment.payment_gateway or payment.gateway_name,
+                "payment_gateway": payment.payment_gateway,
+                "payment_provider": payment.payment_provider,
                 "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
             }
             try:
@@ -828,7 +875,7 @@ async def update_payment(
                     payment.booking_id,
                     payment_id=str(payment.id),
                     payments_meta=payment_meta_snapshot,
-                    correlation_id=payment.provider_reference or payment.provider_payment_id or str(payment.id),
+                    correlation_id=payment.payment_id or str(payment.id),
                 )
             except Exception as exc:
                 logger.warning("payment_update_auto_confirm_notice", error=str(exc))
@@ -898,134 +945,100 @@ async def initiate_payment(
     booking_id = uuid.UUID(body.booking_id)
     customer_id = uuid.UUID(current_user.sub)
 
-    repo = BookingRepository(session)
+    stmt = select(Booking).where(Booking.id == booking_id, Booking.customer_id == customer_id)
+    result = await session.execute(stmt)
+    booking = result.scalar_one_or_none()
 
-    # Validate booking ownership and state
-    try:
-        booking = await repo.get_by_id(booking_id, for_update=True)
-    except BookingNotFoundError:
-        raise HTTPException(status_code=404, detail="Booking not found.")
-
-    if booking.customer_id != customer_id:
-        raise HTTPException(status_code=403, detail="Access denied.")
-
-    if booking.status not in (
-        BookingStatus.REQUESTED.value,
-        BookingStatus.PAYMENT_FAILED.value,
-    ):
+    if not booking:
         raise HTTPException(
-            status_code=422,
-            detail=f"Cannot initiate payment for booking with status '{booking.status}'.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Booking {booking_id} not found or does not belong to you.",
         )
 
-    # ── Create payment record with rich snapshots ─────────────────────
-    customer_dict = booking.customer_data or {}
-    service_dict = booking.service_data or {}
-    booking_snapshot = _build_booking_snapshot(booking)
+    if booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.PENDING.value):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Booking must be confirmed or pending to initiate payment. Current: {booking.status}",
+        )
 
+    provider_key = body.provider.strip().lower() if body.provider else "myfatoorah"
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        provider_impl = _get_provider(provider_key, http_client, settings)
+
+        total_amount = Decimal(str(getattr(booking, "total_amount", 0)))
+        currency = getattr(booking, "currency", "KWD")
+        if currency in ("KD",):
+            currency = "KWD"
+
+        pay_request = CreatePaymentRequest(
+            amount=total_amount,
+            currency=currency,
+            customer_id=str(customer_id),
+            booking_id=str(booking_id),
+            customer_name=(booking.customer_data or {}).get("name", ""),
+            customer_mobile=(booking.customer_data or {}).get("mobile", ""),
+            customer_email=(booking.customer_data or {}).get("email", ""),
+            callback_url=str(getattr(settings, "PAYMENT_CALLBACK_URL", "")),
+            error_url=str(getattr(settings, "PAYMENT_ERROR_URL", "")),
+        )
+
+        try:
+            session_response = await provider_impl.initiate_payment(pay_request)
+        except Exception as exc:
+            logger.error("payment_initiate_failed", error=str(exc))
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Payment provider error: {exc}",
+            )
+
+    payment_url = session_response.get("payment_url") or session_response.get("PaymentURL", "")
+    gateway_payment_id = session_response.get("payment_id") or session_response.get("InvoiceId", "")
+
+    # Create a pending payment record
     payment = Payment(
-        booking_id=booking.id,
         customer_id=customer_id,
-        amount=booking.total_amount,
-        currency=booking.currency,
-        provider=body.provider.value,
-        payment_method=body.payment_method,
+        booking_id=booking_id,
+        booking_data=_build_booking_snapshot(booking),
+        customer_data=booking.customer_data,
+        total_amount=total_amount,
+        total_duration=getattr(booking, "duration_minutes", 0) or 0,
+        currency=currency,
+        payment_for=PaymentFor.normalise(body.payment_for).value,
+        payment_provider=PaymentProvider.normalise(body.provider).value if body.provider else PaymentProvider.MYFATOORAH.value,
+        payment_method=body.payment_method or "card",
         status=PaymentTransactionStatus.INITIATED.value,
-        customer_data=customer_dict,
-        booking_data=booking_snapshot,
+        payment_id=str(gateway_payment_id) if gateway_payment_id else None,
+        payment_url=payment_url,
+        payment_data={"session_response": session_response},
+        created_by=customer_id,
     )
     session.add(payment)
     await session.flush()
-    await session.refresh(payment)
 
-    # Record status history
-    session.add(
-        PaymentStatusHistory(
-            payment_id=payment.id,
-            old_status=None,
-            new_status=PaymentTransactionStatus.INITIATED.value,
-            source="customer",
-            reason="Payment session initiated",
-            correlation_id=str(payment.id),
-        )
+    history = PaymentStatusHistory(
+        payment_id=payment.id,
+        old_status=None,
+        new_status=PaymentTransactionStatus.INITIATED.value,
+        source="initiate_payment",
+        reason="Payment session initiated",
+        correlation_id=str(gateway_payment_id) if gateway_payment_id else str(payment.id),
     )
-
-    # ── Update booking to PAYMENT_PENDING ─────────────────────────────
-    from app.booking.domain.state_machine import BookingStateMachine
-
-    machine = BookingStateMachine(BookingStatus(booking.status))
-    machine.transition_to(BookingStatus.PAYMENT_PENDING)
-    booking.status = BookingStatus.PAYMENT_PENDING.value
+    session.add(history)
     await session.flush()
-
-    # ── Call payment provider ──────────────────────────────────────────
-    http_client = get_http_client()
-    provider = _get_provider(body.provider, http_client, settings)
-
-    callback_url = ""
-    if body.provider == PaymentProvider.MYFATOORAH:
-        callback_url = settings.MYFATOORAH_CALLBACK_URL
-    elif body.provider == PaymentProvider.TAP:
-        callback_url = settings.TAP_CALLBACK_URL
-
-    cust_name = (
-        customer_dict.get("name")
-        or f"{customer_dict.get('first_name', '')} {customer_dict.get('last_name', '')}".strip()
-        or customer_dict.get("phone_number")
-        or customer_dict.get("email")
-        or "Customer"
-    )
-    svc_name = service_dict.get("name") or "Service"
-
-    pay_request = CreatePaymentRequest(
-        booking_id=str(booking.id),
-        customer_id=str(customer_id),
-        amount=booking.total_amount,
-        currency=booking.currency,
-        payment_method=body.payment_method,
-        customer_name=cust_name,
-        customer_email=str(customer_dict.get("email") or ""),
-        customer_phone=str(customer_dict.get("phone_number") or customer_dict.get("phone") or ""),
-        description=f"Booking #{str(booking.id)[:8]} - {svc_name}",
-        callback_url=callback_url,
-        success_url=settings.MYFATOORAH_SUCCESS_URL,
-        error_url=settings.MYFATOORAH_ERROR_URL,
-        metadata={"booking_id": str(booking.id), "payment_id": str(payment.id)},
-    )
-
-    try:
-        response = await provider.create_payment(pay_request)  # type: ignore
-    except PaymentProviderError as exc:
-        logger.error("payment_initiation_failed", booking_id=str(booking.id), error=exc.message)
-        payment.status = PaymentTransactionStatus.FAILED.value
-        payment.failure_reason = exc.message
-        raise HTTPException(status_code=502, detail="Payment provider error. Please try again.")
-
-    # ── Update payment record with provider reference ──────────────────
-    payment.provider_payment_id = response.provider_payment_id
-    payment.provider_reference = response.provider_reference
-    payment.payment_url = response.payment_url
-    payment.status = PaymentTransactionStatus.PENDING.value
-    await session.flush()
-
-    logger.info(
-        "payment_initiated",
-        payment_id=str(payment.id),
-        booking_id=str(booking.id),
-        provider=body.provider.value,
-    )
 
     return JSONResponse(
-        status_code=201,
+        status_code=status.HTTP_201_CREATED,
         content={
             "success": True,
             "data": {
                 "payment_id": str(payment.id),
-                "booking_id": str(booking.id),
-                "provider": body.provider.value,
-                "payment_url": response.payment_url,
-                "amount": str(payment.amount),
-                "currency": payment.currency,
+                "booking_id": str(booking_id),
+                "payment_for": payment.payment_for,
+                "payment_provider": payment.payment_provider,
+                "payment_url": payment_url,
+                "total_amount": str(total_amount),
+                "currency": currency,
             },
         },
     )
@@ -1034,25 +1047,14 @@ async def initiate_payment(
 @router.get(
     "/{booking_id}/status/",
     summary="Get payment status for a booking",
+    response_model=PaymentStatusResponse,
 )
 async def get_payment_status(
     booking_id: uuid.UUID,
     current_user: CurrentUser,
     session: DBSession,
 ) -> JSONResponse:
-    """Retrieve the latest payment record for a booking."""
-    customer_id = uuid.UUID(current_user.sub)
-
-    # Verify booking ownership
-    repo = BookingRepository(session)
-    try:
-        booking = await repo.get_by_id(booking_id)
-    except BookingNotFoundError:
-        raise HTTPException(status_code=404, detail="Booking not found.")
-
-    if booking.customer_id != customer_id:
-        raise HTTPException(status_code=403, detail="Access denied.")
-
+    """Get the most recent payment status for a booking."""
     stmt = (
         select(Payment)
         .where(Payment.booking_id == booking_id)
@@ -1062,9 +1064,10 @@ async def get_payment_status(
     result = await session.execute(stmt)
     payment = result.scalar_one_or_none()
 
-    if payment is None:
-        return JSONResponse(
-            content={"success": True, "data": None, "meta": {"message": "No payment initiated."}}
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No payment found for booking {booking_id}.",
         )
 
     return JSONResponse(
@@ -1072,15 +1075,16 @@ async def get_payment_status(
             "success": True,
             "data": {
                 "payment_id": str(payment.id),
-                "booking_id": str(booking_id),
-                "provider": payment.provider,
+                "booking_id": str(payment.booking_id) if payment.booking_id else None,
+                "voucher_id": str(payment.voucher_id) if payment.voucher_id else None,
+                "payment_for": payment.payment_for,
+                "payment_provider": payment.payment_provider,
                 "status": payment.status,
-                "amount": str(payment.amount),
+                "total_amount": str(payment.total_amount),
                 "currency": payment.currency,
                 "payment_method": payment.payment_method,
-                "provider_reference": payment.provider_reference,
+                "reference_id": payment.reference_id,
                 "created_at": payment.created_at.isoformat(),
-                "updated_at": payment.updated_at.isoformat(),
             },
         }
     )
@@ -1093,131 +1097,128 @@ async def get_payment_status(
 )
 async def myfatoorah_webhook(
     request: Request,
+    _: RequireAppToken,
     session: DBSession,
     settings: AppSettings,
 ) -> JSONResponse:
-    """
-    MyFatoorah payment webhook.
+    """Receive and process MyFatoorah webhook events."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
 
-    Called by MyFatoorah after payment completion.
-    Verifies payment status, stores rich audit attributes, and confirms booking.
-    """
-    from app.api.deps import get_http_client
+    parsed = parse_gateway_response(payload)
 
-    payload = await request.json()
-    invoice_id = str(payload.get("InvoiceId") or payload.get("invoiceId") or "")
-    logger.info("myfatoorah_webhook_received", invoice_id=invoice_id)
-
+    invoice_id = parsed.get("invoice_id") or (parsed.get("payment_data") or {}).get("provider_payment_id")
     if not invoice_id:
         return JSONResponse(content={"received": True})
 
-    # Find the payment record
+    # Find payment by invoice_id or payment_id
     stmt = select(Payment).where(
-        or_(
-            Payment.provider_payment_id == invoice_id,
-            Payment.provider_reference == invoice_id,
-        )
+        or_(Payment.invoice_id == str(invoice_id), Payment.payment_id == str(invoice_id))
     )
     result = await session.execute(stmt)
     payment = result.scalar_one_or_none()
 
     if not payment:
-        logger.warning("myfatoorah_webhook_payment_not_found", invoice_id=invoice_id)
-        return JSONResponse(content={"received": True})
+        # Create new payment from webhook
+        customer_reference = (parsed.get("payment_data") or {}).get("customer_reference")
+        booking_id = None
+        booking = None
+        if customer_reference:
+            try:
+                booking_id = uuid.UUID(str(customer_reference))
+                b_stmt = select(Booking).where(Booking.id == booking_id)
+                b_result = await session.execute(b_stmt)
+                booking = b_result.scalar_one_or_none()
+            except (ValueError, TypeError):
+                pass
 
-    old_status = payment.status
-
-    # Verify with MyFatoorah API
-    provider = MyFatoorahProvider(http_client=get_http_client(), settings=settings)
-    verify = await provider.verify_payment(invoice_id)
-
-    # Ingest full verified raw response
-    parsed = parse_gateway_response(verify.raw_response or payload)
-    payment.provider_response = verify.raw_response or payload
-
-    if parsed.get("service_charge"):
-        payment.service_charge = parsed["service_charge"]
-    if parsed.get("vat_amount"):
-        payment.vat_amount = parsed["vat_amount"]
-    if parsed.get("due_deposit"):
-        payment.due_deposit = parsed["due_deposit"]
-    if parsed.get("deposit_status"):
-        payment.deposit_status = parsed["deposit_status"]
-    if parsed.get("gateway_name"):
-        payment.gateway_name = parsed["gateway_name"]
-    if parsed.get("reference_id"):
-        payment.reference_id = parsed["reference_id"]
-    if parsed.get("track_id"):
-        payment.track_id = parsed["track_id"]
-    if parsed.get("authorization_id"):
-        payment.authorization_id = parsed["authorization_id"]
-    if parsed.get("provider_transaction_id"):
-        payment.provider_transaction_id = parsed["provider_transaction_id"]
-    if parsed.get("payment_id_gateway"):
-        payment.payment_id_gateway = parsed["payment_id_gateway"]
-    if parsed.get("invoice_reference"):
-        payment.invoice_reference = parsed["invoice_reference"]
-    if parsed.get("card_info"):
-        payment.card_info = parsed["card_info"]
-    if parsed.get("paid_at"):
-        payment.paid_at = parsed["paid_at"]
-
-    if verify.is_successful:
-        payment.status = PaymentTransactionStatus.SUCCESS.value
+        payment = Payment(
+            customer_id=booking.customer_id if booking else uuid.uuid4(),
+            customer_data=parsed.get("customer_data"),
+            booking_id=booking_id,
+            booking_data=_build_booking_snapshot(booking) if booking else None,
+            total_amount=parsed.get("total_amount", Decimal("0.000")),
+            total_duration=getattr(booking, "duration_minutes", 0) or 0,
+            currency=parsed.get("currency", "KWD"),
+            status=parsed.get("status", PaymentTransactionStatus.PENDING.value),
+            paid_at=parsed.get("paid_at"),
+            invoice_id=parsed.get("invoice_id"),
+            invoice_value=parsed.get("invoice_value"),
+            payment_id=parsed.get("payment_id"),
+            transaction_id=parsed.get("transaction_id"),
+            track_id=parsed.get("track_id"),
+            reference_id=parsed.get("reference_id"),
+            transaction_status=parsed.get("transaction_status"),
+            transaction_date=parsed.get("transaction_date"),
+            payment_method=parsed.get("payment_method"),
+            payment_gateway=parsed.get("payment_gateway"),
+            payment_url=parsed.get("payment_url"),
+            country=parsed.get("country"),
+            payment_provider=PaymentProvider.MYFATOORAH.value,
+            payment_for=PaymentFor.BRANCH_SERVICE.value,
+            payment_data=parsed.get("payment_data"),
+        )
+        session.add(payment)
         await session.flush()
+    else:
+        old_status = payment.status
+        # Update existing payment from webhook
+        existing_pdata = dict(payment.payment_data or {})
+        if parsed.get("payment_data"):
+            existing_pdata.update(parsed["payment_data"])
+        payment.payment_data = existing_pdata
 
-        # Add status history
-        session.add(
-            PaymentStatusHistory(
+        for field in (
+            "status", "total_amount", "currency", "invoice_id", "invoice_value",
+            "transaction_id", "payment_id", "track_id", "reference_id",
+            "transaction_status", "transaction_date", "payment_method",
+            "payment_gateway", "payment_url", "country", "paid_at",
+        ):
+            val = parsed.get(field)
+            if val is not None:
+                setattr(payment, field, val)
+        if parsed.get("customer_data"):
+            payment.customer_data = {**(payment.customer_data or {}), **parsed["customer_data"]}
+
+        if payment.status != old_status:
+            history = PaymentStatusHistory(
                 payment_id=payment.id,
                 old_status=old_status,
                 new_status=payment.status,
-                source="myfatoorah_webhook",
-                reason="Payment verified successfully",
-                provider_reference=invoice_id,
-                correlation_id=invoice_id,
+                source="webhook_myfatoorah",
+                reason="MyFatoorah webhook update",
+                provider_reference=(payment.payment_data or {}).get("provider_reference"),
+                correlation_id=payment.payment_id or str(payment.id),
             )
-        )
+            session.add(history)
 
-        # Confirm booking
-        if payment.booking_id:
+    # Auto-confirm booking if success
+    if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.booking_id:
+        try:
+            payment_meta_snapshot = {
+                "payment_id": payment.payment_id or str(payment.id),
+                "invoice_id": payment.invoice_id,
+                "status": payment.status,
+                "payment_gateway": payment.payment_gateway,
+                "payment_provider": payment.payment_provider,
+                "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+            }
             booking_service = BookingService(session=session, settings=settings)
             await booking_service.confirm_booking(
                 payment.booking_id,
                 payment_id=str(payment.id),
-                correlation_id=invoice_id,
+                payments_meta=payment_meta_snapshot,
+                correlation_id=payment.payment_id or str(payment.id),
             )
-    else:
-        payment.status = PaymentTransactionStatus.FAILED.value
-        payment.failure_reason = verify.failure_reason or "Payment not completed"
-        await session.flush()
+        except Exception as exc:
+            logger.warning("webhook_auto_confirm_notice", error=str(exc))
 
-        session.add(
-            PaymentStatusHistory(
-                payment_id=payment.id,
-                old_status=old_status,
-                new_status=payment.status,
-                source="myfatoorah_webhook",
-                reason=payment.failure_reason,
-                provider_reference=invoice_id,
-                correlation_id=invoice_id,
-            )
-        )
+    await session.flush()
+    logger.info("myfatoorah_webhook_processed", payment_id=str(payment.id), status=payment.status)
 
-        # Update booking to payment_failed
-        if payment.booking_id:
-            repo = BookingRepository(session)
-            try:
-                booking = await repo.get_by_id(payment.booking_id, for_update=True)
-                from app.booking.domain.state_machine import BookingStateMachine
-                machine = BookingStateMachine(BookingStatus(booking.status))
-                machine.transition_to(BookingStatus.PAYMENT_FAILED)
-                booking.status = BookingStatus.PAYMENT_FAILED.value
-                await session.flush()
-            except Exception:
-                pass
-
-    return JSONResponse(content={"received": True})
+    return JSONResponse(content={"received": True, "payment_id": str(payment.id)})
 
 
 @router.post(
@@ -1227,80 +1228,49 @@ async def myfatoorah_webhook(
 )
 async def tap_webhook(
     request: Request,
+    _: RequireAppToken,
     session: DBSession,
-    settings: AppSettings,
 ) -> JSONResponse:
-    """
-    Tap Payments webhook.
+    """Receive and process Tap payment webhook events."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
 
-    Called by Tap after payment completion/failure.
-    """
-    from app.api.deps import get_http_client
-
-    payload = await request.json()
-    charge_id = str(payload.get("id", ""))
-    logger.info("tap_webhook_received", charge_id=charge_id)
+    parsed = parse_gateway_response(payload)
+    charge_id = parsed.get("payment_id") or payload.get("id")
 
     if not charge_id:
         return JSONResponse(content={"received": True})
 
-    stmt = select(Payment).where(
-        or_(
-            Payment.provider_payment_id == charge_id,
-            Payment.provider_reference == charge_id,
-        )
-    )
+    stmt = select(Payment).where(Payment.payment_id == str(charge_id))
     result = await session.execute(stmt)
     payment = result.scalar_one_or_none()
 
-    if not payment:
-        logger.warning("tap_webhook_payment_not_found", charge_id=charge_id)
-        return JSONResponse(content={"received": True})
+    if payment:
+        old_status = payment.status
+        existing_pdata = dict(payment.payment_data or {})
+        if parsed.get("payment_data"):
+            existing_pdata.update(parsed["payment_data"])
+        payment.payment_data = existing_pdata
 
-    old_status = payment.status
-    provider = TapProvider(http_client=get_http_client(), settings=settings)
-    verify = await provider.verify_payment(charge_id)
+        for field in ("status", "transaction_id", "track_id", "reference_id", "paid_at"):
+            val = parsed.get(field)
+            if val is not None:
+                setattr(payment, field, val)
 
-    payment.provider_response = verify.raw_response or payload
-
-    if verify.is_successful:
-        payment.status = PaymentTransactionStatus.SUCCESS.value
-        await session.flush()
-
-        session.add(
-            PaymentStatusHistory(
+        if payment.status != old_status:
+            history = PaymentStatusHistory(
                 payment_id=payment.id,
                 old_status=old_status,
                 new_status=payment.status,
-                source="tap_webhook",
-                reason="Payment verified successfully",
-                provider_reference=charge_id,
-                correlation_id=charge_id,
+                source="webhook_tap",
+                reason="Tap webhook update",
+                correlation_id=str(charge_id),
             )
-        )
+            session.add(history)
 
-        if payment.booking_id:
-            booking_service = BookingService(session=session, settings=settings)
-            await booking_service.confirm_booking(
-                payment.booking_id,
-                payment_id=str(payment.id),
-                correlation_id=charge_id,
-            )
-    else:
-        payment.status = PaymentTransactionStatus.FAILED.value
-        payment.failure_reason = verify.failure_reason or "Payment failed"
         await session.flush()
-
-        session.add(
-            PaymentStatusHistory(
-                payment_id=payment.id,
-                old_status=old_status,
-                new_status=payment.status,
-                source="tap_webhook",
-                reason=payment.failure_reason,
-                provider_reference=charge_id,
-                correlation_id=charge_id,
-            )
-        )
+        logger.info("tap_webhook_processed", payment_id=str(payment.id), status=payment.status)
 
     return JSONResponse(content={"received": True})

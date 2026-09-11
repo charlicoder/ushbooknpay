@@ -647,6 +647,8 @@ class VoucherActiveEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     addons: list[dict[str, Any]] = field(default_factory=list)
     extra_time: int = 0
+    price_for_extra_time: str | None = None  # Serialised Decimal — e.g. "5.000"
+
 
     # ── Financial ─────────────────────────────────────────────────────
     total_duration: int = 0
@@ -700,6 +702,8 @@ class VoucherPaymentPendingEvent(BaseEvent):
     id: str = ""
     status: str = "payment_pending"
     public_token: str = ""
+    secret_code: str = ""  # Accepted from snapshot but NOT delivered at this stage
+
 
     # ── Service context ───────────────────────────────────────────────
     service_id: str = ""
@@ -710,6 +714,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     addons: list[dict[str, Any]] = field(default_factory=list)
     extra_time: int = 0
+    price_for_extra_time: str | None = None  # Serialised Decimal — e.g. "5.000"
 
     # ── Financial ─────────────────────────────────────────────────────
     total_duration: int = 0
@@ -765,6 +770,7 @@ class VoucherRedeemedEvent(BaseEvent):
     id: str = ""
     status: str = "redeemed"
     public_token: str = ""
+    secret_code: str = ""  # Accepted from snapshot but NOT delivered at redemption stage
 
     # ── Service context ───────────────────────────────────────────────
     service_id: str = ""
@@ -775,6 +781,7 @@ class VoucherRedeemedEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     addons: list[dict[str, Any]] = field(default_factory=list)
     extra_time: int = 0
+    price_for_extra_time: str | None = None  # Serialised Decimal — e.g. "5.000"
 
     # ── Financial ─────────────────────────────────────────────────────
     total_duration: int = 0

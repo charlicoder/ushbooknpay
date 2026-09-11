@@ -3,8 +3,8 @@ app/payment/interfaces/schemas.py
 ───────────────────────────────────
 Pydantic v2 schemas for the Payment API.
 
-Supports complete CRUD operations, detailed financial audit tracking,
-gateway response ingestion, and reporting analytics.
+Required fields for creation: customer_id, total_amount, total_duration, currency.
+All other fields are optional.
 """
 
 from __future__ import annotations
@@ -14,17 +14,219 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.payment.domain.value_objects import (
     PaymentFor,
+    PaymentGateway,
     PaymentMethod,
     PaymentProvider,
+    PaymentThrough,
     PaymentTransactionStatus,
 )
 
 
+def _coerce_empty(v: Any) -> Any:
+    """Coerce empty/whitespace strings to None."""
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
+
+
 # ── Request Schemas ───────────────────────────────────────────────────────────
+
+
+class CreatePaymentRequestSchema(BaseModel):
+    """
+    POST /api/v1/payments/
+
+    Create a payment record or ingest a gateway response.
+
+    Required: customer_id, total_amount, total_duration, currency.
+    All other fields are optional.
+    """
+
+    # ── Required ──────────────────────────────────────────────────────────
+    customer_id: uuid.UUID = Field(description="Customer UUID (required).")
+    total_amount: Decimal = Field(description="Total payment amount (required).")
+    total_duration: int = Field(description="Total service duration in minutes (required).")
+    currency: str = Field(default="KWD", description="ISO currency code, e.g. KWD.")
+
+    # ── Participants ──────────────────────────────────────────────────────
+    customer_data: dict[str, Any] | None = Field(default=None, description="Customer snapshot (JSONB).")
+    sender_id: uuid.UUID | None = Field(default=None, description="Sender UUID (gift/voucher sender).")
+    sender_data: dict[str, Any] | None = Field(default=None, description="Sender snapshot (JSONB).")
+
+    # ── Service & Location ────────────────────────────────────────────────
+    service_id: uuid.UUID | None = Field(default=None, description="Service UUID.")
+    service_data: dict[str, Any] | None = Field(default=None, description="Service snapshot (JSONB).")
+    branch_id: uuid.UUID | None = Field(default=None, description="Branch UUID.")
+    branch_data: dict[str, Any] | None = Field(default=None, description="Branch snapshot (JSONB).")
+    service_arrangement_id: uuid.UUID | None = Field(default=None, description="Service arrangement UUID.")
+    service_arrangement_data: dict[str, Any] | None = Field(default=None, description="Arrangement snapshot (JSONB).")
+
+    # ── Pricing Breakdown ─────────────────────────────────────────────────
+    addons: list[Any] | dict[str, Any] | None = Field(default=None, description="Addon items list (JSONB).")
+    addons_price: Decimal | None = Field(default=None, description="Total price of addons.")
+    extra_time: int | None = Field(default=None, description="Extra time in minutes.")
+    price_for_extra_time: Decimal | None = Field(default=None, description="Price charged for extra time.")
+
+    # ── Geography ─────────────────────────────────────────────────────────
+    country: str | None = Field(default=None, description="Country name or ISO code.")
+
+    # ── Status ────────────────────────────────────────────────────────────
+    status: str | None = Field(
+        default=PaymentTransactionStatus.INITIATED.value,
+        description="Payment status: initiated, pending, success, failed, cancelled, refunded.",
+    )
+    paid_at: datetime | None = Field(default=None, description="Timestamp when payment was settled.")
+
+    # ── Recipient ─────────────────────────────────────────────────────────
+    recipient_id: uuid.UUID | None = Field(default=None, description="Recipient UUID.")
+    recipient_phone: str | None = Field(default=None, description="Recipient phone number.")
+    recipient_data: dict[str, Any] | None = Field(default=None, description="Recipient snapshot (JSONB).")
+
+    # ── Associations ──────────────────────────────────────────────────────
+    booking_id: uuid.UUID | None = Field(default=None, description="Associated booking UUID.")
+    booking_data: dict[str, Any] | None = Field(default=None, description="Booking snapshot (JSONB).")
+    voucher_id: uuid.UUID | None = Field(default=None, description="Associated gift voucher UUID.")
+    voucher_data: dict[str, Any] | None = Field(default=None, description="Voucher snapshot (JSONB).")
+    product_order_id: uuid.UUID | None = Field(default=None, description="Associated product order UUID.")
+    product_order_items: list[Any] | dict[str, Any] | None = Field(default=None, description="Product order items (JSONB).")
+
+    # ── Invoice & Transaction ─────────────────────────────────────────────
+    invoice_id: str | None = Field(default=None, description="Gateway invoice ID.")
+    invoice_value: Decimal | None = Field(default=None, description="Invoice amount from gateway.")
+    payment_url: str | None = Field(default=None, description="Payment URL from gateway.")
+    transaction_id: str | None = Field(default=None, description="Gateway transaction ID.")
+    track_id: str | None = Field(default=None, description="Gateway track ID.")
+    reference_id: str | None = Field(default=None, description="Bank/KNET reference ID.")
+    transaction_status: str | None = Field(default=None, description="Raw transaction status from gateway.")
+    transaction_date: str | None = Field(default=None, description="Raw transaction date from gateway.")
+    receipt_image: str | None = Field(default=None, description="URL to receipt image.")
+
+    # ── Classification ────────────────────────────────────────────────────
+    payment_method: str | None = Field(default=None, description="Payment method: card, knet, apple_pay, etc.")
+    payment_through: str | None = Field(
+        default=None,
+        description="Payment channel: ushspa, desk, other.",
+    )
+    payment_provider: str | None = Field(
+        default=None,
+        description="Payment provider: MyFatoorah, DirectLink, Deema, Other.",
+    )
+    payment_gateway: str | None = Field(
+        default=None,
+        description="Payment gateway/network: KNET, TAP, Other.",
+    )
+    payment_for: str | None = Field(
+        default=PaymentFor.BRANCH_SERVICE.value,
+        description="Payment purpose: branch_service, home_service, gift_voucher, product_items.",
+    )
+
+    # ── Raw Gateway Data ──────────────────────────────────────────────────
+    payment_id: str | None = Field(default=None, description="Gateway payment ID.")
+    payment_data: dict[str, Any] | None = Field(default=None, description="Full gateway payload / extra data (JSONB).")
+
+    # ── Ingest helper (full gateway response) ─────────────────────────────
+    gateway_response: dict[str, Any] | None = Field(
+        default=None,
+        description="Full raw response from gateway — will be parsed and merged into payment_data.",
+    )
+
+    # ── created_by override (normally auto-set from JWT) ──────────────────
+    created_by: uuid.UUID | None = Field(default=None, description="API requester UUID (auto-set from JWT if omitted).")
+
+    # ── Validators ────────────────────────────────────────────────────────
+    @field_validator(
+        "recipient_phone", "transaction_date", "transaction_status", "receipt_image",
+        "country", "invoice_id", "payment_url", "transaction_id", "track_id", "reference_id",
+        "payment_method", "payment_through", "payment_provider", "payment_gateway",
+        "payment_for", "payment_id", "status",
+        mode="before",
+    )
+    @classmethod
+    def coerce_empty_str(cls, v: Any) -> Any:
+        return _coerce_empty(v)
+
+    model_config = {"extra": "allow"}
+
+
+class UpdatePaymentRequestSchema(BaseModel):
+    """PATCH /api/v1/payments/{payment_id}/ — All fields optional."""
+
+    # Participants
+    customer_data: dict[str, Any] | None = None
+    sender_id: uuid.UUID | None = None
+    sender_data: dict[str, Any] | None = None
+
+    # Service
+    service_id: uuid.UUID | None = None
+    service_data: dict[str, Any] | None = None
+    branch_id: uuid.UUID | None = None
+    branch_data: dict[str, Any] | None = None
+    service_arrangement_id: uuid.UUID | None = None
+    service_arrangement_data: dict[str, Any] | None = None
+
+    # Pricing
+    addons: list[Any] | dict[str, Any] | None = None
+    addons_price: Decimal | None = None
+    extra_time: int | None = None
+    price_for_extra_time: Decimal | None = None
+
+    # Financials
+    total_amount: Decimal | None = None
+    total_duration: int | None = None
+    currency: str | None = None
+    country: str | None = None
+
+    # Status
+    status: str | None = None
+    paid_at: datetime | None = None
+
+    # Recipient
+    recipient_id: uuid.UUID | None = None
+    recipient_phone: str | None = None
+    recipient_data: dict[str, Any] | None = None
+
+    # Associations
+    booking_id: uuid.UUID | None = None
+    booking_data: dict[str, Any] | None = None
+    voucher_id: uuid.UUID | None = None
+    voucher_data: dict[str, Any] | None = None
+    product_order_id: uuid.UUID | None = None
+    product_order_items: list[Any] | dict[str, Any] | None = None
+
+    # Invoice & Transaction
+    invoice_id: str | None = None
+    invoice_value: Decimal | None = None
+    payment_url: str | None = None
+    transaction_id: str | None = None
+    track_id: str | None = None
+    reference_id: str | None = None
+    transaction_status: str | None = None
+    transaction_date: str | None = None
+    receipt_image: str | None = None
+
+    # Classification
+    payment_method: str | None = None
+    payment_through: str | None = None
+    payment_provider: str | None = None
+    payment_gateway: str | None = None
+    payment_for: str | None = None
+
+    # Payment data
+    payment_id: str | None = None
+    payment_data: dict[str, Any] | None = None
+
+    # Gateway response ingest
+    gateway_response: dict[str, Any] | None = None
+
+    # Audit
+    reason: str | None = Field(default=None, description="Reason for update (audit log).")
+    source: str = Field(default="admin", description="Actor making the change.")
+
+    model_config = {"extra": "allow"}
 
 
 class InitiatePaymentRequest(BaseModel):
@@ -32,128 +234,12 @@ class InitiatePaymentRequest(BaseModel):
 
     booking_id: str | None = Field(default=None, description="Booking ID if paying for a booking.")
     voucher_id: str | None = Field(default=None, description="Voucher ID if paying for a voucher.")
-    voucher_data: dict[str, Any] | None = Field(default=None, description="Voucher snapshot data.")
-    payment_for: PaymentFor = Field(
-        default=PaymentFor.SERVICE,
-        description="Purpose: gift_voucher, service, home_service, products, loyalty, others",
+    payment_for: str = Field(
+        default=PaymentFor.BRANCH_SERVICE.value,
+        description="Purpose: branch_service, home_service, gift_voucher, product_items",
     )
-    provider: PaymentProvider = PaymentProvider.MYFATOORAH
+    provider: str = Field(default=PaymentProvider.MYFATOORAH.value, description="Payment provider to use.")
     payment_method: str = "card"  # card | knet | apple_pay | google_pay
-
-
-class CreatePaymentRequestSchema(BaseModel):
-    """POST /api/v1/payments/ (Create payment record / ingest gateway response)."""
-
-    booking_id: uuid.UUID | str | None = Field(
-        default=None,
-        description="Associated booking ID. If omitted, can be inferred from gateway response CustomerReference.",
-    )
-    voucher_id: uuid.UUID | str | None = Field(
-        default=None,
-        description="Associated gift voucher ID, if payment is for a voucher.",
-    )
-    voucher_data: dict[str, Any] | None = Field(
-        default=None,
-        description="Snapshot of voucher metadata at the time of payment.",
-    )
-    payment_for: str | None = Field(
-        default=None,
-        description="Payment purpose: gift_voucher, service, home_service, products, loyalty, others.",
-    )
-    customer_id: uuid.UUID | str | None = Field(
-        default=None,
-        description="Associated customer ID. Inferred from booking or current user if omitted.",
-    )
-    amount: Decimal | str | float | None = Field(
-        default=None,
-        description="Payment amount. If omitted, parsed from gateway response.",
-    )
-    currency: str = Field(default="KWD", description="Currency code (KWD, KD, etc.).")
-    provider: str = Field(default="myfatoorah", description="Gateway provider name.")
-    payment_method: str = Field(default="card", description="card, knet, apple_pay, etc.")
-    status: str = Field(
-        default=PaymentTransactionStatus.SUCCESS.value,
-        description="Transaction status: initiated, pending, success, failed, cancelled, refunded.",
-    )
-
-    # Raw full gateway response payload
-    gateway_response: dict[str, Any] | None = Field(
-        default=None,
-        description="Full raw response data from the payment gateway (e.g. MyFatoorah, Tap).",
-    )
-
-    # ── Standard Unified Payment / Gateway Fields ─────────────────────────
-    payment_id: str | None = Field(default=None, description="Gateway PaymentId")
-    transaction_id: str | None = Field(default=None, description="Gateway TransactionId")
-    is_paid: bool | None = Field(default=None, description="True if payment is captured/paid")
-    invoice_id: str | None = Field(default=None, description="Gateway InvoiceId")
-    invoice_value: Decimal | str | float | None = Field(default=None, description="Invoice value")
-    customer_name: str | None = Field(default=None, description="Customer name")
-    customer_mobile: str | None = Field(default=None, description="Customer mobile number")
-    customer_email: str | None = Field(default=None, description="Customer email address")
-    created_date: str | None = Field(default=None, description="Gateway CreatedDate string")
-    transaction_date: str | None = Field(default=None, description="Gateway TransactionDate string")
-    payment_gateway: str | None = Field(default=None, description="Gateway name (KNET, VISA/MASTER, etc.)")
-
-    # Explicit financial fields
-    service_charge: Decimal | str | float | None = Field(default=None)
-    vat_amount: Decimal | str | float | None = Field(default=None)
-    due_deposit: Decimal | str | float | None = Field(default=None)
-    deposit_status: str | None = Field(default=None)
-
-    # Gateway identifiers
-    invoice_reference: str | None = None
-    customer_reference: str | None = None
-    reference_id: str | None = None
-    track_id: str | None = None
-    authorization_id: str | None = None
-    gateway_name: str | None = None
-    provider_payment_id: str | None = None
-    provider_transaction_id: str | None = None
-
-    # Customer and booking metadata overrides
-    customer_data: dict[str, Any] | None = None
-    booking_data: dict[str, Any] | None = None
-    card_info: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
-    failure_reason: str | None = None
-    idempotency_key: str | None = None
-
-    model_config = {"extra": "allow"}
-
-
-class UpdatePaymentRequestSchema(BaseModel):
-    """PATCH /api/v1/payments/{payment_id}/ (Partial/full update)."""
-
-    booking_id: uuid.UUID | str | None = None
-    voucher_id: uuid.UUID | str | None = None
-    voucher_data: dict[str, Any] | None = None
-    payment_for: str | None = None
-    status: str | None = Field(default=None, description="New payment status")
-    is_paid: bool | None = Field(default=None, description="True if payment is captured/paid")
-    payment_id: str | None = Field(default=None, description="Gateway PaymentId")
-    transaction_id: str | None = Field(default=None, description="Gateway TransactionId")
-    invoice_id: str | None = Field(default=None, description="Gateway InvoiceId")
-    invoice_value: Decimal | str | float | None = Field(default=None)
-    customer_name: str | None = Field(default=None)
-    customer_mobile: str | None = Field(default=None)
-    customer_email: str | None = Field(default=None)
-    created_date: str | None = Field(default=None)
-    transaction_date: str | None = Field(default=None)
-    payment_gateway: str | None = Field(default=None)
-    invoice_reference: str | None = None
-    customer_reference: str | None = None
-    failure_reason: str | None = Field(default=None, description="Reason if payment failed")
-    deposit_status: str | None = Field(default=None, description="Deposit status: Deposited, Not Deposited")
-    due_deposit: Decimal | str | float | None = Field(default=None)
-    service_charge: Decimal | str | float | None = Field(default=None)
-    vat_amount: Decimal | str | float | None = Field(default=None)
-    gateway_response: dict[str, Any] | None = Field(default=None)
-    customer_data: dict[str, Any] | None = None
-    booking_data: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
-    reason: str | None = Field(default=None, description="Reason for update audit trail")
-    source: str = Field(default="admin", description="Source/actor making the change")
 
 
 # ── Response Schemas ──────────────────────────────────────────────────────────
@@ -177,40 +263,49 @@ class PaymentListItem(BaseModel):
     """Payment record summary for lists and dashboards."""
 
     id: str
-    booking_id: str | None = None
     customer_id: str
-    voucher_id: str | None = None
-    voucher_data: dict[str, Any] | None = None
-    payment_for: str = "service"
-    amount: str
+    customer_data: dict[str, Any] | None = None
+    sender_id: str | None = None
+
+    service_id: str | None = None
+    branch_id: str | None = None
+    service_arrangement_id: str | None = None
+
+    addons_price: str | None = None
+    extra_time: int | None = None
+
+    total_amount: str
+    total_duration: int
     currency: str
-    provider: str
-    payment_method: str
-    status: str
-    is_paid: bool = False
-    payment_id: str | None = None
-    transaction_id: str | None = None
+    country: str | None = None
+
+    status: str | None = None
+    paid_at: datetime | None = None
+
+    recipient_id: str | None = None
+    recipient_phone: str | None = None
+
+    booking_id: str | None = None
+    voucher_id: str | None = None
+    product_order_id: str | None = None
+
     invoice_id: str | None = None
     invoice_value: str | None = None
-    invoice_reference: str | None = None
-    customer_reference: str | None = None
-    customer_name: str | None = None
-    customer_mobile: str | None = None
-    customer_email: str | None = None
-    created_date: str | None = None
-    transaction_date: str | None = None
-    payment_gateway: str | None = None
-    gateway_name: str | None = None
-    reference_id: str | None = None
-    track_id: str | None = None
-    service_charge: str | None = None
-    vat_amount: str | None = None
-    due_deposit: str | None = None
-    deposit_status: str | None = None
     payment_url: str | None = None
-    customer_data: dict[str, Any] | None = None
-    booking_data: dict[str, Any] | None = None
-    paid_at: datetime | None = None
+    transaction_id: str | None = None
+    track_id: str | None = None
+    reference_id: str | None = None
+    transaction_status: str | None = None
+    transaction_date: str | None = None
+
+    payment_method: str | None = None
+    payment_through: str | None = None
+    payment_provider: str | None = None
+    payment_gateway: str | None = None
+    payment_for: str | None = None
+    payment_id: str | None = None
+
+    created_by: str | None = None
     created_at: datetime
 
 
@@ -218,54 +313,64 @@ class PaymentDetailResponse(BaseModel):
     """Full detail of a payment record for finance dashboards and audits."""
 
     id: str
-    booking_id: str | None = None
     customer_id: str
+    customer_data: dict[str, Any] | None = None
+    sender_id: str | None = None
+    sender_data: dict[str, Any] | None = None
+
+    service_id: str | None = None
+    service_data: dict[str, Any] | None = None
+    branch_id: str | None = None
+    branch_data: dict[str, Any] | None = None
+    service_arrangement_id: str | None = None
+    service_arrangement_data: dict[str, Any] | None = None
+
+    addons: Any | None = None
+    addons_price: str | None = None
+    extra_time: int | None = None
+    price_for_extra_time: str | None = None
+
+    total_amount: str
+    total_duration: int
+    currency: str
+    country: str | None = None
+
+    status: str | None = None
+    paid_at: datetime | None = None
+
+    recipient_id: str | None = None
+    recipient_phone: str | None = None
+    recipient_data: dict[str, Any] | None = None
+
+    booking_id: str | None = None
+    booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
-    payment_for: str = "service"
-    amount: str
-    currency: str
-    service_charge: str = "0.000"
-    vat_amount: str = "0.000"
-    due_deposit: str | None = None
-    deposit_status: str | None = "Not Deposited"
-    provider: str
-    gateway_name: str | None = None
-    payment_gateway: str | None = None
-    payment_method: str
-    status: str
-    is_paid: bool = False
-    payment_id: str | None = None
-    transaction_id: str | None = None
+    product_order_id: str | None = None
+    product_order_items: Any | None = None
+
     invoice_id: str | None = None
     invoice_value: str | None = None
-    invoice_reference: str | None = None
-    customer_reference: str | None = None
-    customer_name: str | None = None
-    customer_mobile: str | None = None
-    customer_email: str | None = None
-    created_date: str | None = None
-    transaction_date: str | None = None
-    provider_payment_id: str | None = None
-    provider_reference: str | None = None
-    provider_transaction_id: str | None = None
-    reference_id: str | None = None
-    track_id: str | None = None
-    authorization_id: str | None = None
-    payment_id_gateway: str | None = None
     payment_url: str | None = None
-    failure_reason: str | None = None
-    ip_address: str | None = None
-    country: str | None = None
-    paid_at: datetime | None = None
-    customer_data: dict[str, Any] | None = None
-    booking_data: dict[str, Any] | None = None
-    card_info: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
-    provider_response: dict[str, Any] | None = None
-    status_history: list[PaymentStatusHistoryItem] | None = None
+    transaction_id: str | None = None
+    track_id: str | None = None
+    reference_id: str | None = None
+    transaction_status: str | None = None
+    transaction_date: str | None = None
+    receipt_image: str | None = None
+
+    payment_method: str | None = None
+    payment_through: str | None = None
+    payment_provider: str | None = None
+    payment_gateway: str | None = None
+    payment_for: str | None = None
+    payment_id: str | None = None
+    payment_data: dict[str, Any] | None = None
+
+    created_by: str | None = None
     created_at: datetime
-    updated_at: datetime
+
+    status_history: list[PaymentStatusHistoryItem] | None = None
 
 
 class PaymentResponse(BaseModel):
@@ -290,10 +395,10 @@ class PaymentSessionResponse(BaseModel):
     payment_id: str
     booking_id: str | None = None
     voucher_id: str | None = None
-    payment_for: str = "service"
+    payment_for: str = PaymentFor.BRANCH_SERVICE.value
     provider: str
     payment_url: str
-    amount: str
+    total_amount: str
     currency: str
     expires_at: datetime | None = None
 
@@ -304,15 +409,14 @@ class PaymentStatusResponse(BaseModel):
     payment_id: str
     booking_id: str | None = None
     voucher_id: str | None = None
-    payment_for: str = "service"
-    provider: str
-    status: str
-    amount: str
+    payment_for: str = PaymentFor.BRANCH_SERVICE.value
+    payment_provider: str
+    status: str | None = None
+    total_amount: str
     currency: str
-    payment_method: str
-    provider_reference: str | None
+    payment_method: str | None = None
+    reference_id: str | None = None
     created_at: datetime
-    updated_at: datetime
 
 
 class WebhookVerifyRequest(BaseModel):
