@@ -166,6 +166,7 @@ class BookingStatusUpdatedEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
+    addons_duration: int = 0
     booking_type: str = "branch_service"
     payment_type: str = "service"
     status: str = ""
@@ -225,6 +226,7 @@ class BookingConfirmedEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
+    addons_duration: int = 0
     booking_type: str = "branch_service"
     payment_type: str = "service"
     status: str = "confirmed"
@@ -280,6 +282,7 @@ class BookingPaymentPendingEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
+    addons_duration: int = 0
     booking_type: str = "branch_service"
     payment_type: str = "service"
     status: str = "payment_pending"
@@ -361,6 +364,7 @@ class BookingCompletedEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
+    addons_duration: int = 0
     booking_type: str = "branch_service"
     payment_type: str = "service"
     status: str = "completed"
@@ -563,6 +567,7 @@ class BookingLoyaltyEvent(BaseEvent):
     duration_minutes: int = 0
     extra_minutes: int = 0
     total_duration: int = 0
+    addons_duration: int = 0
     booking_type: str = "loyalty"
     payment_type: str = "service"
     status: str = "confirmed"

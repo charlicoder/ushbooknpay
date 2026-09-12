@@ -197,8 +197,21 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "appointment_endtime": end_time_str,
         "appointment_time": start_time_str,
         "duration_minutes": booking.duration_minutes,
-        "extra_minutes": booking.extra_minutes,
-        "total_duration": booking.duration_minutes + booking.extra_minutes,
+        "extra_minutes": booking.extra_minutes or 0,
+        # Use the authoritative persisted total_duration column so the SQS event
+        # matches the value returned by the PATCH /status/ response.  The column
+        # already accounts for duration_minutes + extra_minutes + addons_duration
+        # (set at booking-creation time).  Fall back to recomputing from parts
+        # only for legacy rows where the column has never been populated.
+        "total_duration": (
+            getattr(booking, "total_duration", None)
+            or (
+                booking.duration_minutes
+                + (booking.extra_minutes or 0)
+                + (getattr(booking, "addons_duration", None) or 0)
+            )
+        ),
+        "addons_duration": getattr(booking, "addons_duration", None) or 0,
         "booking_type": booking_type_str,
         "payment_type": payment_type_str,
         "status": booking.status,
