@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession, RequireAppToken, USHAuthDep
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
+from app.events.contracts import BookingPaymentStatusSuccessEvent
 from app.booking.interfaces.schemas import (
     AddonSchema,
     BookingDetailResponse,
@@ -1017,6 +1018,28 @@ async def update_booking_status(
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
     )
+
+    # ── Dispatch desk-payment success event ───────────────────────────────
+    # When a booking is paid manually at the desk the app sends:
+    #   payment_status=success, source="ushspa app", reason="Paid on desk"
+    # We fire a dedicated SQS event so ushnotice can update the
+    # appointment cache payment_status in ushauth.
+    _reason_str = (body.reason or "").strip().lower()
+    _source_str = (body.source or "").strip().lower()
+    if (
+        payment_status == PaymentStatus.SUCCESS
+        and _source_str == "ushspa app"
+        and _reason_str == "paid on desk"
+    ):
+        await booking_service._enqueue_event(
+            BookingPaymentStatusSuccessEvent(
+                booking_id=str(booking_id),
+                customer_id=str(updated.customer_id),
+                payment_status="success",
+                source=body.source or "",
+                reason=body.reason or "",
+            )
+        )
 
     return JSONResponse(
         content={

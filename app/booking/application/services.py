@@ -60,6 +60,7 @@ from app.events.contracts import (
     BookingNoShowEvent,
     BookingCompletedEvent,
     BookingPaymentPendingEvent,
+    BookingPaymentStatusSuccessEvent,
     BookingStatusUpdatedEvent,
     RescheduleRequestedEvent,
 )
@@ -610,9 +611,29 @@ class BookingService:
         Writes BookingConfirmedEvent to outbox/SQS.
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
-        machine = BookingStateMachine(BookingStatus(booking.status))
 
-        old_status = BookingStatus(booking.status)
+        current_status = BookingStatus(booking.status)
+
+        # ── Idempotency guard ────────────────────────────────────────────────
+        # If the booking is already confirmed (e.g. because PATCH /status/ was
+        # called before POST /payments/ — the common "Paid on desk" flow) simply
+        # merge the payment data and return without touching the status or firing
+        # another BookingConfirmedEvent.  This avoids the BookingStateError that
+        # the state machine raises for confirmed → confirmed transitions.
+        if current_status == BookingStatus.CONFIRMED:
+            if payment_data is not None:
+                booking.payment_data = {**(booking.payment_data or {}), **payment_data}
+                booking.payment_status = PaymentStatus.SUCCESS.value
+                await self._repo.update(booking)
+            logger.info(
+                "booking_already_confirmed_payment_data_merged",
+                booking_id=str(booking.id),
+                payment_id=payment_id,
+            )
+            return booking
+
+        old_status = current_status
+        machine = BookingStateMachine(old_status)
         machine.transition_to(BookingStatus.CONFIRMED)
 
         booking.status = BookingStatus.CONFIRMED.value

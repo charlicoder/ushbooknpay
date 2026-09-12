@@ -410,6 +410,28 @@ class RescheduleRequestedEvent(BaseEvent):
     requested_appointment_end: str = ""
 
 
+@dataclass
+class BookingPaymentStatusSuccessEvent(BaseEvent):
+    """Fired when booking payment_status is updated to 'success' via a desk payment.
+
+    Triggered when PATCH /bookings/{id}/status/ is called with:
+      - payment_status = 'success'
+      - source = 'ushspa app'
+      - reason = 'Paid on desk'
+
+    Downstream consumers (ushnotice) use this to update the
+    appointment cache payment_status in ushauth.
+    """
+
+    event_name: str = field(default="Booking.PaymentStatusSuccess", init=False)
+    event_type: str = field(default="booking.updated_payment_status_to_success", init=False)
+    booking_id: str = ""
+    customer_id: str = ""
+    payment_status: str = "success"
+    source: str = ""
+    reason: str = ""
+
+
 # ── Payment Events ────────────────────────────────────────────────────────────
 
 
