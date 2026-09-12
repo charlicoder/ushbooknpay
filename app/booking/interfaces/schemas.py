@@ -17,7 +17,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.booking.domain.value_objects import BookingStatus, BookingType, PaymentStatus, PaymentType
 
@@ -382,6 +382,13 @@ class UpdateBookingStatusRequest(BaseModel):
         alias="paymentData",
         description="Payment details snapshot and metadata",
     )
+    # ``payments_data`` (plural, snake_case) is the key sent by the mobile app.
+    # We accept it here and promote its value into ``payment_data`` so the raw
+    # gateway response dict is stored in the booking record unchanged.
+    payments_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Alias used by the mobile app for the payment gateway response (plural form). Merged into payment_data automatically.",
+    )
     payment_type: str | None = Field(
         default=None,
         alias="paymentType",
@@ -423,6 +430,19 @@ class UpdateBookingStatusRequest(BaseModel):
         "populate_by_name": True,
         "extra": "allow",
     }
+
+    @model_validator(mode="after")
+    def _promote_payments_data(self) -> "UpdateBookingStatusRequest":
+        """Merge ``payments_data`` (mobile app key) into ``payment_data``.
+
+        The mobile app sends the raw payment-gateway response under the key
+        ``payments_data`` (plural).  If ``payment_data`` / ``paymentData`` is
+        not also provided, we copy ``payments_data`` verbatim so the caller's
+        intent is fulfilled without any transformation.
+        """
+        if self.payments_data and not self.payment_data:
+            self.payment_data = self.payments_data
+        return self
 
 
 
