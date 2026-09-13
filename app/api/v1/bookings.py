@@ -473,6 +473,9 @@ async def create_booking(
             )
 
     # ── 4. Build start and end datetime ─────────────────────────────────
+    # NOTE: The system is timezone-naive by design — times are stored as local
+    # Kuwait time but labelled as UTC. This matches the appointment_cache which
+    # also stores local time as UTC. Do NOT convert; just stamp as UTC.
     try:
         naive_dt = datetime.fromisoformat(f"{appointment_date}T{appointment_time}")
         appointment_start = naive_dt.replace(tzinfo=timezone.utc)
