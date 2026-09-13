@@ -255,15 +255,30 @@ class ShopOrderService:
         order_id: uuid.UUID,
         new_payment_status: OrderPaymentStatus,
         changed_by: str,
+        payment_method: str | None = None,
+        payment_type: str | None = None,
+        payment_provider: str | None = None,
     ) -> ShopOrder:
         """Update payment_status — called by ushdesk (mark paid) or mobile gateway callback.
 
-        Fires a ShopOrderCreatedEvent to SQS when the status transitions to ``success``
-        so ushnotice can send the customer their order confirmation and tracking link.
+        Also stores payment classification fields (method/type/provider) so that
+        the SQS ShopOrderCreatedEvent carries enough data for ushnotice to create
+        a payment record without a second DB lookup.
+
+        Fires a ShopOrderCreatedEvent to SQS when the status transitions to ``success``.
         """
         order = await self._repo.get_by_id(order_id)
         previous_payment_status = order.payment_status
         order.payment_status = new_payment_status.value
+
+        # Store classification when provided (overwrite if already set)
+        if payment_method is not None:
+            order.payment_method = payment_method
+        if payment_type is not None:
+            order.payment_type = payment_type
+        if payment_provider is not None:
+            order.payment_provider = payment_provider
+
         await self._repo.update(order)
         await self._session.commit()
         await self._session.refresh(order)
@@ -273,6 +288,8 @@ class ShopOrderService:
             order_number=order.order_number,
             from_payment_status=previous_payment_status,
             to_payment_status=new_payment_status.value,
+            payment_method=payment_method,
+            payment_type=payment_type,
             changed_by=changed_by,
         )
 
@@ -407,16 +424,34 @@ class ShopOrderService:
         from app.events.sqs_client import get_sqs_client
 
         event = ShopOrderCreatedEvent(
+            # ── Identity ─────────────────────────────────────────────
             order_id=str(order.id),
             order_number=order.order_number,
+            # ── Customer ─────────────────────────────────────────────
             customer_id=str(order.customer_id),
             customer_name=order.customer_name,
             customer_phone=order.customer_phone,
-            total_amount=str(order.total_amount),
-            currency=order.currency,
+            customer_data={
+                "id": str(order.customer_id),
+                "name": order.customer_name,
+                "phone": order.customer_phone,
+                "contact_number": order.contact_number or order.customer_phone,
+            },
+            # ── Delivery ─────────────────────────────────────────────
             delivery_address=order.formatted_address,
+            # ── Tracking ─────────────────────────────────────────────
             public_token=order.public_token,
             tracking_code=order.tracking_code,
+            # ── Financials ───────────────────────────────────────────
+            subtotal=str(order.subtotal),
+            total_amount=str(order.total_amount),
+            currency=order.currency,
+            # ── Payment classification ────────────────────────────────
+            payment_status=order.payment_status,           # always "success" at this point
+            payment_method=order.payment_method or "",     # e.g. "card", "cash", "knet"
+            payment_type=order.payment_type or "",         # e.g. "gateway", "desk"
+            payment_provider=order.payment_provider or "", # e.g. "MyFatoorah", "DirectLink"
+            # ── Items snapshot ────────────────────────────────────────
             items=[
                 {
                     "product_id": str(i.product_id),
@@ -425,6 +460,7 @@ class ShopOrderService:
                     "quantity": i.quantity,
                     "unit_price": str(i.unit_price),
                     "line_total": str(i.line_total),
+                    "product_image_url": i.product_image_url,
                 }
                 for i in order.items
             ],

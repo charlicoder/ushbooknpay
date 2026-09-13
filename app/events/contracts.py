@@ -861,10 +861,11 @@ class VoucherRedeemedEvent(BaseEvent):
 @dataclass
 class ShopOrderCreatedEvent(BaseEvent):
     """
-    Fired when a new shop order is placed and persisted.
+    Fired when a new shop order is placed and payment is confirmed (payment_status = success).
 
-    ushnotice handles this event to send a WhatsApp/SMS confirmation
-    containing the tracking URL and secret tracking_code.
+    ushnotice handles this event to:
+      1. Create a payment record in ushbooknpay (/api/v1/payments/).
+      2. Send a WhatsApp/SMS confirmation with the tracking URL and tracking_code.
     """
 
     event_name: str = field(default="Shop.OrderCreated", init=False)
@@ -874,23 +875,33 @@ class ShopOrderCreatedEvent(BaseEvent):
     order_id: str = ""
     order_number: str = ""
 
-    # ── Customer contact ──────────────────────────────────────────────
+    # ── Customer ──────────────────────────────────────────────────────
     customer_id: str = ""
     customer_name: str = ""
     customer_phone: str = ""
+    # Snapshot dict for payment record: {id, name, phone, email}
+    customer_data: dict = field(default_factory=dict)
 
     # ── Delivery ──────────────────────────────────────────────────────
     delivery_address: str = ""
 
-    # ── Tracking ──────────────────────────────────────────────────────────
+    # ── Tracking ──────────────────────────────────────────────────────
     # URL-safe token forming the public tracking URL path segment
     public_token: str = ""
     # 6-digit PIN sent to customer to confirm receipt
     tracking_code: str = ""
 
     # ── Financials ────────────────────────────────────────────────────
+    subtotal: str = ""
     total_amount: str = ""
     currency: str = "KWD"
+
+    # ── Payment classification ─────────────────────────────────────────
+    # status at time of event (always "success" since we only fire on success)
+    payment_status: str = "success"
+    payment_method: str = ""       # card, knet, apple_pay, cash, etc.
+    payment_type: str = ""         # gateway, desk, gift_voucher, etc.
+    payment_provider: str = ""     # MyFatoorah, DirectLink, Other
 
     # ── Items snapshot ────────────────────────────────────────────────
     # List of dicts: {product_id, product_name, product_name_ar, quantity, unit_price, line_total}

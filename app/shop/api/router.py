@@ -221,6 +221,9 @@ async def update_payment_status(
             order_id=order_id,
             new_payment_status=body.payment_status,
             changed_by=changed_by,
+            payment_method=body.payment_method,
+            payment_type=body.payment_type,
+            payment_provider=body.payment_provider,
         )
     except (NotFoundError, ShopOrderNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))

@@ -153,10 +153,25 @@ class UpdateDeliveryStatusRequest(BaseModel):
 
 class UpdatePaymentStatusRequest(BaseModel):
     """
-    Update payment status from ushdesk (mark as paid) or mobile (payment success/fail).
+    Update payment status from ushdesk (mark as paid) or mobile gateway callback.
+
+    payment_method, payment_type, and payment_provider are optional but should be
+    supplied when marking an order as paid so the payment record can be classified.
     """
 
     payment_status: OrderPaymentStatus
+    payment_method: str | None = Field(
+        default=None,
+        description="How the customer paid: card, knet, cash, apple_pay, etc.",
+    )
+    payment_type: str | None = Field(
+        default=None,
+        description="Payment channel: gateway, desk, gift_voucher, etc.",
+    )
+    payment_provider: str | None = Field(
+        default=None,
+        description="Payment provider: MyFatoorah, DirectLink, Deema, Other.",
+    )
 
 
 # ── Customer confirm received ─────────────────────────────────────────────────

@@ -121,6 +121,10 @@ class ShopOrder(Base):
         default=OrderPaymentStatus.NOT_INITIATED.value,
         index=True,
     )
+    # Payment classification — set when PATCH /orders/{id}/payment/ is called
+    payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)    # card, knet, cash, apple_pay…
+    payment_type: Mapped[str | None] = mapped_column(String(50), nullable=True)      # gateway, desk, gift_voucher…
+    payment_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)  # MyFatoorah, DirectLink, Other…
 
     # ── Internal notes ────────────────────────────────────────────────────
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
