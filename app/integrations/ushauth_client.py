@@ -509,3 +509,33 @@ class USHAuthClient:
             "status": str(status),
         }
         return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
+
+    # ── Shop: Product catalogue ───────────────────────────────────────────
+
+    async def list_products(
+        self,
+        *,
+        category_id: str | None = None,
+        featured: bool | None = None,
+        is_active: bool = True,
+    ) -> list[dict[str, Any]]:
+        """
+        Return a list of active products from ushauth.
+
+        Results are fetched live; caching is handled at the API gateway or
+        CDN layer.  Response matches the ushauth Product serialiser shape.
+        """
+        params: dict[str, Any] = {"is_active": str(is_active).lower()}
+        if category_id:
+            params["category"] = category_id
+        if featured is not None:
+            params["is_featured"] = str(featured).lower()
+        return await self._get("/api/v1/products/", params=params)
+
+    async def get_product(self, product_id: str) -> dict[str, Any]:
+        """Return a single product by its UUID. Raises on 404."""
+        return await self._get(f"/api/v1/products/{product_id}/")
+
+
+# Canonical alias used by the shop module (matches the pattern used elsewhere)
+UshAuthClient = USHAuthClient

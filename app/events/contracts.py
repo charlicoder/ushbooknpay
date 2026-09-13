@@ -854,3 +854,42 @@ class VoucherRedeemedEvent(BaseEvent):
 
     # Note: secret_code intentionally omitted from redemption event
 
+
+# ── Shop Events ───────────────────────────────────────────────────────────────
+
+
+@dataclass
+class ShopOrderCreatedEvent(BaseEvent):
+    """
+    Fired when a new shop order is placed and persisted.
+
+    ushnotice handles this event to send a WhatsApp/SMS confirmation
+    containing the tracking URL and secret tracking_code.
+    """
+
+    event_name: str = field(default="Shop.OrderCreated", init=False)
+    event_type: str = field(default="shop.order_created", init=False)
+
+    # ── Order identity ────────────────────────────────────────────────
+    order_id: str = ""
+    order_number: str = ""
+
+    # ── Customer contact ──────────────────────────────────────────────
+    customer_id: str = ""
+    customer_name: str = ""
+    customer_phone: str = ""
+
+    # ── Delivery ──────────────────────────────────────────────────────
+    delivery_address: str = ""
+
+    # ── Tracking ──────────────────────────────────────────────────────
+    # The secret code sent to the customer for self-service 'received' update
+    tracking_code: str = ""
+
+    # ── Financials ────────────────────────────────────────────────────
+    total_amount: str = ""
+    currency: str = "KWD"
+
+    # ── Items snapshot ────────────────────────────────────────────────
+    # List of dicts: {product_id, product_name, product_name_ar, quantity, unit_price, line_total}
+    items: list = field(default_factory=list)

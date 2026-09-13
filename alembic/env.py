@@ -19,6 +19,7 @@ from app.core.database import Base
 from app.events.outbox.models import OutboxEvent  # noqa
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory  # noqa
 from app.promotions.infrastructure.models import LoyaltyTracker, LoyaltyReward  # noqa
+from app.shop.infrastructure.models import ShopOrder, ShopOrderItem, ShopOrderStatusHistory  # noqa
 
 config = context.config
 settings = get_settings()
