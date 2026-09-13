@@ -88,6 +88,22 @@ class ShopOrderRepository:
             raise ShopOrderNotFoundError(f"ShopOrder number={order_number} not found.")
         return order
 
+    async def get_by_public_token(self, public_token: str) -> ShopOrder:
+        """Return a ShopOrder by its public tracking token."""
+        stmt = (
+            select(ShopOrder)
+            .where(ShopOrder.public_token == public_token)
+            .options(
+                selectinload(ShopOrder.items),
+                selectinload(ShopOrder.status_history),
+            )
+        )
+        result = await self._session.execute(stmt)
+        order = result.scalar_one_or_none()
+        if order is None:
+            raise ShopOrderNotFoundError(f"ShopOrder public_token=*** not found.")
+        return order
+
     async def list_orders(
         self,
         *,

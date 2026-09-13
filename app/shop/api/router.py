@@ -316,43 +316,60 @@ async def get_my_order(
 
 
 @router.get(
-    "/track/{order_number}/",
+    "/track/{public_token}/",
     response_model=PublicOrderTrackingResponse,
     summary="Public order tracking",
     description=(
-        "Returns order status and history without any PII. "
-        "Accessible without authentication — share this URL with the customer."
+        "Returns order status and delivery history without any PII. "
+        "Accessible without authentication — share this URL with the customer. "
+        "Returns 410 Gone if the tracking link has expired."
     ),
+    responses={
+        410: {"description": "Tracking link has expired."},
+    },
 )
 async def track_order(
-    order_number: str,
+    public_token: str,
     svc: Annotated[ShopOrderService, Depends(_service)],
 ) -> PublicOrderTrackingResponse:
+    from datetime import datetime, timezone as _tz
+
     try:
-        order = await svc.get_order_by_number(order_number)
+        order = await svc.get_order_by_public_token(public_token)
     except (NotFoundError, ShopOrderNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    # Check token expiry
+    if order.token_expires_at is not None:
+        expires = order.token_expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=_tz.utc)
+        if datetime.now(_tz.utc) > expires:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This tracking link has expired.",
+            )
+
     return order_to_public_tracking(order)
 
 
 @router.post(
-    "/track/{order_number}/received/",
+    "/track/{public_token}/received/",
     response_model=PublicOrderTrackingResponse,
     summary="Customer confirms receipt",
     description=(
-        "Customer visits the public tracking URL after delivery and confirms receipt. "
-        "Requires the secret tracking_code sent to them via SMS/WhatsApp. "
-        "Only valid when current status is 'delivered'."
+        "Customer submits their 6-digit PIN to confirm they received the package. "
+        "Only valid when current status is 'delivered' and the tracking link has not expired."
     ),
 )
 async def confirm_received(
-    order_number: str,
+    public_token: str,
     body: ConfirmReceivedRequest,
     svc: Annotated[ShopOrderService, Depends(_service)],
 ) -> PublicOrderTrackingResponse:
     try:
         order = await svc.confirm_received(
-            order_number=order_number,
+            public_token=public_token,
             tracking_code=body.tracking_code,
         )
     except (NotFoundError, ShopOrderNotFoundError):

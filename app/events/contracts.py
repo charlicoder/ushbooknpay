@@ -882,8 +882,10 @@ class ShopOrderCreatedEvent(BaseEvent):
     # ── Delivery ──────────────────────────────────────────────────────
     delivery_address: str = ""
 
-    # ── Tracking ──────────────────────────────────────────────────────
-    # The secret code sent to the customer for self-service 'received' update
+    # ── Tracking ──────────────────────────────────────────────────────────
+    # URL-safe token forming the public tracking URL path segment
+    public_token: str = ""
+    # 6-digit PIN sent to customer to confirm receipt
     tracking_code: str = ""
 
     # ── Financials ────────────────────────────────────────────────────

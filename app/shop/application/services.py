@@ -16,9 +16,10 @@ Use cases:
 from __future__ import annotations
 
 import asyncio
+import random
 import secrets
-import string
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -42,12 +43,22 @@ from app.shop.interfaces.schemas import CreateShopOrderRequest
 
 logger = structlog.get_logger(__name__)
 
-_TRACKING_CODE_CHARS = string.ascii_uppercase + string.digits
+_TRACKING_CODE_RNG = random.SystemRandom()  # cryptographically seeded
 
 
-def _generate_tracking_code(length: int = 8) -> str:
-    """Return a cryptographically random uppercase alphanumeric code."""
-    return "".join(secrets.choice(_TRACKING_CODE_CHARS) for _ in range(length))
+def _generate_tracking_code() -> str:
+    """Return a random 6-digit numeric PIN (100000–999999)."""
+    return str(_TRACKING_CODE_RNG.randint(100000, 999999))
+
+
+def _generate_public_token() -> str:
+    """Return a URL-safe random 43-character token (32 bytes base64url, no padding)."""
+    return secrets.token_urlsafe(32)
+
+
+def _token_expiry(weeks: int = 1) -> datetime:
+    """Return a UTC datetime ``weeks`` from now."""
+    return datetime.now(timezone.utc) + timedelta(weeks=weeks)
 
 
 class ShopOrderService:
@@ -127,9 +138,11 @@ class ShopOrderService:
 
         total_amount = subtotal  # no discount at creation time
 
-        # ── 3. Generate order number and tracking code ────────────────────
+        # ── 3. Generate order number, tokens ──────────────────────────────
         order_number = await self._repo.next_order_number()
-        tracking_code = _generate_tracking_code()
+        tracking_code = _generate_tracking_code()   # 6-digit PIN
+        public_token = _generate_public_token()      # URL-safe random string
+        token_expires_at = _token_expiry(weeks=1)    # expires in 1 week
 
         # ── 4. Persist ────────────────────────────────────────────────────
         order = ShopOrder(
@@ -150,6 +163,8 @@ class ShopOrderService:
             delivery_notes=body.delivery_notes,
             delivery_status=DeliveryStatus.ORDERED.value,
             tracking_code=tracking_code,
+            public_token=public_token,
+            token_expires_at=token_expires_at,
             subtotal=subtotal,
             discount=Decimal("0.000"),
             total_amount=total_amount,
@@ -174,8 +189,9 @@ class ShopOrderService:
         await self._session.commit()
         await self._session.refresh(order)
 
-        # ── 5. Fire SQS event (fire-and-forget) ───────────────────────────
-        self._enqueue_order_created_event(order)
+        # ── 5. Fire SQS event only if already paid (e.g. ushdesk cash orders) ──
+        if order.payment_status == OrderPaymentStatus.SUCCESS.value:
+            self._enqueue_order_created_event(order)
 
         logger.info(
             "shop_order_created",
@@ -183,6 +199,7 @@ class ShopOrderService:
             order_number=order.order_number,
             customer_id=str(customer_id),
             total_amount=str(total_amount),
+            payment_status=order.payment_status,
         )
         return order
 
@@ -239,8 +256,13 @@ class ShopOrderService:
         new_payment_status: OrderPaymentStatus,
         changed_by: str,
     ) -> ShopOrder:
-        """Update payment_status — called by ushdesk (mark paid) or mobile gateway callback."""
+        """Update payment_status — called by ushdesk (mark paid) or mobile gateway callback.
+
+        Fires a ShopOrderCreatedEvent to SQS when the status transitions to ``success``
+        so ushnotice can send the customer their order confirmation and tracking link.
+        """
         order = await self._repo.get_by_id(order_id)
+        previous_payment_status = order.payment_status
         order.payment_status = new_payment_status.value
         await self._repo.update(order)
         await self._session.commit()
@@ -248,30 +270,55 @@ class ShopOrderService:
         logger.info(
             "shop_payment_status_updated",
             order_id=str(order.id),
-            payment_status=new_payment_status.value,
+            order_number=order.order_number,
+            from_payment_status=previous_payment_status,
+            to_payment_status=new_payment_status.value,
             changed_by=changed_by,
         )
+
+        # Fire SQS event when payment transitions to success (mobile or ushdesk)
+        if new_payment_status == OrderPaymentStatus.SUCCESS:
+            self._enqueue_order_created_event(order)
+            logger.info(
+                "shop_order_paid_event_enqueued",
+                order_id=str(order.id),
+                order_number=order.order_number,
+            )
+
         return order
 
     # ── 4. Customer confirms received ─────────────────────────────────────
 
     async def confirm_received(
         self,
-        order_number: str,
+        public_token: str,
         tracking_code: str,
     ) -> ShopOrder:
         """
         Customer visits the public tracking URL and confirms receipt.
 
         Validates:
-        1. Order exists
-        2. Current status is 'delivered'
-        3. tracking_code matches the order's secret code
+        1. Order exists (looked up by public_token)
+        2. Token has not expired (token_expires_at)
+        3. tracking_code (6-digit PIN) matches the order's secret code
+        4. Current delivery status is 'delivered'
         """
-        order = await self._repo.get_by_order_number(order_number)
-
-        # Validate secret code (constant-time compare to resist timing attacks)
         import hmac as _hmac
+
+        order = await self._repo.get_by_public_token(public_token)
+
+        # Check token/code expiry
+        if order.token_expires_at is not None:
+            now = datetime.now(timezone.utc)
+            expires = order.token_expires_at
+            # Make offset-aware if stored as naive UTC
+            if expires.tzinfo is None:
+                from datetime import timezone as _tz
+                expires = expires.replace(tzinfo=_tz.utc)
+            if now > expires:
+                raise AuthorizationError("Tracking link has expired.")
+
+        # Validate 6-digit PIN (constant-time compare)
         if not _hmac.compare_digest(order.tracking_code, tracking_code):
             raise AuthorizationError("Invalid tracking code.")
 
@@ -310,6 +357,9 @@ class ShopOrderService:
 
     async def get_order_by_number(self, order_number: str) -> ShopOrder:
         return await self._repo.get_by_order_number(order_number)
+
+    async def get_order_by_public_token(self, public_token: str) -> ShopOrder:
+        return await self._repo.get_by_public_token(public_token)
 
     # ── 6. List orders (staff) ────────────────────────────────────────────
 
@@ -365,6 +415,7 @@ class ShopOrderService:
             total_amount=str(order.total_amount),
             currency=order.currency,
             delivery_address=order.formatted_address,
+            public_token=order.public_token,
             tracking_code=order.tracking_code,
             items=[
                 {

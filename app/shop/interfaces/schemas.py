@@ -208,6 +208,10 @@ class ShopOrderListItem(BaseModel):
     delivery_status_label_ar: str
     payment_status: str
     items_count: int
+    # Tracking token fields
+    public_token: str
+    token_expires_at: datetime | None
+    tracking_url: str  # full public URL for this order's tracking page
     created_at: datetime
     updated_at: datetime
 
@@ -234,6 +238,10 @@ class ShopOrderDetailResponse(BaseModel):
     internal_notes: str | None
     items: list[OrderItemOut]
     status_history: list[StatusHistoryOut]
+    # Tracking token fields
+    public_token: str
+    token_expires_at: datetime | None
+    tracking_url: str  # full public URL for this order's tracking page
     created_at: datetime
     updated_at: datetime
 
@@ -242,7 +250,7 @@ class PublicOrderTrackingResponse(BaseModel):
     """
     Public order tracking view — deliberately excludes PII and internal fields.
 
-    Accessible at GET /api/v1/shop/track/{order_number}/ without authentication.
+    Accessible at GET /api/v1/track/{public_token}/ without authentication.
     """
 
     order_number: str
@@ -250,6 +258,7 @@ class PublicOrderTrackingResponse(BaseModel):
     delivery_status_label: str
     delivery_status_label_ar: str
     payment_status: str
+    token_expires_at: datetime | None
     items: list[OrderItemOut]
     status_history: list[StatusHistoryOut]
     created_at: datetime
@@ -296,6 +305,13 @@ def build_status_history_out(entry: Any) -> StatusHistoryOut:
     )
 
 
+def _build_tracking_url(order: Any) -> str:
+    """Construct the full public tracking URL for this order."""
+    from app.core.config import get_settings
+    base = get_settings().API_GATEWAY_BASE_URL.rstrip("/")
+    return f"{base}/booknpay/api/v1/track/{order.public_token}/"
+
+
 def order_to_list_item(order: Any) -> ShopOrderListItem:
     ds = DeliveryStatus(order.delivery_status)
     return ShopOrderListItem(
@@ -313,6 +329,9 @@ def order_to_list_item(order: Any) -> ShopOrderListItem:
         delivery_status_label_ar=get_status_label(ds, "ar"),
         payment_status=order.payment_status,
         items_count=len(order.items),
+        public_token=order.public_token,
+        token_expires_at=order.token_expires_at,
+        tracking_url=_build_tracking_url(order),
         created_at=order.created_at,
         updated_at=order.updated_at,
     )
@@ -353,6 +372,9 @@ def order_to_detail(order: Any) -> ShopOrderDetailResponse:
             for i in order.items
         ],
         status_history=[build_status_history_out(h) for h in order.status_history],
+        public_token=order.public_token,
+        token_expires_at=order.token_expires_at,
+        tracking_url=_build_tracking_url(order),
         created_at=order.created_at,
         updated_at=order.updated_at,
     )
@@ -366,6 +388,7 @@ def order_to_public_tracking(order: Any) -> PublicOrderTrackingResponse:
         delivery_status_label=get_status_label(ds, "en"),
         delivery_status_label_ar=get_status_label(ds, "ar"),
         payment_status=order.payment_status,
+        token_expires_at=order.token_expires_at,
         items=[
             OrderItemOut(
                 id=i.id,

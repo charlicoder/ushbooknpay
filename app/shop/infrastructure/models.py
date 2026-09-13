@@ -73,9 +73,19 @@ class ShopOrder(Base):
     delivery_status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=DeliveryStatus.ORDERED.value, index=True
     )
-    # 8-character alphanumeric secret sent to customer for self-service "received" update
+    # 6-digit numeric PIN sent to customer via SMS/WhatsApp to confirm receipt
     tracking_code: Mapped[str] = mapped_column(
-        String(12), nullable=False, unique=True, index=True
+        String(6), nullable=False, unique=True, index=True
+    )
+    # URL-safe random token — used as the public order-tracking URL segment
+    # e.g. /track/{public_token}/
+    public_token: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    # Both the tracking URL and the tracking_code expire after this datetime
+    # (default: 1 week from order creation; NULL = never expires)
+    token_expires_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     @property
