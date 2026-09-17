@@ -127,6 +127,14 @@ class GiftVoucher(Base):
 
     # ── Sender (buyer) — plain UUID, no FK ───────────────────────────────
     sender_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    # ── Gift type discriminator ────────────────────────────────────────────
+    # Added in Gift V2. Defaults to SERVICE for backward compatibility.
+    # New purchases use DIGITAL, PHYSICAL, or SERVICE.
+    gift_type: Mapped[str] = mapped_column(
+        String(20), nullable=True, default="SERVICE", index=True
+    )
+
     # {"name": "...", "phone_number": "..."}
     sender_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
