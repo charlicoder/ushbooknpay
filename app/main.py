@@ -46,6 +46,17 @@ from app.core.middleware import (
 from app.events.sqs_client import SQSClient, get_sqs_client
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory  # noqa: F401
 from app.voucher.infrastructure.models import GiftVoucher  # noqa: F401
+from app.gifts.infrastructure.models import (  # noqa: F401
+    GiftVoucherCart,
+    GiftVoucherCartItem,
+    GiftVoucherPurchase,
+    GiftVoucherPurchaseItem,
+    GiftVoucherRecipient,
+    GiftVoucherDelivery,
+    GiftVoucherVerification,
+    GiftVoucherRedemption,
+    GiftVoucherStatusHistory,
+)
 
 logger = get_logger(__name__)
 
