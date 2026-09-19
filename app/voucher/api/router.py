@@ -5,21 +5,25 @@ Gift Voucher API endpoints.
 
 Routes (all under /api/v1/vouchers/):
 
-  Public / Interservice (require USH_TOKEN):
-    GET    /                        — List all gift vouchers (not filtered by created_by)
+  Public / Interservice (require USHSPA-TOKEN):
+    GET    /                                — List all gift vouchers (filterable by status, delivery_status, gift_category, expire_date, created_at, payment_through, sender_id, service_id)
 
   Customer-facing (require JWT Bearer):
-    POST   /                        — Create a gift voucher (status=created)
-    GET    /{voucher_id}/           — Get full voucher detail (sender or admin only)
-    GET    /my-vouchers/            — List my received vouchers (I am recipient)
-    GET    /my-sent-vouchers/       — List my sent vouchers (I am sender)
+    POST   /                                — Create a gift voucher (supports digital, physical, service categories; delivery)
+    GET    /{voucher_id}/                   — Get full voucher detail (sender or admin only)
+    GET    /my-vouchers/                    — List my received vouchers (I am recipient)
+    GET    /my-sent-vouchers/               — List my sent vouchers (I am sender)
 
-  Internal (require USHSPA-TOKEN):
-    PATCH  /{voucher_id}/status/    — Update voucher status (payment webhook / booking)
-    GET    /admin/                  — Admin: list all vouchers (paginated, filterable)
+  Internal / Staff (require USHSPA-TOKEN):
+    PATCH  /{voucher_id}/                   — Update gift voucher details (partial)
+    PUT    /{voucher_id}/                   — Update gift voucher details (full/partial)
+    PATCH  /{voucher_id}/status/            — Update voucher status (payment webhook / booking)
+    PATCH  /{voucher_id}/delivery-status/   — Update voucher delivery status (ordered → ready_to_go → on_the_way → delivered → received)
+    GET    /admin/                          — Admin: list all vouchers (paginated, filterable)
 
   Public (no auth):
-    GET    /public/{public_token}/  — Public gift card page (no secret_code exposed)
+    GET    /public/{public_token}/          — Public gift card page (no secret_code exposed)
+    POST   /public/{public_token}/          — Verify secret_code and return full voucher details
 """
 
 from __future__ import annotations
@@ -31,20 +35,29 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
-from app.api.deps import CurrentUser, DBSession, RequireAppToken
+from app.api.deps import AppSettings, CurrentUser, DBSession, RequireAppToken
 from app.clients import ushauth as ushauth_client
 from app.common.pagination import make_paginated_response
-from app.core.config import get_settings
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.config import Settings, get_settings
+from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
 from app.core.logging import get_logger
+from app.core.security import (
+    _get_ushspa_token,
+    validate_user_with_ushauth,
+    verify_ushspa_token,
+)
 from app.voucher.application.voucher_service import GiftVoucherService
+from app.voucher.domain.value_objects import DeliveryStatus, get_delivery_status_label
 from app.voucher.infrastructure.models import GiftVoucher
 from app.voucher.interfaces.schemas import (
     CreateGiftVoucherRequest,
     GiftVoucherListItem,
     GiftVoucherPublicResponse,
     GiftVoucherResponse,
+    UpdateGiftVoucherRequest,
     UpdateGiftVoucherStatusRequest,
+    UpdateVoucherDeliveryStatusRequest,
+    VerifyVoucherSecretCodeRequest,
 )
 
 logger = get_logger(__name__)
@@ -55,10 +68,50 @@ router = APIRouter(prefix="/vouchers", tags=["Gift Vouchers"])
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _extract_gift_category(v: Any) -> str:
+    cat = getattr(v, "gift_category", None)
+    return cat if isinstance(cat, str) and cat else "service"
+
+
+def _extract_ordered_items(v: Any) -> list[dict[str, Any]] | None:
+    items = getattr(v, "ordered_items", None)
+    return items if isinstance(items, list) else None
+
+
+def _extract_delivery_status(v: Any) -> str | None:
+    ds = getattr(v, "delivery_status", None)
+    if isinstance(ds, DeliveryStatus):
+        return ds.value
+    return ds if isinstance(ds, str) and ds else None
+
+
+def _extract_delivery_address(v: Any) -> dict[str, Any] | None:
+    addr = getattr(v, "delivery_address", None)
+    return addr if isinstance(addr, dict) else None
+
+
+def _delivery_labels(ds_str: str | None) -> tuple[str | None, str | None]:
+    if not ds_str or not isinstance(ds_str, str):
+        return None, None
+    try:
+        ds = DeliveryStatus(ds_str)
+        return get_delivery_status_label(ds, "en"), get_delivery_status_label(ds, "ar")
+    except Exception:
+        return ds_str, ds_str
+
+
 def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
     """Map ORM GiftVoucher → full GiftVoucherResponse."""
+    delivery_status = _extract_delivery_status(v)
+    label_en, label_ar = _delivery_labels(delivery_status)
     return GiftVoucherResponse(
         id=v.id,
+        gift_category=_extract_gift_category(v),
+        ordered_items=_extract_ordered_items(v),
+        delivery_status=delivery_status,
+        delivery_status_label=label_en,
+        delivery_status_label_ar=label_ar,
+        delivery_address=_extract_delivery_address(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
         branch_id=v.branch_id,
@@ -102,8 +155,16 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
     """Map ORM GiftVoucher → public (no secret_code) response."""
     # Only expose sender's name on the public page, not phone number
     sender_public: dict[str, Any] = {"name": (v.sender_data or {}).get("name", "")}
+    delivery_status = _extract_delivery_status(v)
+    label_en, label_ar = _delivery_labels(delivery_status)
     return GiftVoucherPublicResponse(
         id=v.id,
+        gift_category=_extract_gift_category(v),
+        ordered_items=_extract_ordered_items(v),
+        delivery_status=delivery_status,
+        delivery_status_label=label_en,
+        delivery_status_label_ar=label_ar,
+        delivery_address=_extract_delivery_address(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
         branch_id=v.branch_id,
@@ -127,8 +188,16 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
 
 def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
     """Map ORM GiftVoucher → lightweight list item."""
+    delivery_status = _extract_delivery_status(v)
+    label_en, label_ar = _delivery_labels(delivery_status)
     return GiftVoucherListItem(
         id=v.id,
+        gift_category=_extract_gift_category(v),
+        ordered_items=_extract_ordered_items(v),
+        delivery_status=delivery_status,
+        delivery_status_label=label_en,
+        delivery_status_label_ar=label_ar,
+        delivery_address=_extract_delivery_address(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
         branch_id=v.branch_id,
@@ -168,14 +237,18 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
     "/",
     summary="Create a gift voucher",
     description=(
-        "Create a new gift voucher for a service.\n\n"
+        "Create a new gift voucher for a service, physical gift, or digital gift package.\n\n"
         "### Key Parameters:\n"
-        "- **service_id** (UUID, required): The external UUID of the spa service being gifted.\n"
+        "- **service_id** (UUID, optional): The external UUID of the spa service being gifted.\n"
         "- **total_amount** (Decimal/String, required): Total price of the voucher in KWD.\n"
+        "- **gift_category** (string, optional): Category of voucher: `digital`, `physical`, `service`. Defaults to `service`.\n"
+        "- **ordered_items** (list[dict], optional): Optional itemized list for product/service combinations.\n"
+        "- **delivery_status** (string, optional): Delivery state (`ordered`, `ready_to_go`, `on_the_way`, `delivered`, `received`).\n"
+        "- **delivery_address** (dict, optional): Structured delivery address (city, street, block, avenue, etc.).\n"
         "- **sender_id** (UUID, optional): UUID of the customer purchasing/sending the voucher. If omitted, defaults to the authenticated user from the JWT token.\n"
         "- **sender_data** (object, optional): Snapshot of sender contact details (`name`, `phone_number`). Defaults to authenticated customer profile if empty.\n"
-        "- **recipient_phone** (string, optional): Recipient mobile number (e.g. `+965...`) for automated SMS delivery of the 6-digit redemption secret code upon activation.\n"
-        "- **recipient_id** (UUID, optional): Recipient customer UUID in ushauth (automatically resolved or created if `recipient_phone` is provided).\n"
+        "- **recipient_phone** (string, optional): Recipient mobile number (e.g. `+965...`) for automated SMS/WhatsApp delivery of credentials and secret code.\n"
+        "- **recipient_id** (UUID, optional): Recipient customer UUID in ushauth (automatically resolved or created if `recipient_phone` is provided; if newly created, auto-generates 6-digit login password).\n"
         "- **recipient_data** (object, optional): Snapshot of recipient details (`name`, `email`, `phone_number`).\n"
         "- **status** (string, optional): Initial voucher status (`created`, `payment_pending`, `active`). Defaults to `created`. If created as `active`, triggers recipient notification immediately.\n"
         "- **payment_id** (string, optional): Payment gateway transaction/invoice ID (e.g. `100624710000000255`).\n"
@@ -245,6 +318,8 @@ async def create_gift_voucher(
                 "email": customer.get("email") or recipient_data.get("email", ""),
                 "avatar": customer.get("avatar"),
             }
+            if customer.get("password"):
+                merged["password"] = customer["password"]
             recipient_data = merged
             logger.info(
                 "recipient_resolved_via_ushauth",
@@ -291,6 +366,10 @@ async def create_gift_voucher(
             payment_through=body.payment_through,
             status=body.status,
             expire_date=body.expire_date,
+            gift_category=body.gift_category,
+            ordered_items=body.ordered_items,
+            delivery_status=body.delivery_status,
+            delivery_address=body.delivery_address,
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -317,6 +396,11 @@ async def list_all_vouchers(
     _: RequireAppToken,
     session: DBSession,
     status_filter: str | None = Query(default=None, alias="status", description="Filter by voucher status."),
+    delivery_status: str | None = Query(default=None, description="Optional filter by delivery status (e.g. 'ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received')."),
+    gift_category: str | None = Query(default=None, description="Optional filter by gift category (e.g. 'service', 'digital', 'physical')."),
+    expire_date: str | None = Query(default=None, description="Optional filter by expiry date (YYYY-MM-DD or ISO datetime)."),
+    created_at: str | None = Query(default=None, description="Optional filter by creation date (YYYY-MM-DD or ISO datetime)."),
+    payment_through: str | None = Query(default=None, description="Optional filter by sales channel / payment through (e.g. 'ushspa', 'desk')."),
     sender_id: uuid.UUID | None = Query(default=None, description="Optional filter by sender ID."),
     service_id: uuid.UUID | None = Query(default=None, description="Optional filter by service ID."),
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)."),
@@ -331,17 +415,34 @@ async def list_all_vouchers(
     p_page = _val(page, 1)
     p_page_size = _val(page_size, 1000)
     p_status = _val(status_filter)
+    p_delivery_status = _val(delivery_status)
+    p_gift_category = _val(gift_category)
+    p_expire_date = _val(expire_date)
+    p_created_at = _val(created_at)
+    p_payment_through = _val(payment_through)
     p_sender_id = _val(sender_id)
     p_service_id = _val(service_id)
 
     svc = GiftVoucherService(session)
-    vouchers, total = await svc.list_all(
-        status=p_status,
-        sender_id=p_sender_id,
-        service_id=p_service_id,
-        page=p_page,
-        page_size=p_page_size,
-    )
+    list_kwargs: dict[str, Any] = {
+        "status": p_status,
+        "sender_id": p_sender_id,
+        "service_id": p_service_id,
+        "page": p_page,
+        "page_size": p_page_size,
+    }
+    if p_delivery_status is not None:
+        list_kwargs["delivery_status"] = p_delivery_status
+    if p_gift_category is not None:
+        list_kwargs["gift_category"] = p_gift_category
+    if p_expire_date is not None:
+        list_kwargs["expire_date"] = p_expire_date
+    if p_created_at is not None:
+        list_kwargs["created_at"] = p_created_at
+    if p_payment_through is not None:
+        list_kwargs["payment_through"] = p_payment_through
+
+    vouchers, total = await svc.list_all(**list_kwargs)
     items = [_voucher_to_response(v) for v in vouchers]
     paginated = make_paginated_response(
         items, count=total, page=p_page, page_size=p_page_size
@@ -519,6 +620,11 @@ async def admin_list_vouchers(
     _: RequireAppToken,
     session: DBSession,
     status_filter: str | None = Query(default=None, alias="status"),
+    delivery_status: str | None = Query(default=None, description="Filter by delivery status"),
+    gift_category: str | None = Query(default=None, description="Filter by gift category"),
+    expire_date: str | None = Query(default=None, description="Filter by expiry date (YYYY-MM-DD or ISO)"),
+    created_at: str | None = Query(default=None, description="Filter by created date (YYYY-MM-DD or ISO)"),
+    payment_through: str | None = Query(default=None, description="Filter by sales channel / payment through"),
     sender_id: uuid.UUID | None = Query(default=None),
     service_id: uuid.UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
@@ -528,6 +634,11 @@ async def admin_list_vouchers(
     svc = GiftVoucherService(session)
     vouchers, total = await svc.list_all(
         status=status_filter,
+        delivery_status=delivery_status,
+        gift_category=gift_category,
+        expire_date=expire_date,
+        created_at=created_at,
+        payment_through=payment_through,
         sender_id=sender_id,
         service_id=service_id,
         page=page,
@@ -581,6 +692,43 @@ async def public_voucher_page(
     )
 
 
+@router.post(
+    "/public/{public_token}/",
+    summary="Verify secret code and get voucher details",
+    description=(
+        "Send secret_code as payload to verify against the voucher with public_token. "
+        "If secret_code and public token match, returns the full voucher details."
+    ),
+    response_model=dict[str, Any],
+)
+@router.post(
+    "/public/{public_token}",
+    include_in_schema=False,
+)
+async def verify_public_voucher(
+    public_token: str,
+    payload: VerifyVoucherSecretCodeRequest,
+    session: DBSession,
+) -> JSONResponse:
+    """
+    Public endpoint to verify secret_code against public_token.
+    Returns the full voucher details if verified.
+    """
+    svc = GiftVoucherService(session)
+    try:
+        voucher = await svc.verify_secret_code(public_token, payload.secret_code)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
 # ── Voucher ID parameterized endpoints (defined after all static routes) ───────
 
 
@@ -596,7 +744,15 @@ def _resolve_api_requester(request: Request, explicit_id: uuid.UUID | None = Non
     if explicit_id is not None:
         return explicit_id
 
-    for header in ("X-User-Id", "x-user-id", "X-Requester-Id", "x-requester-id", "X-Customer-Id"):
+    for header in (
+        "X-User-Id",
+        "x-user-id",
+        "X-Requester-Id",
+        "x-requester-id",
+        "X-Customer-Id",
+        "X-Employee-Id",
+        "x-employee-id",
+    ):
         val = request.headers.get(header)
         if val:
             try:
@@ -673,6 +829,279 @@ async def update_voucher_status(
             payment_provider=body.payment_provider,
             payment_through=body.payment_through,
             redeemed_by=redeemed_by,
+            ordered_items=body.ordered_items,
+            delivery_status=body.delivery_status,
+            delivery_address=body.delivery_address,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+        ) from exc
+
+    data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
+STATUS_UPDATE_PERMISSIONS = frozenset({
+    "status_update",
+    "update_status",
+    "delivery_status",
+    "update_delivery_status",
+    "voucher.update_status",
+    "voucher.delivery_status",
+    "vouchers.delivery_status",
+    "vouchers:update",
+    "vouchers.*",
+    "*",
+})
+
+
+def _has_status_update_permission(
+    user_type: str | None,
+    permissions: Any = None,
+    role: str | None = None,
+    is_superuser: bool = False,
+    is_staff: bool = False,
+) -> bool:
+    """Evaluate whether user attributes grant status update permission."""
+    u_type = (user_type or "").strip().lower()
+    if is_superuser or u_type in ("admin", "superuser"):
+        return True
+
+    if u_type in ("employee", "staff") or is_staff:
+        # Check permissions if explicitly provided
+        if permissions is not None:
+            perms: set[str] = set()
+            if isinstance(permissions, (list, tuple, set)):
+                perms = {str(p).strip().lower() for p in permissions}
+            elif isinstance(permissions, str):
+                perms = {p.strip().lower() for p in permissions.split(",") if p.strip()}
+            elif isinstance(permissions, dict):
+                if (
+                    permissions.get("status_update")
+                    or permissions.get("delivery_status")
+                    or permissions.get("can_update_status")
+                    or permissions.get("update_delivery_status")
+                ):
+                    return True
+                perms = {str(k).strip().lower() for k, v in permissions.items() if v}
+
+            if perms:
+                return bool(perms & STATUS_UPDATE_PERMISSIONS)
+            return False
+
+        # If role is specified, check if it's restricted (e.g. Therapist)
+        if role:
+            r = str(role).strip().lower()
+            if "therapist" in r:
+                return False
+
+        # Default employee/staff has status update permission
+        return True
+
+    return False
+
+
+async def _check_employee_status_update_permission(
+    request: Request,
+    settings: Settings,
+) -> tuple[bool, str | None]:
+    """
+    Check whether the request is from an employee with status update permission.
+
+    Returns:
+        (is_authorized, detail_or_actor_id)
+    """
+    user_type: str | None = None
+    permissions: Any = None
+    role: str | None = None
+    is_superuser: bool = False
+    is_staff: bool = False
+    sub: str | None = None
+
+    # 1. Check custom headers (common from API gateway or internal callers)
+    for h in ("X-User-Type", "x-user-type"):
+        val = request.headers.get(h)
+        if val:
+            user_type = val
+            break
+
+    for h in ("X-Permissions", "x-permissions", "X-Employee-Permissions", "x-employee-permissions"):
+        val = request.headers.get(h)
+        if val:
+            permissions = val
+            break
+
+    for h in ("X-Role", "x-role", "X-Employee-Role", "x-employee-role"):
+        val = request.headers.get(h)
+        if val:
+            role = val
+            break
+
+    for h in ("X-Employee-Id", "x-employee-id", "X-User-Id", "x-user-id"):
+        val = request.headers.get(h)
+        if val:
+            sub = val
+            break
+
+    # 2. Check Authorization Bearer token
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+
+        # Extract claims directly from JWT
+        try:
+            import base64
+            import json
+
+            parts = token.split(".")
+            if len(parts) >= 2:
+                padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                jwt_claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                if not user_type:
+                    user_type = jwt_claims.get("user_type")
+                if permissions is None:
+                    permissions = jwt_claims.get("permissions")
+                if not role:
+                    role = jwt_claims.get("role") or jwt_claims.get("role_name")
+                if not sub:
+                    sub = str(jwt_claims.get("sub") or jwt_claims.get("user_id") or jwt_claims.get("id") or "")
+                if "is_superuser" in jwt_claims:
+                    is_superuser = bool(jwt_claims.get("is_superuser"))
+                if "is_staff" in jwt_claims:
+                    is_staff = bool(jwt_claims.get("is_staff"))
+        except Exception:
+            pass
+
+        # Also attempt validation via ushauth / redis cache if available
+        try:
+            user_payload = await validate_user_with_ushauth(token, settings)
+            if user_payload:
+                if user_payload.user_type:
+                    user_type = user_payload.user_type
+                if getattr(user_payload, "permissions", None) is not None:
+                    permissions = user_payload.permissions
+                if getattr(user_payload, "role", None):
+                    role = user_payload.role
+                if getattr(user_payload, "is_superuser", None) is not None:
+                    is_superuser = bool(user_payload.is_superuser)
+                if getattr(user_payload, "is_staff", None) is not None:
+                    is_staff = bool(user_payload.is_staff)
+                if user_payload.sub:
+                    sub = user_payload.sub
+        except Exception as exc:
+            logger.debug("ushauth_validation_skipped_in_delivery_check", error=str(exc))
+
+    # Evaluate permission
+    u_norm = (user_type or "").strip().lower()
+    if u_norm in ("employee", "staff", "admin", "superuser") or is_staff or is_superuser:
+        if _has_status_update_permission(
+            user_type=user_type,
+            permissions=permissions,
+            role=role,
+            is_superuser=is_superuser,
+            is_staff=is_staff,
+        ):
+            actor_id = sub or "employee"
+            return True, actor_id
+        return False, "employee_missing_permission"
+
+    return False, "not_an_employee"
+
+
+@router.patch(
+    "/{voucher_id}/delivery-status/",
+    summary="Update voucher delivery status (employee or public with secret code)",
+    description=(
+        "Advance the voucher's delivery status. "
+        "Valid transitions: ordered → ready_to_go → on_the_way → delivered → received. "
+        "Allowed for employees with status update permission, or public requests with secret_code in body and X-USHSPA-TOKEN in header."
+    ),
+)
+@router.patch(
+    "/{voucher_id}/delivery-status",
+    include_in_schema=False,
+)
+async def update_voucher_delivery_status(
+    voucher_id: uuid.UUID,
+    body: UpdateVoucherDeliveryStatusRequest,
+    session: DBSession,
+    request: Request,
+    settings: AppSettings = None,
+) -> JSONResponse:
+    """
+    Update a gift voucher's delivery status.
+
+    Allowed for:
+    1. Employee with status update permission (via Bearer JWT or employee headers).
+    2. Public request providing secret_code in request body and valid X-USHSPA-TOKEN in header.
+    """
+    if settings is None or not (isinstance(settings, Settings) or hasattr(settings, "USHSPA_TOKEN")):
+        settings = get_settings()
+
+    svc = GiftVoucherService(session)
+
+    # 1. Check if requester is an employee with status update permission
+    is_employee, employee_info = await _check_employee_status_update_permission(request, settings)
+
+    if is_employee:
+        changed_by = f"employee:{employee_info}" if employee_info else "employee"
+    else:
+        # 2. Not authorized as employee with permission — evaluate public request path
+        # Public request requires valid application token (X-USHSPA-TOKEN / USH_TOKEN)
+        try:
+            app_token = _get_ushspa_token(request)
+            verify_ushspa_token(app_token, settings)
+        except (HTTPException, AuthorizationError):
+            if employee_info == "employee_missing_permission":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Employee does not have status update permission.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="USH_TOKEN / X-USHSPA-TOKEN header is required.",
+            )
+
+        # Public request requires secret_code in request body
+        if not body.secret_code or not body.secret_code.strip():
+            if employee_info == "employee_missing_permission":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Employee does not have status update permission.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="secret_code is required in request body for public delivery status update.",
+            )
+
+        # Fetch voucher to verify secret_code
+        try:
+            voucher = await svc.get_by_id(voucher_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+
+        if not voucher.secret_code or voucher.secret_code.strip() != body.secret_code.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid secret code.",
+            )
+
+        actor_id = _resolve_api_requester(request)
+        changed_by = f"public:{actor_id}" if actor_id else "public:secret_code"
+
+    # Advance delivery status
+    try:
+        voucher = await svc.update_delivery_status(
+            voucher_id=voucher_id,
+            new_status=body.status,
+            changed_by=changed_by,
+            note=body.note,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
@@ -725,3 +1154,106 @@ async def get_voucher_detail(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},
     )
+
+
+@router.patch(
+    "/{voucher_id}/",
+    summary="Update gift voucher (partial)",
+    description=(
+        "Update an existing gift voucher. Supports partial updates for service, "
+        "branch, arrangements, addons, extra time, amounts, sender/recipient data, "
+        "gift message, delivery, payment details, and status. Requires USHSPA-TOKEN."
+    ),
+    response_model=dict[str, Any],
+)
+@router.patch(
+    "/{voucher_id}",
+    include_in_schema=False,
+)
+@router.put(
+    "/{voucher_id}/",
+    summary="Update gift voucher (full/partial)",
+    description="Update gift voucher details using REST PUT. Requires USHSPA-TOKEN.",
+    response_model=dict[str, Any],
+)
+@router.put(
+    "/{voucher_id}",
+    include_in_schema=False,
+)
+async def update_gift_voucher(
+    voucher_id: uuid.UUID,
+    body: UpdateGiftVoucherRequest,
+    _: RequireAppToken,
+    session: DBSession,
+    request: Request,
+) -> JSONResponse:
+    """Update a gift voucher resource. Requires USHSPA-TOKEN."""
+    updates = body.model_dump(exclude_unset=True)
+    actor_id = _resolve_api_requester(request)
+
+    # ── Auto-resolve redeemed_by if transitioning to redeemed ────────────
+    if updates.get("status") == "redeemed" and updates.get("redeemed_by") is None:
+        redeemed_by = _resolve_api_requester(request, body.redeemed_by)
+        booking_ref = updates.get("booking_id") or body.booking_id
+        if redeemed_by is None and booking_ref is not None:
+            try:
+                from app.booking.infrastructure.models import Booking
+                booking = await session.get(Booking, booking_ref)
+                if booking and getattr(booking, "customer_id", None):
+                    redeemed_by = booking.customer_id
+            except Exception:
+                pass
+        if redeemed_by is not None:
+            updates["redeemed_by"] = redeemed_by
+
+    # ── Auto-resolve recipient via ushauth if recipient_phone updated ────
+    if updates.get("recipient_phone") and not updates.get("recipient_id"):
+        try:
+            settings = get_settings()
+            rec_data = updates.get("recipient_data") or {}
+            full_name_hint = rec_data.get("name", "") if isinstance(rec_data, dict) else ""
+            customer = await ushauth_client.get_or_create_customer(
+                phone_number=updates["recipient_phone"],
+                full_name=full_name_hint,
+                settings=settings,
+            )
+            if customer.get("id"):
+                updates["recipient_id"] = uuid.UUID(str(customer["id"]))
+            if isinstance(rec_data, dict):
+                merged = {
+                    "id": str(customer.get("id", "")),
+                    "name": customer.get("name", "") or full_name_hint,
+                    "phone_number": customer.get("phone_number", updates["recipient_phone"]),
+                    "email": customer.get("email") or rec_data.get("email", ""),
+                    "avatar": customer.get("avatar"),
+                }
+                if customer.get("password"):
+                    merged["password"] = customer["password"]
+                updates["recipient_data"] = merged
+        except Exception as exc:
+            logger.warning(
+                "ushauth_get_or_create_failed_on_update",
+                phone=updates.get("recipient_phone"),
+                error=str(exc),
+            )
+
+    svc = GiftVoucherService(session)
+    try:
+        voucher = await svc.update_voucher(
+            voucher_id=voucher_id,
+            fields_to_update=updates,
+            actor_id=str(actor_id) if actor_id else None,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+        ) from exc
+
+    data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+

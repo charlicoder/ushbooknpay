@@ -222,3 +222,48 @@ async def test_no_ushauth_call_when_no_recipient_phone():
         )
 
     assert call_count == 0, "ushauth must NOT be called when recipient_phone is absent"
+
+
+@pytest.mark.asyncio
+async def test_recipient_password_preserved_when_created():
+    """When ushauth returns created customer with a password, recipient_data preserves the password."""
+    captured_recipient_data = None
+
+    profile_with_password = {
+        "id": RECIPIENT_ID,
+        "name": "New Recipient",
+        "phone_number": "+96541028983",
+        "email": "new@example.com",
+        "avatar": None,
+        "created": True,
+        "password": "123456",
+    }
+
+    async def mock_get_or_create(phone_number, full_name="", settings=None):
+        return profile_with_password
+
+    async def mock_create_voucher(**kwargs):
+        nonlocal captured_recipient_data
+        captured_recipient_data = kwargs.get("recipient_data")
+        return _make_mock_voucher()
+
+    mock_svc = MagicMock()
+    mock_svc.create_voucher = mock_create_voucher
+    session = AsyncMock()
+
+    with (
+        patch("app.voucher.api.router.ushauth_client.get_or_create_customer", new=mock_get_or_create),
+        patch("app.voucher.api.router.GiftVoucherService", return_value=mock_svc),
+        patch("app.voucher.api.router.get_settings", return_value=MagicMock(
+            USHSPA_TOKEN="test-token", GATEWAY_TIMEOUT=5,
+            ushauth_base_url="http://ushauth.local",
+        )),
+    ):
+        await create_gift_voucher(
+            body=VALID_REQUEST,
+            current_user=MOCK_USER,
+            session=session,
+        )
+
+    assert captured_recipient_data is not None
+    assert captured_recipient_data.get("password") == "123456"

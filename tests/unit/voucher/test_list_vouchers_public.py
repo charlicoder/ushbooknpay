@@ -22,8 +22,9 @@ from starlette.datastructures import Headers, URL
 from app.core.config import Settings
 from app.core.security import _get_ushspa_token, verify_ushspa_token
 from app.main import app
-from app.voucher.api.router import list_all_vouchers
+from app.voucher.api.router import admin_list_vouchers, list_all_vouchers, verify_public_voucher
 from app.voucher.infrastructure.models import GiftVoucher
+from app.voucher.interfaces.schemas import VerifyVoucherSecretCodeRequest
 
 
 def _make_mock_voucher(
@@ -35,6 +36,7 @@ def _make_mock_voucher(
     v = MagicMock(spec=GiftVoucher)
     v.id = voucher_id or uuid.uuid4()
     v.service_id = uuid.uuid4()
+    v.gift_category = "service"
     v.service_data = {"name": "Signature Massage"}
     v.branch_id = uuid.uuid4()
     v.branch_data = {"name": "Salmiya Spa"}
@@ -222,3 +224,317 @@ async def test_list_all_vouchers_with_status_filter():
             page=2,
             page_size=10,
         )
+
+
+@pytest.mark.asyncio
+async def test_list_all_vouchers_with_gift_category_filter():
+    """Verify list_all_vouchers passes gift_category filter."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+    v1.gift_category = "physical"
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await list_all_vouchers(
+            _=None,
+            session=session,
+            status_filter=None,
+            gift_category="physical",
+            sender_id=None,
+            service_id=None,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status=None,
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=1000,
+            gift_category="physical",
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_all_vouchers_with_delivery_status_filter():
+    """Verify list_all_vouchers passes delivery_status filter."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await list_all_vouchers(
+            _=None,
+            session=session,
+            status_filter=None,
+            delivery_status="on_the_way",
+            sender_id=None,
+            service_id=None,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status=None,
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=1000,
+            delivery_status="on_the_way",
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_all_vouchers_with_expire_date_filter():
+    """Verify list_all_vouchers passes expire_date filter."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await list_all_vouchers(
+            _=None,
+            session=session,
+            status_filter=None,
+            expire_date="2026-12-31",
+            sender_id=None,
+            service_id=None,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status=None,
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=1000,
+            expire_date="2026-12-31",
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_all_vouchers_with_created_at_filter():
+    """Verify list_all_vouchers passes created_at filter."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await list_all_vouchers(
+            _=None,
+            session=session,
+            status_filter=None,
+            created_at="2026-09-01",
+            sender_id=None,
+            service_id=None,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status=None,
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=1000,
+            created_at="2026-09-01",
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_all_vouchers_with_payment_through_filter():
+    """Verify list_all_vouchers passes payment_through filter."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await list_all_vouchers(
+            _=None,
+            session=session,
+            status_filter=None,
+            payment_through="desk",
+            sender_id=None,
+            service_id=None,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status=None,
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=1000,
+            payment_through="desk",
+        )
+
+
+@pytest.mark.asyncio
+async def test_list_all_vouchers_with_all_new_filters_combined():
+    """Verify list_all_vouchers passes all 5 filters combined."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await list_all_vouchers(
+            _=None,
+            session=session,
+            status_filter="active",
+            delivery_status="delivered",
+            gift_category="digital",
+            expire_date="2026-12-31",
+            created_at="2026-09-19",
+            payment_through="ushspa",
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=50,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status="active",
+            sender_id=None,
+            service_id=None,
+            page=1,
+            page_size=50,
+            delivery_status="delivered",
+            gift_category="digital",
+            expire_date="2026-12-31",
+            created_at="2026-09-19",
+            payment_through="ushspa",
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_list_vouchers_with_new_filters():
+    """Verify admin_list_vouchers passes all filters including the 5 new ones."""
+    session = AsyncMock()
+    v1 = _make_mock_voucher()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.list_all",
+        new_callable=AsyncMock,
+    ) as mock_list_all:
+        mock_list_all.return_value = ([v1], 1)
+
+        resp = await admin_list_vouchers(
+            _=None,
+            session=session,
+            status_filter="active",
+            delivery_status="delivered",
+            gift_category="physical",
+            expire_date="2026-12-31",
+            created_at="2026-09-19",
+            payment_through="desk",
+            sender_id=None,
+            service_id=None,
+            page=2,
+            page_size=25,
+        )
+
+        assert resp.status_code == 200
+        mock_list_all.assert_awaited_once_with(
+            status="active",
+            delivery_status="delivered",
+            gift_category="physical",
+            expire_date="2026-12-31",
+            created_at="2026-09-19",
+            payment_through="desk",
+            sender_id=None,
+            service_id=None,
+            page=2,
+            page_size=25,
+        )
+
+
+# ── Verify Public Voucher (Secret Code) Tests ─────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_verify_public_voucher_success():
+    """Verify POST /public/{public_token}/ returns full voucher details when secret_code matches."""
+    session = AsyncMock()
+    v = _make_mock_voucher(status="active")
+    v.secret_code = "123456"
+    v.public_token = "pub-test-token"
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.verify_secret_code",
+        new_callable=AsyncMock,
+    ) as mock_verify:
+        mock_verify.return_value = v
+
+        body = VerifyVoucherSecretCodeRequest(secret_code="123456")
+        resp = await verify_public_voucher("pub-test-token", body, session)
+
+        assert resp.status_code == 200
+        data = json.loads(resp.body)
+        assert data["success"] is True
+        assert data["data"]["public_token"] == "pub-test-token"
+        assert data["data"]["secret_code"] == "123456"
+        assert data["data"]["gift_category"] == "service"
+        assert data["data"]["status"] == "active"
+        mock_verify.assert_awaited_once_with("pub-test-token", "123456")
+
+
+@pytest.mark.asyncio
+async def test_verify_public_voucher_wrong_secret_code():
+    """Verify POST /public/{public_token}/ returns 400 when secret_code is invalid."""
+    session = AsyncMock()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.verify_secret_code",
+        new_callable=AsyncMock,
+    ) as mock_verify:
+        mock_verify.side_effect = ValueError("Invalid secret code.")
+
+        body = VerifyVoucherSecretCodeRequest(secret_code="wrong-code")
+        with pytest.raises(HTTPException) as exc_info:
+            await verify_public_voucher("pub-test-token", body, session)
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "Invalid secret code."
+
+
+@pytest.mark.asyncio
+async def test_verify_public_voucher_not_found():
+    """Verify POST /public/{public_token}/ returns 404 when public_token is not found."""
+    from app.core.exceptions import NotFoundError
+    session = AsyncMock()
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.verify_secret_code",
+        new_callable=AsyncMock,
+    ) as mock_verify:
+        mock_verify.side_effect = NotFoundError("Gift voucher not found.")
+
+        body = VerifyVoucherSecretCodeRequest(secret_code="123456")
+        with pytest.raises(HTTPException) as exc_info:
+            await verify_public_voucher("nonexistent-token", body, session)
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Gift voucher not found."
+

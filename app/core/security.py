@@ -33,9 +33,9 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class TokenPayload(BaseModel):
-    """Verified customer identity."""
+    """Verified customer or employee identity."""
 
-    sub: str  # customer_id (UUID as string)
+    sub: str  # customer_id or employee_id (UUID as string)
     user_type: str | None = "customer"
     phone_number: str | None = None
     email: str | None = None
@@ -43,6 +43,10 @@ class TokenPayload(BaseModel):
     last_name: str | None = None
     dob: str | None = None
     gender: str | None = None
+    permissions: list[str] | dict[str, Any] | None = None
+    role: str | None = None
+    is_staff: bool | None = None
+    is_superuser: bool | None = None
 
 
 async def validate_user_with_ushauth(
@@ -149,15 +153,26 @@ async def validate_user_with_ushauth(
         logger.error("invalid_user_profile_payload", raw_data=user_data)
         raise AuthenticationError("Invalid user profile returned from auth service.")
 
+    # Extract permissions/role/admin flags if present in profile or token claims
+    profile_dict = profile if isinstance(profile, dict) else {}
+    permissions = profile_dict.get("permissions")
+    role = profile_dict.get("role")
+    is_staff = profile_dict.get("is_staff")
+    is_superuser = profile_dict.get("is_superuser")
+
     payload = TokenPayload(
         sub=sub,
-        user_type=profile.get("user_type", "customer") if isinstance(profile, dict) else "customer",
-        phone_number=profile.get("phone_number") if isinstance(profile, dict) else None,
-        email=profile.get("email") if isinstance(profile, dict) else None,
-        first_name=profile.get("first_name") if isinstance(profile, dict) else None,
-        last_name=profile.get("last_name") if isinstance(profile, dict) else None,
-        dob=str(profile.get("dob")) if isinstance(profile, dict) and profile.get("dob") else None,
-        gender=profile.get("gender") if isinstance(profile, dict) else None,
+        user_type=profile_dict.get("user_type", "customer"),
+        phone_number=profile_dict.get("phone_number"),
+        email=profile_dict.get("email"),
+        first_name=profile_dict.get("first_name"),
+        last_name=profile_dict.get("last_name"),
+        dob=str(profile_dict.get("dob")) if profile_dict.get("dob") else None,
+        gender=profile_dict.get("gender"),
+        permissions=permissions,
+        role=role,
+        is_staff=is_staff,
+        is_superuser=is_superuser,
     )
 
     # 4. Cache verified user in Redis (60 seconds)

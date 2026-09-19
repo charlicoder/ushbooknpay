@@ -53,6 +53,31 @@ class GiftVoucherStatus(str, Enum):
         return str(val).strip()
 
 
+class GiftCategory(str, Enum):
+    """
+    Gift voucher category classification.
+
+    digital  — Digital gift voucher
+    physical — Physical gift voucher
+    service  — Service gift voucher
+    """
+
+    DIGITAL = "digital"
+    PHYSICAL = "physical"
+    SERVICE = "service"
+
+    @classmethod
+    def normalise(cls, val: str | None) -> str:
+        """Normalise input string to a valid GiftCategory value, default to 'service'."""
+        if not val or not str(val).strip():
+            return cls.SERVICE.value
+        cleaned = str(val).strip().lower()
+        for member in cls:
+            if member.value == cleaned:
+                return member.value
+        return cleaned
+
+
 class VoucherPaymentProvider(str, Enum):
     """
     Payment gateway / provider used to process the voucher purchase.
@@ -130,3 +155,10 @@ class VoucherPaymentThrough(str, Enum):
             if member.value.lower() == cleaned:
                 return member.value
         return str(val).strip()
+
+
+from app.shop.domain.value_objects import (
+    DELIVERY_STATUS_LABELS,
+    DeliveryStatus,
+    get_status_label as get_delivery_status_label,
+)

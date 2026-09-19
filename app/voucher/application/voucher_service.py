@@ -33,8 +33,11 @@ from app.events.contracts import (
     VoucherRedeemedEvent,
 )
 from app.events.sqs_client import get_sqs_client
+from app.shop.domain.state_machine import DeliveryStateMachine, InvalidDeliveryTransitionError
 from app.voucher.domain.state_machine import GiftVoucherStateMachine
 from app.voucher.domain.value_objects import (
+    DeliveryStatus,
+    GiftCategory,
     GiftVoucherStatus,
     VoucherPaymentProvider,
     VoucherPaymentThrough,
@@ -62,8 +65,8 @@ class GiftVoucherService:
     async def create_voucher(
         self,
         *,
-        service_id: uuid.UUID,
-        service_data: dict[str, Any],
+        service_id: uuid.UUID | None = None,
+        service_data: dict[str, Any] | None = None,
         total_amount: Decimal,
         sender_id: uuid.UUID,
         sender_data: dict[str, Any],
@@ -91,6 +94,10 @@ class GiftVoucherService:
         payment_through: str | None = None,
         status: str | None = None,
         expire_date: datetime | None = None,
+        gift_category: str | None = None,
+        ordered_items: list[dict[str, Any]] | None = None,
+        delivery_status: str | None = None,
+        delivery_address: dict[str, Any] | None = None,
     ) -> GiftVoucher:
         """
         Create a new GiftVoucher.
@@ -127,16 +134,25 @@ class GiftVoucherService:
             payment_through:          Sales channel (ushspa, desk).
             status:                   Initial status ('created', 'payment_pending', 'active'). Defaults to 'created'.
             expire_date:              Optional explicit expiration timestamp. Defaults to +60 days.
+            gift_category:            Optional category ('digital', 'physical', 'service'). Defaults to 'service'.
+            ordered_items:            Optional list of item snapshots.
+            delivery_status:          Optional delivery status ('ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received').
+            delivery_address:         Optional delivery address snapshot.
 
         Returns:
             The newly created, flushed GiftVoucher ORM instance.
         """
         initial_status = status or GiftVoucherStatus.CREATED.value
+        category = GiftCategory.normalise(gift_category)
         payment_provider = VoucherPaymentProvider.normalise(payment_provider)
         payment_through = VoucherPaymentThrough.normalise(payment_through)
         voucher = GiftVoucher(
+            gift_category=category,
+            ordered_items=ordered_items,
+            delivery_status=delivery_status,
+            delivery_address=delivery_address,
             service_id=service_id,
-            service_data=service_data,
+            service_data=service_data or {},
             branch_id=branch_id,
             branch_data=branch_data or {},
             service_arrangement_id=service_arrangement_id,
@@ -178,7 +194,7 @@ class GiftVoucherService:
             "gift_voucher_created",
             voucher_id=str(voucher.id),
             sender_id=str(sender_id),
-            service_id=str(service_id),
+            service_id=str(service_id) if service_id else None,
             amount=str(total_amount),
             status=initial_status,
             payment_provider=payment_provider,
@@ -208,6 +224,9 @@ class GiftVoucherService:
         payment_through: str | None = None,
         redeemed_by: uuid.UUID | None = None,
         actor_id: str | None = None,
+        ordered_items: list[dict[str, Any]] | None = None,
+        delivery_status: str | None = None,
+        delivery_address: dict[str, Any] | None = None,
     ) -> GiftVoucher:
         """
         Transition a voucher's status, setting ancillary fields as appropriate.
@@ -229,6 +248,9 @@ class GiftVoucherService:
             payment_through:  Sales channel (ushspa, desk).
             redeemed_by:      UUID of the user redeeming the voucher (auto-set to API requester).
             actor_id:         Optional string identifier of who made the change (for logs).
+            ordered_items:    Optional list of item snapshots.
+            delivery_status:  Optional delivery status.
+            delivery_address: Optional delivery address snapshot.
 
         Returns:
             The updated GiftVoucher.
@@ -265,6 +287,15 @@ class GiftVoucherService:
         if payment_through is not None:
             voucher.payment_through = VoucherPaymentThrough.normalise(payment_through)
 
+        if ordered_items is not None:
+            voucher.ordered_items = ordered_items
+
+        if delivery_status is not None:
+            voucher.delivery_status = delivery_status
+
+        if delivery_address is not None:
+            voucher.delivery_address = delivery_address
+
         if target_status == GiftVoucherStatus.ACTIVE:
             # Store gateway reference string and full response snapshot
             if payment_id is not None:
@@ -273,15 +304,14 @@ class GiftVoucherService:
                 voucher.payment_data = payment_data
 
         if target_status == GiftVoucherStatus.REDEEMED:
-            # Auto-update redeemed_at timestamp and redeemed_by user
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
-            if booking_id:
+            if booking_id is not None:
                 voucher.redeemed_booking_id = booking_id
+                voucher.booking_id = booking_id
+            if booking_data is not None:
+                voucher.booking_data = booking_data
             if redeemed_by is not None:
                 voucher.redeemed_by = redeemed_by
-
-        if booking_data is not None:
-            voucher.booking_data = booking_data
 
         await self._repo.flush()
 
@@ -295,6 +325,206 @@ class GiftVoucherService:
 
         # ── Emit SQS event (fire-and-forget, best-effort) ────────────────
         if old_status != target_status.value:
+            asyncio.create_task(
+                self._emit_status_event(voucher, target_status)
+            )
+
+        return voucher
+
+    async def update_delivery_status(
+        self,
+        voucher_id: uuid.UUID,
+        new_status: str | DeliveryStatus,
+        *,
+        changed_by: str | None = None,
+        note: str | None = None,
+    ) -> GiftVoucher:
+        """
+        Advance a voucher's delivery status.
+
+        Valid transitions follow DeliveryStateMachine:
+        ordered → ready_to_go → on_the_way → delivered → received.
+
+        Args:
+            voucher_id:  UUID of the voucher.
+            new_status:  Target delivery status.
+            changed_by:  Identifier of user/system initiating change.
+            note:        Optional audit note.
+
+        Returns:
+            The updated GiftVoucher.
+        """
+        voucher = await self._repo.get_by_id(voucher_id)
+        if voucher is None:
+            raise NotFoundError(f"Gift voucher {voucher_id} not found.")
+
+        target_str = new_status.value if isinstance(new_status, DeliveryStatus) else str(new_status)
+        try:
+            target_ds = DeliveryStatus(target_str)
+        except ValueError as exc:
+            raise ValidationError(f"Invalid delivery status '{target_str}'.") from exc
+
+        if voucher.delivery_status:
+            try:
+                curr_ds = DeliveryStatus(voucher.delivery_status)
+                machine = DeliveryStateMachine(curr_ds)
+                machine.assert_can_transition(target_ds)
+            except (ValueError, InvalidDeliveryTransitionError) as exc:
+                raise ValidationError(str(exc)) from exc
+
+        old_delivery_status = voucher.delivery_status
+        voucher.delivery_status = target_ds.value
+        await self._repo.flush()
+
+        logger.info(
+            "gift_voucher_delivery_status_updated",
+            voucher_id=str(voucher_id),
+            old_delivery_status=old_delivery_status,
+            new_delivery_status=target_ds.value,
+            changed_by=changed_by,
+            note=note,
+        )
+        return voucher
+
+    async def update_voucher(
+        self,
+        voucher_id: uuid.UUID,
+        *,
+        fields_to_update: dict[str, Any] | None = None,
+        actor_id: str | None = None,
+        **kwargs: Any,
+    ) -> GiftVoucher:
+        """
+        Update an existing gift voucher record.
+
+        Supports updating any combination of voucher fields:
+        service, branch, arrangements, timing, amounts, sender/recipient data,
+        delivery info, payment details, and status.
+
+        Validates status transitions via GiftVoucherStateMachine and delivery status
+        transitions via DeliveryStateMachine when those fields are changed.
+        Emits appropriate domain SQS events on status changes.
+
+        Args:
+            voucher_id:       UUID of the voucher to update.
+            fields_to_update: Dictionary of field names to new values.
+            actor_id:         Optional identifier of actor initiating the change (for logging).
+            **kwargs:         Additional field updates passed as keyword arguments.
+
+        Returns:
+            The updated GiftVoucher.
+
+        Raises:
+            NotFoundError:   if voucher is not found.
+            ValidationError: if an invalid status or delivery transition is attempted.
+        """
+        voucher = await self._repo.get_by_id(voucher_id)
+        if voucher is None:
+            raise NotFoundError(f"Gift voucher {voucher_id} not found.")
+
+        updates: dict[str, Any] = {}
+        if fields_to_update:
+            updates.update(fields_to_update)
+        if kwargs:
+            updates.update(kwargs)
+
+        old_status = voucher.status
+        target_status: GiftVoucherStatus | None = None
+
+        # ── 1. Status transition validation ──────────────────────────────
+        if "status" in updates and updates["status"] is not None:
+            new_status_str = updates["status"]
+            if new_status_str != old_status:
+                try:
+                    curr_st = GiftVoucherStatus(old_status)
+                    target_status = GiftVoucherStatus(new_status_str)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+                try:
+                    GiftVoucherStateMachine.validate_transition(curr_st, target_status)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+                voucher.status = target_status.value
+
+                if target_status == GiftVoucherStatus.ACTIVE:
+                    if "payment_id" in updates and updates["payment_id"] is not None:
+                        voucher.payment_id = updates["payment_id"]
+                    if "payment_data" in updates and updates["payment_data"] is not None:
+                        voucher.payment_data = updates["payment_data"]
+
+                elif target_status == GiftVoucherStatus.REDEEMED:
+                    voucher.redeemed_at = datetime.now(tz=timezone.utc)
+                    if "booking_id" in updates and updates["booking_id"] is not None:
+                        voucher.redeemed_booking_id = updates["booking_id"]
+                        voucher.booking_id = updates["booking_id"]
+                    if "booking_data" in updates and updates["booking_data"] is not None:
+                        voucher.booking_data = updates["booking_data"]
+                    if "redeemed_by" in updates and updates["redeemed_by"] is not None:
+                        voucher.redeemed_by = updates["redeemed_by"]
+
+        # ── 2. Delivery status transition validation ─────────────────────
+        if "delivery_status" in updates and updates["delivery_status"] is not None:
+            new_ds_str = updates["delivery_status"]
+            old_ds_str = voucher.delivery_status
+            if new_ds_str != old_ds_str:
+                try:
+                    target_ds = DeliveryStatus(new_ds_str)
+                except ValueError as exc:
+                    raise ValidationError(f"Invalid delivery status '{new_ds_str}'.") from exc
+
+                if old_ds_str:
+                    try:
+                        curr_ds = DeliveryStatus(old_ds_str)
+                        machine = DeliveryStateMachine(curr_ds)
+                        machine.assert_can_transition(target_ds)
+                    except (ValueError, InvalidDeliveryTransitionError) as exc:
+                        raise ValidationError(str(exc)) from exc
+
+                voucher.delivery_status = target_ds.value
+
+        # ── 3. Normalised fields ─────────────────────────────────────────
+        if "gift_category" in updates:
+            cat = updates["gift_category"]
+            if cat is not None:
+                voucher.gift_category = GiftCategory.normalise(cat)
+        if "payment_provider" in updates:
+            provider = updates["payment_provider"]
+            voucher.payment_provider = (
+                VoucherPaymentProvider.normalise(provider) if provider else None
+            )
+        if "payment_through" in updates:
+            through = updates["payment_through"]
+            voucher.payment_through = (
+                VoucherPaymentThrough.normalise(through) if through else None
+            )
+
+        # ── 4. Apply all remaining field updates ─────────────────────────
+        skip_keys = {
+            "status",
+            "delivery_status",
+            "gift_category",
+            "payment_provider",
+            "payment_through",
+        }
+        for key, val in updates.items():
+            if key in skip_keys:
+                continue
+            if hasattr(voucher, key):
+                setattr(voucher, key, val)
+
+        await self._repo.flush()
+
+        logger.info(
+            "gift_voucher_updated",
+            voucher_id=str(voucher_id),
+            updated_fields=list(updates.keys()),
+            actor_id=actor_id,
+        )
+
+        # ── 5. Emit SQS domain event if status changed ───────────────────
+        if target_status is not None and old_status != target_status.value:
             asyncio.create_task(
                 self._emit_status_event(voucher, target_status)
             )
@@ -328,6 +558,30 @@ class GiftVoucherService:
             raise NotFoundError("Gift voucher not found.")
         return voucher
 
+    async def verify_secret_code(
+        self,
+        public_token: str,
+        secret_code: str,
+    ) -> GiftVoucher:
+        """
+        Verify that secret_code matches the voucher identified by public_token.
+
+        Args:
+            public_token: The non-guessable public URL token.
+            secret_code: The secret code supplied by the recipient/claimant.
+
+        Returns:
+            The matching GiftVoucher instance.
+
+        Raises:
+            NotFoundError: If no voucher exists with the given public_token.
+            ValueError: If the secret_code does not match.
+        """
+        voucher = await self.get_by_public_token(public_token)
+        if not secret_code or voucher.secret_code.strip() != secret_code.strip():
+            raise ValueError("Invalid secret code.")
+        return voucher
+
     async def list_my_vouchers(
         self,
         sender_id: uuid.UUID,
@@ -345,14 +599,24 @@ class GiftVoucherService:
         self,
         *,
         status: str | None = None,
+        delivery_status: str | None = None,
+        gift_category: str | None = None,
+        expire_date: str | None = None,
+        created_at: str | None = None,
+        payment_through: str | None = None,
         sender_id: uuid.UUID | None = None,
         service_id: uuid.UUID | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[Sequence[GiftVoucher], int]:
-        """Return paginated vouchers with optional admin filters."""
+        """Return paginated vouchers with optional admin and interservice filters."""
         return await self._repo.list_all(
             status=status,
+            delivery_status=delivery_status,
+            gift_category=gift_category,
+            expire_date=expire_date,
+            created_at=created_at,
+            payment_through=payment_through,
             sender_id=sender_id,
             service_id=service_id,
             page=page,

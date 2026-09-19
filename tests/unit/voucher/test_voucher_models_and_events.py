@@ -48,6 +48,47 @@ def test_gift_voucher_model_snapshot_with_payment_fields():
     assert "recipient_data" in snap
     assert "recipient_id" in snap
     assert "price_for_extra_time" in snap
+    assert snap["gift_category"] == "service"
+
+
+def test_gift_voucher_model_snapshot_custom_category():
+    """Verify to_snapshot includes custom gift_category."""
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("45.000"),
+        sender_id=uuid.uuid4(),
+        gift_category="digital",
+    )
+    snap = voucher.to_snapshot()
+    assert snap["gift_category"] == "digital"
+
+
+def test_create_voucher_schema_gift_category():
+    """Verify CreateGiftVoucherRequest validates and defaults gift_category."""
+    # Default
+    req_default = CreateGiftVoucherRequest(
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("20.000"),
+    )
+    assert req_default.gift_category == "service"
+
+    # Explicit valid categories
+    for cat in ("digital", "physical", "service", "DIGITAL", " PHYSICAL "):
+        req = CreateGiftVoucherRequest(
+            service_id=uuid.uuid4(),
+            total_amount=Decimal("20.000"),
+            gift_category=cat,
+        )
+        assert req.gift_category in ("digital", "physical", "service")
+
+    # Invalid category
+    with pytest.raises(ValueError, match="Invalid gift_category"):
+        CreateGiftVoucherRequest(
+            service_id=uuid.uuid4(),
+            total_amount=Decimal("20.000"),
+            gift_category="invalid_category",
+        )
 
 
 def test_gift_voucher_model_snapshot_new_fields():
@@ -564,6 +605,203 @@ def test_validation_exception_handler_serializes_value_error_without_crashing():
         assert "Invalid payment_provider" in str(data["error"]["detail"])
     finally:
         app.dependency_overrides.pop(require_authenticated_user, None)
+
+
+def test_gift_voucher_model_snapshot_with_delivery_fields():
+    """Verify to_snapshot includes ordered_items, delivery_status, and delivery_address."""
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        total_amount=Decimal("50.000"),
+        sender_id=uuid.uuid4(),
+        gift_category="physical",
+        ordered_items=[{"item_id": "item-123", "name": "Spa Bathrobe", "quantity": 1, "price": 50.0}],
+        delivery_status="ordered",
+        delivery_address={"block": "1", "street": "Gulf Road", "city": "Kuwait City"},
+    )
+    snap = voucher.to_snapshot()
+    assert snap["gift_category"] == "physical"
+    assert snap["ordered_items"] == [{"item_id": "item-123", "name": "Spa Bathrobe", "quantity": 1, "price": 50.0}]
+    assert snap["delivery_status"] == "ordered"
+    assert snap["delivery_address"] == {"block": "1", "street": "Gulf Road", "city": "Kuwait City"}
+
+
+def test_events_contract_with_delivery_fields_unpacking():
+    """Verify SQS events can be unpacked cleanly from a snapshot containing delivery fields."""
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        service_data={"name": "Massage"},
+        total_amount=Decimal("30.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Sender"},
+        recipient_phone="+96599998888",
+        recipient_id=uuid.uuid4(),
+        recipient_data={"name": "Recipient"},
+        secret_code="SEC999",
+        public_token="pub999",
+        gift_category="physical",
+        ordered_items=[{"item_id": "p-1"}],
+        delivery_status="ordered",
+        delivery_address={"area": "Salmiya"},
+        status="active",
+    )
+    snap = voucher.to_snapshot()
+
+    # Active Event
+    active_ev = VoucherActiveEvent(**snap)
+    assert active_ev.gift_category == "physical"
+    assert active_ev.ordered_items == [{"item_id": "p-1"}]
+    assert active_ev.delivery_status == "ordered"
+    assert active_ev.delivery_address == {"area": "Salmiya"}
+
+    # Payment Pending Event
+    pending_ev = VoucherPaymentPendingEvent(**snap)
+    assert pending_ev.gift_category == "physical"
+    assert pending_ev.ordered_items == [{"item_id": "p-1"}]
+    assert pending_ev.delivery_status == "ordered"
+    assert pending_ev.delivery_address == {"area": "Salmiya"}
+
+    # Redeemed Event
+    redeemed_ev = VoucherRedeemedEvent(**snap)
+    assert redeemed_ev.gift_category == "physical"
+    assert redeemed_ev.ordered_items == [{"item_id": "p-1"}]
+    assert redeemed_ev.delivery_status == "ordered"
+    assert redeemed_ev.delivery_address == {"area": "Salmiya"}
+
+
+def test_update_voucher_delivery_status_schema():
+    """Verify UpdateVoucherDeliveryStatusRequest validation."""
+    from app.voucher.interfaces.schemas import UpdateVoucherDeliveryStatusRequest
+
+    # Valid values
+    r1 = UpdateVoucherDeliveryStatusRequest(delivery_status="ready_to_go")
+    assert r1.delivery_status == "ready_to_go"
+    assert r1.status == "ready_to_go"
+
+    r2 = UpdateVoucherDeliveryStatusRequest(delivery_status="READY_TO_GO")
+    assert r2.delivery_status == "ready_to_go"
+    assert r2.status == "ready_to_go"
+
+    r3 = UpdateVoucherDeliveryStatusRequest(delivery_status="on_the_way")
+    assert r3.delivery_status == "on_the_way"
+
+    # Status empty string with valid delivery_status (as in Swagger UI)
+    r4 = UpdateVoucherDeliveryStatusRequest.model_validate({
+        "status": "",
+        "delivery_status": "ready_to_go",
+        "note": "Package ready",
+    })
+    assert r4.status == "ready_to_go"
+    assert r4.delivery_status == "ready_to_go"
+    assert r4.note == "Package ready"
+
+    # Status provided, delivery_status empty or None
+    r5 = UpdateVoucherDeliveryStatusRequest.model_validate({
+        "status": "delivered",
+        "delivery_status": "",
+        "note": "Delivered to reception",
+    })
+    assert r5.status == "delivered"
+    assert r5.delivery_status == "delivered"
+
+    # Backward-compatible nested body unwrap
+    r6 = UpdateVoucherDeliveryStatusRequest.model_validate({
+        "body": {
+            "status": "",
+            "delivery_status": "received",
+            "note": "Customer received",
+        }
+    })
+    assert r6.status == "received"
+    assert r6.delivery_status == "received"
+    assert r6.note == "Customer received"
+
+    # Invalid value
+    with pytest.raises(ValueError, match="Invalid delivery_status"):
+        UpdateVoucherDeliveryStatusRequest(delivery_status="shipped_somewhere")
+
+
+def test_delivery_state_machine_transitions():
+    """Verify DeliveryStateMachine transitions for vouchers."""
+    from app.shop.domain.state_machine import (
+        DeliveryStateMachine,
+        InvalidDeliveryTransitionError,
+    )
+    from app.shop.domain.value_objects import DeliveryStatus
+
+    # Valid transitions: ordered -> ready_to_go -> on_the_way -> delivered -> received
+    sm_ordered = DeliveryStateMachine(DeliveryStatus.ORDERED)
+    assert sm_ordered.can_transition(DeliveryStatus.READY_TO_GO)
+    sm_ordered.assert_can_transition(DeliveryStatus.READY_TO_GO)
+
+    sm_ready = DeliveryStateMachine(DeliveryStatus.READY_TO_GO)
+    assert sm_ready.can_transition(DeliveryStatus.ON_THE_WAY)
+    sm_ready.assert_can_transition(DeliveryStatus.ON_THE_WAY)
+
+    sm_otw = DeliveryStateMachine(DeliveryStatus.ON_THE_WAY)
+    assert sm_otw.can_transition(DeliveryStatus.DELIVERED)
+    sm_otw.assert_can_transition(DeliveryStatus.DELIVERED)
+
+    sm_del = DeliveryStateMachine(DeliveryStatus.DELIVERED)
+    assert sm_del.can_transition(DeliveryStatus.RECEIVED)
+    sm_del.assert_can_transition(DeliveryStatus.RECEIVED)
+
+    # Invalid transition directly: ordered -> delivered
+    assert not sm_ordered.can_transition(DeliveryStatus.DELIVERED)
+    with pytest.raises(InvalidDeliveryTransitionError):
+        sm_ordered.assert_can_transition(DeliveryStatus.DELIVERED)
+
+
+def test_router_delivery_labels_mapping():
+    """Verify router response serialization includes bilingual delivery labels."""
+    from app.voucher.api.router import _voucher_to_response, _voucher_to_public, _voucher_to_list_item
+
+    now = datetime.now(timezone.utc)
+    v = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        service_data={"name": "Aromatherapy"},
+        total_amount=Decimal("40.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Sender User"},
+        gift_category="physical",
+        ordered_items=[{"name": "Oil", "qty": 1}],
+        delivery_status="ready_to_go",
+        delivery_address={"block": "2", "street": "Street 10"},
+        status="active",
+        secret_code="SEC888",
+        public_token="PUB888",
+        extra_time=0,
+        total_duration=60,
+        expire_date=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    resp = _voucher_to_response(v)
+    assert resp.delivery_status == "ready_to_go"
+    assert resp.delivery_status_label == "Ready To Go"
+    assert resp.delivery_status_label_ar == "جاهز للإرسال"
+    assert resp.ordered_items == [{"name": "Oil", "qty": 1}]
+    assert resp.delivery_address == {"block": "2", "street": "Street 10"}
+
+    pub = _voucher_to_public(v)
+    assert pub.delivery_status == "ready_to_go"
+    assert pub.delivery_status_label == "Ready To Go"
+    assert pub.delivery_status_label_ar == "جاهز للإرسال"
+    assert pub.ordered_items == [{"name": "Oil", "qty": 1}]
+    assert pub.delivery_address == {"block": "2", "street": "Street 10"}
+
+    item = _voucher_to_list_item(v)
+    assert item.delivery_status == "ready_to_go"
+    assert item.delivery_status_label == "Ready To Go"
+    assert item.delivery_status_label_ar == "جاهز للإرسال"
+    assert item.ordered_items == [{"name": "Oil", "qty": 1}]
+    assert item.delivery_address == {"block": "2", "street": "Street 10"}
+
 
 
 

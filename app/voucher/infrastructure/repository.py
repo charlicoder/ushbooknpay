@@ -196,13 +196,18 @@ class GiftVoucherRepository:
         self,
         *,
         status: str | None = None,
+        delivery_status: str | None = None,
+        gift_category: str | None = None,
+        expire_date: str | None = None,
+        created_at: str | None = None,
+        payment_through: str | None = None,
         sender_id: uuid.UUID | None = None,
         service_id: uuid.UUID | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[Sequence[GiftVoucher], int]:
         """
-        Return paginated vouchers with optional filters (admin use).
+        Return paginated vouchers with optional filters (admin and interservice use).
 
         Returns:
             (items, total_count)
@@ -210,10 +215,33 @@ class GiftVoucherRepository:
         base = select(GiftVoucher)
         if status:
             base = base.where(GiftVoucher.status == status)
+        if delivery_status:
+            base = base.where(GiftVoucher.delivery_status == delivery_status)
+        if gift_category:
+            base = base.where(GiftVoucher.gift_category == gift_category.strip().lower())
+        if payment_through:
+            base = base.where(GiftVoucher.payment_through == payment_through.strip().lower())
         if sender_id:
             base = base.where(GiftVoucher.sender_id == sender_id)
         if service_id:
             base = base.where(GiftVoucher.service_id == service_id)
+
+        # Date filtering
+        if created_at:
+            c_start = _parse_filter_date(created_at, end_of_day=False)
+            c_end = _parse_filter_date(created_at, end_of_day=True)
+            if c_start and c_end and len(created_at.strip()) == 10:
+                base = base.where(and_(GiftVoucher.created_at >= c_start, GiftVoucher.created_at <= c_end))
+            elif c_start:
+                base = base.where(GiftVoucher.created_at >= c_start)
+
+        if expire_date:
+            e_start = _parse_filter_date(expire_date, end_of_day=False)
+            e_end = _parse_filter_date(expire_date, end_of_day=True)
+            if e_start and e_end and len(expire_date.strip()) == 10:
+                base = base.where(and_(GiftVoucher.expire_date >= e_start, GiftVoucher.expire_date <= e_end))
+            elif e_start:
+                base = base.where(GiftVoucher.expire_date >= e_start)
 
         count_result = await self._session.execute(
             select(func.count()).select_from(base.subquery())

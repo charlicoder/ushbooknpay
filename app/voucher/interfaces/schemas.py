@@ -21,9 +21,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.voucher.domain.value_objects import (
+    DeliveryStatus,
+    GiftCategory,
     GiftVoucherStatus,
     VoucherPaymentProvider,
     VoucherPaymentThrough,
@@ -55,7 +57,9 @@ class CreateGiftVoucherRequest(BaseModel):
     """POST /api/v1/vouchers/ — create a new gift voucher."""
 
     # ── Service & branch ──────────────────────────────────────────────
-    service_id: uuid.UUID = Field(description="UUID of the service being gifted.")
+    service_id: uuid.UUID | None = Field(
+        default=None, description="Optional UUID of the service being gifted."
+    )
     service_data: dict[str, Any] = Field(
         default_factory=dict,
         description="Snapshot of service metadata (name, category, etc.).",
@@ -127,6 +131,26 @@ class CreateGiftVoucherRequest(BaseModel):
         default=None, max_length=100, description="Optional gift card template identifier."
     )
 
+    # ── Category ──────────────────────────────────────────────────────────
+    gift_category: str = Field(
+        default=GiftCategory.SERVICE.value,
+        description="Category of the gift voucher: 'digital', 'physical', or 'service'. Defaults to 'service'.",
+    )
+
+    # ── Delivery & Items (optional) ───────────────────────────────────
+    ordered_items: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional ordered items list (products, services, digital items).",
+    )
+    delivery_status: str | None = Field(
+        default=None,
+        description="Optional delivery status ('ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received').",
+    )
+    delivery_address: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured delivery address dictionary.",
+    )
+
     # ── Lifecycle & Validity ──────────────────────────────────────────
     status: str | None = Field(
         default=None,
@@ -192,6 +216,7 @@ class CreateGiftVoucherRequest(BaseModel):
     )
 
     @field_validator(
+        "service_id",
         "branch_id",
         "service_arrangement_id",
         "recipient_id",
@@ -218,6 +243,17 @@ class CreateGiftVoucherRequest(BaseModel):
     @classmethod
     def normalise_currency(cls, v: str) -> str:
         return "KWD" if v in ("KD", "KWD") else v.upper()
+
+    @field_validator("gift_category", mode="before")
+    @classmethod
+    def validate_gift_category(cls, v: Any) -> str:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return GiftCategory.SERVICE.value
+        normalised = GiftCategory.normalise(str(v))
+        valid = [c.value for c in GiftCategory]
+        if normalised not in valid:
+            raise ValueError(f"Invalid gift_category {v!r}. Valid values: {valid}")
+        return normalised
 
     @field_validator("status", mode="before")
     @classmethod
@@ -374,6 +410,18 @@ class UpdateGiftVoucherStatusRequest(BaseModel):
             "Valid values: ushspa (app/web), desk (reception/front desk)."
         ),
     )
+    ordered_items: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional ordered items list update.",
+    )
+    delivery_status: str | None = Field(
+        default=None,
+        description="Optional delivery status update ('ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received').",
+    )
+    delivery_address: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional delivery address update.",
+    )
 
     @field_validator(
         "booking_id",
@@ -425,6 +473,325 @@ class UpdateGiftVoucherStatusRequest(BaseModel):
         return normalised
 
 
+class UpdateVoucherDeliveryStatusRequest(BaseModel):
+    """
+    Payload to advance the voucher delivery status.
+
+    Valid transitions: ordered → ready_to_go → on_the_way → delivered → received.
+    Accepts `status` or `delivery_status`.
+    """
+
+    status: str = Field(
+        default="",
+        description="New delivery status: 'ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received'.",
+    )
+    delivery_status: str | None = Field(
+        default=None,
+        description="Optional alias for status.",
+    )
+    secret_code: str | None = Field(
+        default=None,
+        description="Secret code of the voucher. Required for public delivery status update requests.",
+    )
+    note: str | None = Field(default=None, max_length=500, description="Optional delivery transition note.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_status(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Unwrap nested body if client sent {"body": {...}}
+            if "body" in data and isinstance(data["body"], dict):
+                inner = data["body"]
+                data = {**data, **inner}
+
+            s_val = data.get("status")
+            s_str = s_val.strip() if isinstance(s_val, str) else ""
+
+            d_val = data.get("delivery_status")
+            d_str = d_val.strip() if isinstance(d_val, str) else ""
+
+            target_status = s_str or d_str
+            if target_status:
+                normalised = target_status.lower()
+                data["status"] = normalised
+                data["delivery_status"] = normalised
+            elif "status" in data and not s_str and not d_str:
+                data["status"] = ""
+
+            if "secret_code" in data and isinstance(data["secret_code"], str):
+                data["secret_code"] = data["secret_code"].strip()
+        return data
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        val = (v or "").strip().lower()
+        valid = [s.value for s in DeliveryStatus]
+        if val not in valid:
+            raise ValueError(f"Invalid delivery_status {v!r}. Valid values: {valid}")
+        return val
+
+
+class VerifyVoucherSecretCodeRequest(BaseModel):
+    """
+    POST /vouchers/public/{public_token}/
+    Payload containing secret_code to verify against public_token.
+    """
+
+    secret_code: str = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+        description="The secret code for the gift voucher.",
+    )
+
+
+
+class UpdateGiftVoucherRequest(BaseModel):
+    """
+    PATCH /api/v1/vouchers/{voucher_id}/ or PUT /api/v1/vouchers/{voucher_id}/
+
+    Update an existing gift voucher. Supports partial or full updates.
+    """
+
+    gift_category: str | None = Field(
+        default=None,
+        description="Category of the gift voucher: 'digital', 'physical', or 'service'.",
+    )
+    ordered_items: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional ordered items list (products, services, digital items).",
+    )
+    delivery_status: str | None = Field(
+        default=None,
+        description="Optional delivery status ('ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received').",
+    )
+    delivery_address: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional structured delivery address dictionary.",
+    )
+    service_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of the service being gifted.",
+    )
+    service_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Snapshot of service metadata (name, category, etc.).",
+    )
+    branch_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of the branch where the service will be rendered.",
+    )
+    branch_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Snapshot of branch metadata.",
+    )
+    service_arrangement_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of the service arrangement (room/package).",
+    )
+    service_arrangement_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Snapshot of arrangement metadata.",
+    )
+    addons: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Add-on snapshots list.",
+    )
+    extra_time: int | None = Field(
+        default=None,
+        ge=0,
+        description="Extra time in minutes.",
+    )
+    price_for_extra_time: Decimal | None = Field(
+        default=None,
+        description="Price per extra-time unit.",
+    )
+    total_duration: int | None = Field(
+        default=None,
+        ge=0,
+        description="Total service duration in minutes.",
+    )
+    total_amount: Decimal | None = Field(
+        default=None,
+        description="Amount charged for the voucher (KWD).",
+    )
+    currency: str | None = Field(
+        default=None,
+        max_length=3,
+        description="Currency code.",
+    )
+    sender_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of the customer purchasing/sending the voucher.",
+    )
+    sender_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Sender's name and phone number snapshot.",
+    )
+    recipient_phone: str | None = Field(
+        default=None,
+        max_length=50,
+        description="Recipient phone number.",
+    )
+    recipient_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of the recipient customer in ushauth.",
+    )
+    recipient_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Recipient contact snapshot.",
+    )
+    gift_message: str | None = Field(
+        default=None,
+        description="Personalised gift message.",
+    )
+    gift_template: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Visual card template theme identifier.",
+    )
+    status: str | None = Field(
+        default=None,
+        description="Target voucher status: 'created', 'payment_pending', 'active', 'redeemed', 'fulfilled', 'expired', 'cancelled'.",
+    )
+    expire_date: datetime | None = Field(
+        default=None,
+        description="Explicit expiration date/time (ISO 8601).",
+    )
+    booking_id: uuid.UUID | None = Field(
+        default=None,
+        description="Booking reference UUID.",
+    )
+    booking_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Booking data snapshot.",
+    )
+    payment_id: str | None = Field(
+        default=None,
+        max_length=100,
+        description="Payment gateway transaction/reference ID.",
+    )
+    payment_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Full payment provider response snapshot (JSONB).",
+    )
+    payment_url: str | None = Field(
+        default=None,
+        description="Payment gateway checkout/redirect URL.",
+    )
+    payment_provider: str | None = Field(
+        default=None,
+        description="Payment gateway used (MyFatoorah, DirectLink, Deema, Other).",
+    )
+    payment_through: str | None = Field(
+        default=None,
+        description="Sales channel (ushspa, desk).",
+    )
+    redeemed_by: uuid.UUID | None = Field(
+        default=None,
+        description="UUID of the user redeeming the voucher.",
+    )
+
+    @field_validator(
+        "branch_id",
+        "service_arrangement_id",
+        "recipient_id",
+        "sender_id",
+        "booking_id",
+        "booking_data",
+        "payment_data",
+        "payment_id",
+        "payment_url",
+        "gift_message",
+        "gift_template",
+        "recipient_phone",
+        "expire_date",
+        "redeemed_by",
+        mode="before",
+    )
+    @classmethod
+    def coerce_empty_to_none(cls, v: Any) -> Any:
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
+    @field_validator("currency")
+    @classmethod
+    def normalise_currency(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return "KWD" if v in ("KD", "KWD") else v.upper()
+
+    @field_validator("gift_category", mode="before")
+    @classmethod
+    def validate_gift_category(cls, v: Any) -> str | None:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        normalised = GiftCategory.normalise(str(v))
+        valid = [c.value for c in GiftCategory]
+        if normalised not in valid:
+            raise ValueError(f"Invalid gift_category {v!r}. Valid values: {valid}")
+        return normalised
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status(cls, v: Any) -> str | None:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        normalised = GiftVoucherStatus.normalise(str(v))
+        try:
+            return GiftVoucherStatus(normalised).value
+        except ValueError:
+            valid = [s.value for s in GiftVoucherStatus]
+            raise ValueError(f"Invalid status {v!r}. Valid values: {valid}")
+
+    @field_validator("delivery_status", mode="before")
+    @classmethod
+    def validate_delivery_status(cls, v: Any) -> str | None:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        normalised = str(v).strip().lower()
+        valid = [s.value for s in DeliveryStatus]
+        if normalised not in valid:
+            raise ValueError(f"Invalid delivery_status {v!r}. Valid values: {valid}")
+        return normalised
+
+    @field_validator("payment_provider", mode="before")
+    @classmethod
+    def validate_payment_provider(cls, v: Any) -> str | None:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        normalised = VoucherPaymentProvider.normalise(str(v))
+        valid = [p.value for p in VoucherPaymentProvider]
+        if normalised not in valid:
+            raise ValueError(f"Invalid payment_provider {v!r}. Valid values: {valid}")
+        return normalised
+
+    @field_validator("payment_through", mode="before")
+    @classmethod
+    def validate_payment_through(cls, v: Any) -> str | None:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        normalised = VoucherPaymentThrough.normalise(str(v))
+        valid = [p.value for p in VoucherPaymentThrough]
+        if normalised not in valid:
+            raise ValueError(f"Invalid payment_through {v!r}. Valid values: {valid}")
+        return normalised
+
+    model_config = {
+        "extra": "ignore",
+        "json_schema_extra": {
+            "example": {
+                "gift_message": "Enjoy your special spa day!",
+                "total_amount": "50.000",
+                "recipient_phone": "+96598765432",
+                "status": "active",
+            }
+        },
+    }
+
+
 # ── Response schemas ──────────────────────────────────────────────────────────
 
 
@@ -432,7 +799,13 @@ class GiftVoucherResponse(BaseModel):
     """Full detail response — returned to the sender and admin."""
 
     id: uuid.UUID
-    service_id: uuid.UUID
+    gift_category: str = GiftCategory.SERVICE.value
+    ordered_items: list[dict[str, Any]] | None = None
+    delivery_status: str | None = None
+    delivery_status_label: str | None = None
+    delivery_status_label_ar: str | None = None
+    delivery_address: dict[str, Any] | None = None
+    service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
     branch_id: uuid.UUID | None
     branch_data: dict[str, Any]
@@ -484,7 +857,13 @@ class GiftVoucherPublicResponse(BaseModel):
     """
 
     id: uuid.UUID
-    service_id: uuid.UUID
+    gift_category: str = GiftCategory.SERVICE.value
+    ordered_items: list[dict[str, Any]] | None = None
+    delivery_status: str | None = None
+    delivery_status_label: str | None = None
+    delivery_status_label_ar: str | None = None
+    delivery_address: dict[str, Any] | None = None
+    service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
     branch_id: uuid.UUID | None
     branch_data: dict[str, Any]
@@ -513,7 +892,13 @@ class GiftVoucherListItem(BaseModel):
     """Lightweight list item for paginated responses."""
 
     id: uuid.UUID
-    service_id: uuid.UUID
+    gift_category: str = GiftCategory.SERVICE.value
+    ordered_items: list[dict[str, Any]] | None = None
+    delivery_status: str | None = None
+    delivery_status_label: str | None = None
+    delivery_status_label_ar: str | None = None
+    delivery_address: dict[str, Any] | None = None
+    service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
     branch_id: uuid.UUID | None
     branch_data: dict[str, Any] = Field(default_factory=dict)
@@ -545,3 +930,4 @@ class GiftVoucherListItem(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+

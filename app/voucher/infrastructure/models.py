@@ -41,6 +41,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 from app.voucher.domain.value_objects import (
+    GiftCategory,
     GiftVoucherStatus,
     VoucherPaymentProvider,
     VoucherPaymentThrough,
@@ -93,7 +94,9 @@ class GiftVoucher(Base):
     )
 
     # ── Service & Branch snapshot (external refs — no FK) ─────────────────
-    service_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    service_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     service_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
     branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -124,6 +127,21 @@ class GiftVoucher(Base):
         nullable=False,
         default=GiftVoucherStatus.CREATED.value,
     )
+
+    # ── Category ──────────────────────────────────────────────────────────
+    gift_category: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=GiftCategory.SERVICE.value,
+        server_default=GiftCategory.SERVICE.value,
+    )
+
+    # ── Delivery & Items (optional) ───────────────────────────────────────
+    ordered_items: Mapped[list | dict | None] = mapped_column(JSONB, nullable=True, default=None)
+    delivery_status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, default=None, index=True
+    )
+    delivery_address: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
 
     # ── Sender (buyer) — plain UUID, no FK ───────────────────────────────
     sender_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -212,6 +230,7 @@ class GiftVoucher(Base):
 
     __table_args__ = (
         UniqueConstraint("public_token", name="uq_gift_vouchers_public_token"),
+        Index("ix_gift_vouchers_gift_category", "gift_category"),
         Index("ix_gift_vouchers_status", "status"),
         Index("ix_gift_vouchers_sender_id", "sender_id"),
         Index("ix_gift_vouchers_recipient_phone", "recipient_phone"),
@@ -242,7 +261,7 @@ class GiftVoucher(Base):
         """
         return {
             "id": str(self.id),
-            "service_id": str(self.service_id),
+            "service_id": str(self.service_id) if self.service_id else None,
             "service_data": self.service_data or {},
             "branch_id": str(self.branch_id) if self.branch_id else None,
             "branch_data": self.branch_data or {},
@@ -253,6 +272,10 @@ class GiftVoucher(Base):
             "price_for_extra_time": str(self.price_for_extra_time) if self.price_for_extra_time is not None else None,
             "expire_date": self.expire_date.isoformat() if self.expire_date else None,
             "status": self.status,
+            "gift_category": self.gift_category or GiftCategory.SERVICE.value,
+            "ordered_items": self.ordered_items or [],
+            "delivery_status": self.delivery_status,
+            "delivery_address": self.delivery_address or {},
             "sender_id": str(self.sender_id),
             "sender_data": self.sender_data or {},
             "recipient_phone": self.recipient_phone,

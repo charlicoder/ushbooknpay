@@ -44,6 +44,7 @@ app/
 | Booking | Booking lifecycle, state machine, double-booking prevention, reschedule requests |
 | Payment | Payment sessions, provider integration (MyFatoorah / Tap), refunds |
 | Availability | O(n log n) slot computation from schedules, bookings, leaves, and holds |
+| Vouchers | Gift voucher lifecycle, digital/physical/service vouchers, delivery status state machine, verification & redemption |
 
 ## Key Design Decisions
 
@@ -101,6 +102,8 @@ Open `http://localhost:8001/api/docs/`
 
 ## API Endpoints
 
+### Bookings & Payments
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/health/` | Health check |
@@ -115,6 +118,22 @@ Open `http://localhost:8001/api/docs/`
 | GET | `/api/v1/payments/{booking_id}/status/` | Get payment status |
 | POST | `/api/v1/payments/webhook/myfatoorah/` | MyFatoorah webhook |
 | POST | `/api/v1/payments/webhook/tap/` | Tap webhook |
+
+### Gift Vouchers (See [Full Voucher API Documentation](docs/VOUCHERS_API.md))
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/vouchers/` | Create gift voucher (service, digital, physical) |
+| GET | `/api/v1/vouchers/my-vouchers/` | List my received gift vouchers |
+| GET | `/api/v1/vouchers/my-sent-vouchers/` | List my sent gift vouchers |
+| GET | `/api/v1/vouchers/{id}/` | Get voucher detail (sender or admin) |
+| GET | `/api/v1/vouchers/public/{public_token}/` | Public gift card page (secret code masked) |
+| POST | `/api/v1/vouchers/public/{public_token}/` | Verify secret code & retrieve full voucher |
+| PATCH / PUT | `/api/v1/vouchers/{id}/` | Update gift voucher details (partial or full) |
+| PATCH | `/api/v1/vouchers/{id}/status/` | Update voucher lifecycle status (internal) |
+| PATCH | `/api/v1/vouchers/{id}/delivery-status/` | Update physical delivery status (staff/drivers) |
+| GET | `/api/v1/vouchers/` | List all vouchers (interservice) |
+| GET | `/api/v1/vouchers/admin/` | Admin: list all vouchers with filters |
 
 ## Running Tests
 
@@ -147,6 +166,9 @@ docker-compose up
 | `Payment.Succeeded` | Payment confirmed by provider |
 | `Payment.Failed` | Payment failed |
 | `Payment.RefundIssued` | Refund processed |
+| `Voucher.Active` | Voucher payment confirmed (delivered to recipient) |
+| `Voucher.PaymentPending` | Voucher checkout initiated |
+| `Voucher.Redeemed` | Voucher redeemed for a booking |
 
 ## Environment Variables
 

@@ -667,6 +667,10 @@ class VoucherActiveEvent(BaseEvent):
     # ── Voucher identity ──────────────────────────────────────────────
     id: str = ""
     status: str = "active"
+    gift_category: str = "service"
+    ordered_items: list[dict[str, Any]] = field(default_factory=list)
+    delivery_status: str | None = None
+    delivery_address: dict[str, Any] = field(default_factory=dict)
     public_token: str = ""
     secret_code: str = ""  # 6-digit code to be delivered to recipient
 
@@ -733,6 +737,10 @@ class VoucherPaymentPendingEvent(BaseEvent):
     # ── Voucher identity ──────────────────────────────────────────────
     id: str = ""
     status: str = "payment_pending"
+    gift_category: str = "service"
+    ordered_items: list[dict[str, Any]] = field(default_factory=list)
+    delivery_status: str | None = None
+    delivery_address: dict[str, Any] = field(default_factory=dict)
     public_token: str = ""
     secret_code: str = ""  # Accepted from snapshot but NOT delivered at this stage
 
@@ -801,6 +809,10 @@ class VoucherRedeemedEvent(BaseEvent):
     # ── Voucher identity ──────────────────────────────────────────────
     id: str = ""
     status: str = "redeemed"
+    gift_category: str = "service"
+    ordered_items: list[dict[str, Any]] = field(default_factory=list)
+    delivery_status: str | None = None
+    delivery_address: dict[str, Any] = field(default_factory=dict)
     public_token: str = ""
     secret_code: str = ""  # Accepted from snapshot but NOT delivered at redemption stage
 
