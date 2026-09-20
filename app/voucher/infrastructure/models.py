@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -35,6 +36,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -142,6 +144,12 @@ class GiftVoucher(Base):
         String(20), nullable=True, default=None, index=True
     )
     delivery_address: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
+
+    # ── Digital Gift data (optional) ──────────────────────────────────────
+    digital_product_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
+    is_digital_gift_opened: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # ── Sender (buyer) — plain UUID, no FK ───────────────────────────────
     sender_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -252,6 +260,7 @@ class GiftVoucher(Base):
         Index("ix_gift_vouchers_payment_through", "payment_through"),
         Index("ix_gift_vouchers_redeemed_by", "redeemed_by"),
         Index("ix_gift_vouchers_created_by", "created_by"),
+        Index("ix_gift_vouchers_is_digital_gift_opened", "is_digital_gift_opened"),
     )
 
     def __repr__(self) -> str:
@@ -284,6 +293,8 @@ class GiftVoucher(Base):
             "ordered_items": self.ordered_items or [],
             "delivery_status": self.delivery_status,
             "delivery_address": self.delivery_address or {},
+            "digital_product_data": self.digital_product_data or {},
+            "is_digital_gift_opened": bool(self.is_digital_gift_opened),
             "sender_id": str(self.sender_id),
             "sender_data": self.sender_data or {},
             "recipient_phone": self.recipient_phone,

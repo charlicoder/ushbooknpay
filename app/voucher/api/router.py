@@ -90,6 +90,15 @@ def _extract_delivery_address(v: Any) -> dict[str, Any] | None:
     return addr if isinstance(addr, dict) else None
 
 
+def _extract_digital_product_data(v: Any) -> dict[str, Any] | None:
+    data = getattr(v, "digital_product_data", None)
+    return data if isinstance(data, dict) else None
+
+
+def _extract_is_digital_gift_opened(v: Any) -> bool:
+    return bool(getattr(v, "is_digital_gift_opened", False))
+
+
 def _delivery_labels(ds_str: str | None) -> tuple[str | None, str | None]:
     if not ds_str or not isinstance(ds_str, str):
         return None, None
@@ -112,6 +121,8 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         delivery_status_label=label_en,
         delivery_status_label_ar=label_ar,
         delivery_address=_extract_delivery_address(v),
+        digital_product_data=_extract_digital_product_data(v),
+        is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
         branch_id=v.branch_id,
@@ -165,6 +176,8 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
         delivery_status_label=label_en,
         delivery_status_label_ar=label_ar,
         delivery_address=_extract_delivery_address(v),
+        digital_product_data=_extract_digital_product_data(v),
+        is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
         branch_id=v.branch_id,
@@ -198,6 +211,8 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         delivery_status_label=label_en,
         delivery_status_label_ar=label_ar,
         delivery_address=_extract_delivery_address(v),
+        digital_product_data=_extract_digital_product_data(v),
+        is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
         branch_id=v.branch_id,
@@ -370,6 +385,8 @@ async def create_gift_voucher(
             ordered_items=body.ordered_items,
             delivery_status=body.delivery_status,
             delivery_address=body.delivery_address,
+            digital_product_data=body.digital_product_data,
+            is_digital_gift_opened=body.is_digital_gift_opened,
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -398,6 +415,7 @@ async def list_all_vouchers(
     status_filter: str | None = Query(default=None, alias="status", description="Filter by voucher status."),
     delivery_status: str | None = Query(default=None, description="Optional filter by delivery status (e.g. 'ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received')."),
     gift_category: str | None = Query(default=None, description="Optional filter by gift category (e.g. 'service', 'digital', 'physical')."),
+    is_digital_gift_opened: bool | None = Query(default=None, description="Optional filter by whether digital gift has been opened."),
     expire_date: str | None = Query(default=None, description="Optional filter by expiry date (YYYY-MM-DD or ISO datetime)."),
     created_at: str | None = Query(default=None, description="Optional filter by creation date (YYYY-MM-DD or ISO datetime)."),
     payment_through: str | None = Query(default=None, description="Optional filter by sales channel / payment through (e.g. 'ushspa', 'desk')."),
@@ -417,6 +435,7 @@ async def list_all_vouchers(
     p_status = _val(status_filter)
     p_delivery_status = _val(delivery_status)
     p_gift_category = _val(gift_category)
+    p_is_digital_gift_opened = _val(is_digital_gift_opened)
     p_expire_date = _val(expire_date)
     p_created_at = _val(created_at)
     p_payment_through = _val(payment_through)
@@ -435,6 +454,8 @@ async def list_all_vouchers(
         list_kwargs["delivery_status"] = p_delivery_status
     if p_gift_category is not None:
         list_kwargs["gift_category"] = p_gift_category
+    if p_is_digital_gift_opened is not None:
+        list_kwargs["is_digital_gift_opened"] = p_is_digital_gift_opened
     if p_expire_date is not None:
         list_kwargs["expire_date"] = p_expire_date
     if p_created_at is not None:
@@ -625,25 +646,46 @@ async def admin_list_vouchers(
     expire_date: str | None = Query(default=None, description="Filter by expiry date (YYYY-MM-DD or ISO)"),
     created_at: str | None = Query(default=None, description="Filter by created date (YYYY-MM-DD or ISO)"),
     payment_through: str | None = Query(default=None, description="Filter by sales channel / payment through"),
+    is_digital_gift_opened: bool | None = Query(default=None, description="Filter by whether digital gift has been opened"),
     sender_id: uuid.UUID | None = Query(default=None),
     service_id: uuid.UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> JSONResponse:
-    """Admin: list all vouchers with optional filters. Requires USHSPA-TOKEN."""
     svc = GiftVoucherService(session)
-    vouchers, total = await svc.list_all(
-        status=status_filter,
-        delivery_status=delivery_status,
-        gift_category=gift_category,
-        expire_date=expire_date,
-        created_at=created_at,
-        payment_through=payment_through,
-        sender_id=sender_id,
-        service_id=service_id,
-        page=page,
-        page_size=page_size,
-    )
+    from fastapi.params import Query as QueryParam
+
+    def _val(v: Any, default: Any = None) -> Any:
+        return default if isinstance(v, QueryParam) else v
+
+    p_page = _val(page, 1)
+    p_page_size = _val(page_size, 20)
+    p_status = _val(status_filter)
+    p_delivery_status = _val(delivery_status)
+    p_gift_category = _val(gift_category)
+    p_expire_date = _val(expire_date)
+    p_created_at = _val(created_at)
+    p_payment_through = _val(payment_through)
+    p_is_digital_gift_opened = _val(is_digital_gift_opened)
+    p_sender_id = _val(sender_id)
+    p_service_id = _val(service_id)
+
+    list_kwargs: dict[str, Any] = {
+        "status": p_status,
+        "delivery_status": p_delivery_status,
+        "gift_category": p_gift_category,
+        "expire_date": p_expire_date,
+        "created_at": p_created_at,
+        "payment_through": p_payment_through,
+        "sender_id": p_sender_id,
+        "service_id": p_service_id,
+        "page": p_page,
+        "page_size": p_page_size,
+    }
+    if p_is_digital_gift_opened is not None:
+        list_kwargs["is_digital_gift_opened"] = p_is_digital_gift_opened
+
+    vouchers, total = await svc.list_all(**list_kwargs)
     items = [_voucher_to_list_item(v) for v in vouchers]
     paginated = make_paginated_response(
         items, count=total, page=page, page_size=page_size
@@ -723,6 +765,37 @@ async def verify_public_voucher(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
+@router.post(
+    "/public/{public_token}/open/",
+    summary="Mark digital gift as opened (public)",
+    description=(
+        "Mark the digital gift voucher as opened when the recipient views/opens it. "
+        "No authentication required."
+    ),
+    response_model=dict[str, Any],
+)
+@router.post(
+    "/public/{public_token}/open",
+    include_in_schema=False,
+)
+async def mark_public_digital_gift_opened(
+    public_token: str,
+    session: DBSession,
+) -> JSONResponse:
+    """Public endpoint to mark a digital gift voucher as opened."""
+    svc = GiftVoucherService(session)
+    try:
+        voucher = await svc.mark_digital_gift_opened(public_token)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+
+    data = _voucher_to_public(voucher)
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},
@@ -1256,4 +1329,37 @@ async def update_gift_voucher(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},
     )
+
+
+@router.post(
+    "/{voucher_id}/open/",
+    summary="Mark digital gift as opened (by ID)",
+    description=(
+        "Mark the digital gift voucher as opened by voucher ID. "
+        "Requires USHSPA-TOKEN."
+    ),
+    response_model=dict[str, Any],
+)
+@router.post(
+    "/{voucher_id}/open",
+    include_in_schema=False,
+)
+async def mark_voucher_digital_gift_opened(
+    voucher_id: uuid.UUID,
+    _: RequireAppToken,
+    session: DBSession,
+) -> JSONResponse:
+    """Internal/admin endpoint to mark a digital gift voucher as opened by ID."""
+    svc = GiftVoucherService(session)
+    try:
+        voucher = await svc.mark_digital_gift_opened(voucher_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+
+    data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
 

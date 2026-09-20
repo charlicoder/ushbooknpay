@@ -198,6 +198,7 @@ class GiftVoucherRepository:
         status: str | None = None,
         delivery_status: str | None = None,
         gift_category: str | None = None,
+        is_digital_gift_opened: bool | None = None,
         expire_date: str | None = None,
         created_at: str | None = None,
         payment_through: str | None = None,
@@ -219,6 +220,8 @@ class GiftVoucherRepository:
             base = base.where(GiftVoucher.delivery_status == delivery_status)
         if gift_category:
             base = base.where(GiftVoucher.gift_category == gift_category.strip().lower())
+        if is_digital_gift_opened is not None:
+            base = base.where(GiftVoucher.is_digital_gift_opened == is_digital_gift_opened)
         if payment_through:
             base = base.where(GiftVoucher.payment_through == payment_through.strip().lower())
         if sender_id:

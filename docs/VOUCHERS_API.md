@@ -17,6 +17,7 @@ The Gift Voucher API handles the creation, delivery, verification, and lifecycle
 ### Key Capabilities
 - **Automated Recipient Provisioning**: When a voucher is gifted to a recipient who does not yet have an account, the backend automatically provisions a customer account in `ushauth`, generates a random 6-digit login password, and sends login credentials via SMS and WhatsApp.
 - **Dual State Machines**: Manages both financial voucher status (`created` → `active` → `redeemed`) and physical delivery progression (`ordered` → `ready_to_go` → `on_the_way` → `delivered` → `received`).
+- **Digital Gift Packages & Open Tracking**: Stores structured digital product payloads (`digital_product_data`) and tracks whether a recipient has viewed/opened the digital card (`is_digital_gift_opened`).
 - **Public Card View & Secure Verification**: Public gift card page accessible via `public_token` (no authentication), plus a secure unlock endpoint accepting `secret_code`.
 - **Multilingual Support**: Delivery status and metadata provide bilingual English and Arabic labels (`delivery_status_label` and `delivery_status_label_ar`).
 
@@ -99,7 +100,14 @@ Creates a new voucher. If `recipient_phone` belongs to a non-existent customer, 
   "service_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
   "total_amount": "45.000",
   "currency": "KWD",
-  "gift_category": "physical",
+  "gift_category": "digital",
+  "digital_product_data": {
+    "template_id": "tpl-spa-bliss-2026",
+    "theme": "modern_gold",
+    "badge_icon": "https://cdn.ushspa.com/icons/gold-spa.png",
+    "custom_fields": { "headline": "A Special Spa Treat" }
+  },
+  "is_digital_gift_opened": false,
   "ordered_items": [
     {
       "item_id": "prod-101",
@@ -137,6 +145,8 @@ Creates a new voucher. If `recipient_phone` belongs to a non-existent customer, 
 - `service_id` *(UUID, optional)*: Spa service ID being gifted.
 - `total_amount` *(Decimal/String, required)*: Total purchase amount (3 decimals for KWD).
 - `gift_category` *(string, optional, default: `"service"`)*: `service`, `digital`, or `physical`.
+- `digital_product_data` *(object, optional)*: Arbitrary JSONB metadata describing digital product configuration, assets, templates, or media.
+- `is_digital_gift_opened` *(bool, optional, default: `false`)*: Initial digital gift opened status flag.
 - `ordered_items` *(list[object], optional)*: Itemized snapshots for bundled products/services.
 - `delivery_status` *(string, optional)*: Initial delivery state (e.g. `"ordered"`).
 - `delivery_address` *(object, optional)*: Structured delivery address JSON.
@@ -154,7 +164,14 @@ Creates a new voucher. If `recipient_phone` belongs to a non-existent customer, 
   "success": true,
   "data": {
     "id": "e4b2d5a1-7c3f-4e89-9a12-8d7e6f5c4b3a",
-    "gift_category": "physical",
+    "gift_category": "digital",
+    "digital_product_data": {
+      "template_id": "tpl-spa-bliss-2026",
+      "theme": "modern_gold",
+      "badge_icon": "https://cdn.ushspa.com/icons/gold-spa.png",
+      "custom_fields": { "headline": "A Special Spa Treat" }
+    },
+    "is_digital_gift_opened": false,
     "ordered_items": [
       {
         "item_id": "prod-101",
@@ -285,7 +302,14 @@ Retrieves public-facing gift card information using the 32-character `public_tok
   "success": true,
   "data": {
     "id": "e4b2d5a1-7c3f-4e89-9a12-8d7e6f5c4b3a",
-    "gift_category": "physical",
+    "gift_category": "digital",
+    "digital_product_data": {
+      "template_id": "tpl-spa-bliss-2026",
+      "theme": "modern_gold",
+      "badge_icon": "https://cdn.ushspa.com/icons/gold-spa.png",
+      "custom_fields": { "headline": "A Special Spa Treat" }
+    },
+    "is_digital_gift_opened": false,
     "ordered_items": [
       {
         "item_id": "prod-101",
@@ -341,6 +365,41 @@ Returns the full `GiftVoucherResponse` object (identical to `GET /{voucher_id}/`
 
 ---
 
+#### 3. Mark Digital Gift as Opened (Public)
+Called when a recipient opens/views the digital gift envelope or link on the public web page. Sets `is_digital_gift_opened: true` on the voucher record.
+
+- **Method / Path**: `POST /api/v1/vouchers/public/{public_token}/open/` (alias `/public/{public_token}/open`)
+- **Auth**: None (Unauthenticated)
+- **Status Code**: `200 OK`
+
+**Response (200 OK):**
+Returns the public voucher representation (`GiftVoucherPublicResponse`) with `is_digital_gift_opened: true`.
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "e4b2d5a1-7c3f-4e89-9a12-8d7e6f5c4b3a",
+    "gift_category": "digital",
+    "digital_product_data": {
+      "template_id": "tpl-spa-bliss-2026",
+      "theme": "modern_gold"
+    },
+    "is_digital_gift_opened": true,
+    "status": "active",
+    "sender_data": {
+      "name": "Sarah Ahmad"
+    },
+    "public_token": "a1b2c3d4e5f6789012345678abcdef01"
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: `{"detail": "Gift voucher not found."}` (invalid `public_token`)
+
+---
+
 ### 4.3 Internal & Staff Endpoints
 
 #### 1. Update Gift Voucher (Full / Partial)
@@ -357,6 +416,12 @@ Any combination of the following fields:
   "gift_message": "Enjoy your luxurious day at the spa!",
   "total_amount": "55.000",
   "extra_time": 30,
+  "digital_product_data": {
+    "template_id": "tpl-spa-bliss-2026",
+    "theme": "modern_gold",
+    "custom_message": "Special digital gift"
+  },
+  "is_digital_gift_opened": true,
   "recipient_phone": "+96598765432",
   "recipient_data": {
     "name": "Fatima Al-Ali",
@@ -423,7 +488,19 @@ Called by payment webhooks when payment completes, or by the booking service upo
 
 ---
 
-#### 2. Update Voucher Delivery Status (Employee / Public with Secret Code)
+#### 3. Mark Digital Gift as Opened (By Voucher ID)
+Internal/admin endpoint to mark a digital gift voucher as opened by its UUID.
+
+- **Method / Path**: `POST /api/v1/vouchers/{voucher_id}/open/` (alias `/{voucher_id}/open`)
+- **Auth**: `USHSPA-TOKEN: <app_token>`
+- **Status Code**: `200 OK`
+
+**Response (200 OK):**
+Returns the full `GiftVoucherResponse` with `is_digital_gift_opened: true`.
+
+---
+
+#### 4. Update Voucher Delivery Status (Employee / Public with Secret Code)
 Advances the physical delivery state of the voucher or gift basket. Validates allowable transitions using the `DeliveryStateMachine`.
 
 - **Method / Path**: `PATCH /api/v1/vouchers/{voucher_id}/delivery-status/` (also mounted at `PATCH /booknpay/api/v1/vouchers/{voucher_id}/delivery-status/`)
@@ -462,7 +539,7 @@ Advances the physical delivery state of the voucher or gift basket. Validates al
 
 ---
 
-#### 3. List All Vouchers (Service / Public with Token)
+#### 5. List All Vouchers (Service / Public with Token)
 Returns all vouchers across the platform without filtering by customer or creator. Supports comprehensive filtering.
 
 - **Method / Path**: `GET /api/v1/vouchers/` (also mounted at `GET /booknpay/api/v1/vouchers/`)
@@ -471,6 +548,7 @@ Returns all vouchers across the platform without filtering by customer or creato
   - `status` *(string, optional)*: Filter by voucher lifecycle status (`created`, `payment_pending`, `active`, `redeemed`, `cancelled`, `expired`).
   - `delivery_status` *(string, optional)*: Filter by delivery state (`ordered`, `ready_to_go`, `on_the_way`, `delivered`, `received`).
   - `gift_category` *(string, optional)*: Filter by gift category (`service`, `digital`, `physical`).
+  - `is_digital_gift_opened` *(bool, optional)*: Filter by whether the digital gift has been opened (`true` / `false`).
   - `expire_date` *(string, optional)*: Filter by expiration date (e.g. `2026-12-31` or full ISO datetime).
   - `created_at` *(string, optional)*: Filter by creation date (e.g. `2026-09-19` or full ISO datetime).
   - `payment_through` *(string, optional)*: Filter by payment/sales channel (`ushspa`, `desk`).
@@ -483,7 +561,7 @@ Returns all vouchers across the platform without filtering by customer or creato
 
 ---
 
-#### 4. Admin: List All Vouchers
+#### 6. Admin: List All Vouchers
 Comprehensive, paginated listing endpoint for back-office administration and USH Desk.
 
 - **Method / Path**: `GET /api/v1/vouchers/admin/`
@@ -492,6 +570,7 @@ Comprehensive, paginated listing endpoint for back-office administration and USH
   - `status` *(string, optional)*: Filter by voucher status (`created`, `payment_pending`, `active`, `redeemed`, `cancelled`, `expired`).
   - `delivery_status` *(string, optional)*: Filter by delivery state (`ordered`, `ready_to_go`, `on_the_way`, `delivered`, `received`).
   - `gift_category` *(string, optional)*: Filter by gift category (`service`, `digital`, `physical`).
+  - `is_digital_gift_opened` *(bool, optional)*: Filter by whether the digital gift has been opened (`true` / `false`).
   - `expire_date` *(string, optional)*: Filter by expiration date (`YYYY-MM-DD` or ISO datetime).
   - `created_at` *(string, optional)*: Filter by creation date (`YYYY-MM-DD` or ISO datetime).
   - `payment_through` *(string, optional)*: Filter by payment/sales channel (`ushspa`, `desk`).
@@ -513,11 +592,13 @@ Comprehensive, paginated listing endpoint for back-office administration and USH
 | `GET` | `/api/v1/vouchers/my-sent-vouchers/` | JWT Bearer | Customers | List vouchers sent by requester |
 | `GET` | `/api/v1/vouchers/{voucher_id}/` | JWT / USHSPA-TOKEN | Sender / Admin | Get full voucher details (includes secret code) |
 | `PATCH` / `PUT` | `/api/v1/vouchers/{voucher_id}/` | USHSPA-TOKEN | Staff / Admin | Update gift voucher details (partial or full) |
+| `POST` | `/api/v1/vouchers/{voucher_id}/open/` | USHSPA-TOKEN | Staff / Admin | Mark digital gift voucher as opened by ID |
 | `GET` | `/api/v1/vouchers/public/{public_token}/` | None | Public | Public gift card page (masked secret code) |
 | `POST` | `/api/v1/vouchers/public/{public_token}/` | None | Public | Verify secret code and unlock voucher details |
+| `POST` | `/api/v1/vouchers/public/{public_token}/open/` | None | Public | Mark digital gift voucher as opened (public) |
 | `PATCH` | `/api/v1/vouchers/{voucher_id}/status/` | USHSPA-TOKEN | Services / Webhook | Update voucher lifecycle status |
 | `PATCH` | `/api/v1/vouchers/{voucher_id}/delivery-status/` | Employee JWT / (Secret code + USH_TOKEN) | Employee / Public | Advance physical delivery lifecycle (employee or secret code) |
-| `GET` | `/api/v1/vouchers/` | USH_TOKEN / USHSPA-TOKEN | Internal Services / Apps | List all vouchers with filters (category, delivery status, dates, payment channel) |
+| `GET` | `/api/v1/vouchers/` | USH_TOKEN / USHSPA-TOKEN | Internal Services / Apps | List all vouchers with filters (category, delivery status, opened, dates, payment channel) |
 | `GET` | `/api/v1/vouchers/admin/` | USHSPA-TOKEN | Backoffice Admin | Admin paginated voucher search with filters |
 
 ---
@@ -528,6 +609,7 @@ When voucher state transitions occur, the transactional outbox dispatches domain
 
 | Event Type | Event Class | Trigger Condition | Key Payload Fields |
 |---|---|---|---|
-| `voucher.active` | `VoucherActiveEvent` | Status changes to `active` (payment success) | `id`, `public_token`, `secret_code`, `recipient_phone`, `gift_category`, `ordered_items`, `delivery_status`, `delivery_address`, `recipient_data` (includes `password` if auto-provisioned) |
-| `voucher.payment_pending` | `VoucherPaymentPendingEvent` | Payment gateway session started | `id`, `public_token`, `payment_id`, `payment_url` |
-| `voucher.redeemed` | `VoucherRedeemedEvent` | Voucher applied to confirmed booking | `id`, `booking_id`, `redeemed_by`, `redeemed_at` |
+| `voucher.active` | `VoucherActiveEvent` | Status changes to `active` (payment success) | `id`, `public_token`, `secret_code`, `recipient_phone`, `gift_category`, `digital_product_data`, `is_digital_gift_opened`, `ordered_items`, `delivery_status`, `delivery_address`, `recipient_data` (includes `password` if auto-provisioned) |
+| `voucher.payment_pending` | `VoucherPaymentPendingEvent` | Payment gateway session started | `id`, `public_token`, `payment_id`, `payment_url`, `digital_product_data`, `is_digital_gift_opened` |
+| `voucher.redeemed` | `VoucherRedeemedEvent` | Voucher applied to confirmed booking | `id`, `booking_id`, `redeemed_by`, `redeemed_at`, `digital_product_data`, `is_digital_gift_opened` |
+

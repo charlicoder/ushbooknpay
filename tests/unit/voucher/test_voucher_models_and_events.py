@@ -803,5 +803,120 @@ def test_router_delivery_labels_mapping():
     assert item.delivery_address == {"block": "2", "street": "Street 10"}
 
 
+def test_digital_product_data_and_is_digital_gift_opened_snapshot():
+    """Verify to_snapshot includes digital_product_data and is_digital_gift_opened."""
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=None,
+        total_amount=Decimal("50.000"),
+        sender_id=uuid.uuid4(),
+        gift_category="digital",
+        digital_product_data={"download_url": "https://example.com/item.pdf", "code": "DIGI-999"},
+        is_digital_gift_opened=True,
+    )
+    snap = voucher.to_snapshot()
+    assert snap["digital_product_data"] == {"download_url": "https://example.com/item.pdf", "code": "DIGI-999"}
+    assert snap["is_digital_gift_opened"] is True
+
+
+def test_digital_product_data_defaults():
+    """Verify default values for digital_product_data and is_digital_gift_opened."""
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=None,
+        total_amount=Decimal("50.000"),
+        sender_id=uuid.uuid4(),
+    )
+    assert voucher.digital_product_data is None
+    snap = voucher.to_snapshot()
+    assert snap["digital_product_data"] == {}
+    assert snap["is_digital_gift_opened"] is False
+
+
+def test_digital_product_data_and_is_opened_in_events():
+    """Verify domain events serialize digital_product_data and is_digital_gift_opened."""
+    vid = str(uuid.uuid4())
+    digital_data = {"tier": "gold", "features": ["spa", "sauna"]}
+
+    event_active = VoucherActiveEvent(
+        id=vid,
+        sender_data={"name": "Sender", "phone_number": "+96512345678"},
+        recipient_phone="+96587654321",
+        secret_code="123456",
+        public_token="tok123",
+        expire_date=datetime.now(timezone.utc).isoformat(),
+        total_amount="50.000",
+        currency="KWD",
+        digital_product_data=digital_data,
+        is_digital_gift_opened=True,
+    )
+    payload_active = event_active.to_dict()
+    assert payload_active["digital_product_data"] == digital_data
+    assert payload_active["is_digital_gift_opened"] is True
+
+    event_pending = VoucherPaymentPendingEvent(
+        id=vid,
+        total_amount="50.000",
+        currency="KWD",
+        digital_product_data=digital_data,
+        is_digital_gift_opened=False,
+    )
+    payload_pending = event_pending.to_dict()
+    assert payload_pending["digital_product_data"] == digital_data
+    assert payload_pending["is_digital_gift_opened"] is False
+
+    event_redeemed = VoucherRedeemedEvent(
+        id=vid,
+        recipient_phone="+96587654321",
+        redeemed_by=str(uuid.uuid4()),
+        redeemed_at=datetime.now(timezone.utc).isoformat(),
+        digital_product_data=digital_data,
+        is_digital_gift_opened=True,
+    )
+    payload_redeemed = event_redeemed.to_dict()
+    assert payload_redeemed["digital_product_data"] == digital_data
+    assert payload_redeemed["is_digital_gift_opened"] is True
+
+
+def test_router_digital_product_data_serialization():
+    """Verify router serialization includes digital_product_data and is_digital_gift_opened."""
+    from app.voucher.api.router import _voucher_to_response, _voucher_to_public, _voucher_to_list_item
+
+    now = datetime.now(timezone.utc)
+    digital_data = {"download_link": "https://example.com/asset.zip", "key": "ABC-DEF"}
+    v = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=None,
+        total_amount=Decimal("60.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Sender"},
+        gift_category="digital",
+        digital_product_data=digital_data,
+        is_digital_gift_opened=True,
+        status="active",
+        secret_code="SEC999",
+        public_token="PUB999",
+        extra_time=0,
+        total_duration=0,
+        expire_date=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    resp = _voucher_to_response(v)
+    assert resp.digital_product_data == digital_data
+    assert resp.is_digital_gift_opened is True
+
+    pub = _voucher_to_public(v)
+    assert pub.digital_product_data == digital_data
+    assert pub.is_digital_gift_opened is True
+
+    item = _voucher_to_list_item(v)
+    assert item.digital_product_data == digital_data
+    assert item.is_digital_gift_opened is True
+
+
+
 
 

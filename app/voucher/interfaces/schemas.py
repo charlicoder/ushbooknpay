@@ -151,6 +151,16 @@ class CreateGiftVoucherRequest(BaseModel):
         description="Optional structured delivery address dictionary.",
     )
 
+    # ── Digital Product Data (optional) ───────────────────────────────
+    digital_product_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional digital product metadata snapshot (JSONB).",
+    )
+    is_digital_gift_opened: bool = Field(
+        default=False,
+        description="Whether the digital gift has been opened/revealed by recipient (default: False).",
+    )
+
     # ── Lifecycle & Validity ──────────────────────────────────────────
     status: str | None = Field(
         default=None,
@@ -570,6 +580,14 @@ class UpdateGiftVoucherRequest(BaseModel):
         default=None,
         description="Optional structured delivery address dictionary.",
     )
+    digital_product_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional digital product metadata snapshot update (JSONB).",
+    )
+    is_digital_gift_opened: bool | None = Field(
+        default=None,
+        description="Optional update to whether the digital gift has been opened.",
+    )
     service_id: uuid.UUID | None = Field(
         default=None,
         description="UUID of the service being gifted.",
@@ -708,6 +726,7 @@ class UpdateGiftVoucherRequest(BaseModel):
         "recipient_phone",
         "expire_date",
         "redeemed_by",
+        "digital_product_data",
         mode="before",
     )
     @classmethod
@@ -805,6 +824,8 @@ class GiftVoucherResponse(BaseModel):
     delivery_status_label: str | None = None
     delivery_status_label_ar: str | None = None
     delivery_address: dict[str, Any] | None = None
+    digital_product_data: dict[str, Any] | None = None
+    is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
     branch_id: uuid.UUID | None
@@ -863,6 +884,8 @@ class GiftVoucherPublicResponse(BaseModel):
     delivery_status_label: str | None = None
     delivery_status_label_ar: str | None = None
     delivery_address: dict[str, Any] | None = None
+    digital_product_data: dict[str, Any] | None = None
+    is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
     branch_id: uuid.UUID | None
@@ -898,6 +921,8 @@ class GiftVoucherListItem(BaseModel):
     delivery_status_label: str | None = None
     delivery_status_label_ar: str | None = None
     delivery_address: dict[str, Any] | None = None
+    digital_product_data: dict[str, Any] | None = None
+    is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
     branch_id: uuid.UUID | None

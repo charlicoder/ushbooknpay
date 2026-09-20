@@ -679,6 +679,8 @@ class VoucherActiveEvent(BaseEvent):
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
     delivery_status: str | None = None
     delivery_address: dict[str, Any] = field(default_factory=dict)
+    digital_product_data: dict[str, Any] = field(default_factory=dict)
+    is_digital_gift_opened: bool = False
     public_token: str = ""
     secret_code: str = ""  # 6-digit code to be delivered to recipient
 
@@ -749,6 +751,8 @@ class VoucherPaymentPendingEvent(BaseEvent):
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
     delivery_status: str | None = None
     delivery_address: dict[str, Any] = field(default_factory=dict)
+    digital_product_data: dict[str, Any] = field(default_factory=dict)
+    is_digital_gift_opened: bool = False
     public_token: str = ""
     secret_code: str = ""  # Accepted from snapshot but NOT delivered at this stage
 
@@ -821,6 +825,8 @@ class VoucherRedeemedEvent(BaseEvent):
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
     delivery_status: str | None = None
     delivery_address: dict[str, Any] = field(default_factory=dict)
+    digital_product_data: dict[str, Any] = field(default_factory=dict)
+    is_digital_gift_opened: bool = False
     public_token: str = ""
     secret_code: str = ""  # Accepted from snapshot but NOT delivered at redemption stage
 

@@ -81,6 +81,8 @@ def _make_mock_voucher(
     v.ordered_items = None
     v.delivery_status = delivery_status
     v.delivery_address = None
+    v.digital_product_data = None
+    v.is_digital_gift_opened = False
     v.created_at = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
     v.updated_at = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
     v.to_snapshot = MagicMock(return_value={
@@ -92,6 +94,8 @@ def _make_mock_voucher(
         "currency": v.currency,
         "secret_code": v.secret_code,
         "public_token": v.public_token,
+        "digital_product_data": v.digital_product_data,
+        "is_digital_gift_opened": v.is_digital_gift_opened,
     })
     return v
 
@@ -916,6 +920,161 @@ def test_delivery_status_http_accepts_backward_compatible_body_payload():
             assert call_kwargs["note"] == "Package is packed and ready"
     finally:
         app.dependency_overrides.pop(get_db_session, None)
+
+
+# ── Tests for digital_product_data and mark_digital_gift_opened ───────────────
+
+
+@pytest.mark.asyncio
+async def test_update_voucher_with_digital_product_data():
+    """Verify update_voucher updates digital_product_data and is_digital_gift_opened."""
+    voucher_id = uuid.uuid4()
+    mock_voucher = _make_mock_voucher(voucher_id=voucher_id)
+    mock_session = AsyncMock()
+
+    svc = GiftVoucherService(mock_session)
+    svc._repo = AsyncMock()
+    svc._repo.get_by_id = AsyncMock(return_value=mock_voucher)
+    svc._repo.flush = AsyncMock()
+
+    digital_data = {"download_url": "https://example.com/asset", "code": "DIGI-123"}
+    updated = await svc.update_voucher(
+        voucher_id=voucher_id,
+        fields_to_update={
+            "digital_product_data": digital_data,
+            "is_digital_gift_opened": True,
+        },
+    )
+
+    assert updated.digital_product_data == digital_data
+    assert updated.is_digital_gift_opened is True
+    svc._repo.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mark_digital_gift_opened_service_by_uuid():
+    """Verify mark_digital_gift_opened sets is_digital_gift_opened to True when passing UUID."""
+    voucher_id = uuid.uuid4()
+    mock_voucher = _make_mock_voucher(voucher_id=voucher_id)
+    mock_voucher.is_digital_gift_opened = False
+
+    mock_session = AsyncMock()
+    svc = GiftVoucherService(mock_session)
+    svc._repo = AsyncMock()
+    svc._repo.get_by_id = AsyncMock(return_value=mock_voucher)
+    svc._repo.flush = AsyncMock()
+
+    result = await svc.mark_digital_gift_opened(voucher_id)
+    assert result.is_digital_gift_opened is True
+    svc._repo.flush.assert_awaited_once()
+
+    # Calling again should not flush if already True
+    svc._repo.flush.reset_mock()
+    result2 = await svc.mark_digital_gift_opened(voucher_id)
+    assert result2.is_digital_gift_opened is True
+    svc._repo.flush.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mark_digital_gift_opened_service_by_public_token():
+    """Verify mark_digital_gift_opened sets is_digital_gift_opened to True when passing token."""
+    mock_voucher = _make_mock_voucher()
+    mock_voucher.is_digital_gift_opened = False
+    mock_voucher.public_token = "token-xyz-789"
+
+    mock_session = AsyncMock()
+    svc = GiftVoucherService(mock_session)
+    svc._repo = AsyncMock()
+    svc._repo.get_by_public_token = AsyncMock(return_value=mock_voucher)
+    svc._repo.flush = AsyncMock()
+
+    result = await svc.mark_digital_gift_opened("token-xyz-789")
+    assert result.is_digital_gift_opened is True
+    svc._repo.flush.assert_awaited_once()
+
+
+def test_public_and_admin_open_routes_registered():
+    """Verify that public and admin open endpoints are registered."""
+    routes = [route.path for route in app.routes if "POST" in getattr(route, "methods", set())]
+    assert "/api/v1/vouchers/public/{public_token}/open/" in routes
+    assert "/booknpay/api/v1/vouchers/public/{public_token}/open/" in routes
+    assert "/api/v1/vouchers/{voucher_id}/open/" in routes
+    assert "/booknpay/api/v1/vouchers/{voucher_id}/open/" in routes
+
+
+def test_mark_public_digital_gift_opened_endpoint():
+    """Verify public open endpoint works without auth."""
+    from starlette.testclient import TestClient
+    from app.core.database import get_db_session
+
+    mock_voucher = _make_mock_voucher()
+    mock_voucher.public_token = "pub-test-token"
+    mock_voucher.is_digital_gift_opened = True
+    mock_voucher.digital_product_data = {"download": "https://example.com/item"}
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db_session] = lambda: mock_db
+
+    try:
+        with patch(
+            "app.voucher.api.router.GiftVoucherService.mark_digital_gift_opened",
+            new_callable=AsyncMock,
+        ) as mock_mark:
+            mock_mark.return_value = mock_voucher
+
+            client = TestClient(app, raise_server_exceptions=False)
+            response = client.post("/booknpay/api/v1/vouchers/public/pub-test-token/open/")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["success"] is True
+            assert data["data"]["is_digital_gift_opened"] is True
+            assert data["data"]["digital_product_data"] == {"download": "https://example.com/item"}
+            # Secret code should NOT be in public response
+            assert "secret_code" not in data["data"]
+            mock_mark.assert_awaited_once_with("pub-test-token")
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
+
+def test_mark_voucher_digital_gift_opened_endpoint():
+    """Verify voucher ID open endpoint requires USHSPA-TOKEN."""
+    from starlette.testclient import TestClient
+    from app.core.database import get_db_session
+    from app.core.config import get_settings
+
+    voucher_id = uuid.uuid4()
+    mock_voucher = _make_mock_voucher(voucher_id=voucher_id)
+    mock_voucher.is_digital_gift_opened = True
+
+    mock_db = AsyncMock()
+    app.dependency_overrides[get_db_session] = lambda: mock_db
+
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        # Without token -> 401
+        res_no_auth = client.post(f"/booknpay/api/v1/vouchers/{voucher_id}/open/")
+        assert res_no_auth.status_code == 401
+
+        # With valid USHSPA-TOKEN
+        settings = get_settings()
+        valid_token = settings.USHSPA_TOKEN or "secret-app-token"
+        with patch.object(settings, "USHSPA_TOKEN", valid_token), patch(
+            "app.voucher.api.router.GiftVoucherService.mark_digital_gift_opened",
+            new_callable=AsyncMock,
+        ) as mock_mark:
+            mock_mark.return_value = mock_voucher
+            res_auth = client.post(
+                f"/booknpay/api/v1/vouchers/{voucher_id}/open/",
+                headers={"X-USHSPA-TOKEN": valid_token},
+            )
+            assert res_auth.status_code == 200
+            data = res_auth.json()
+            assert data["success"] is True
+            assert data["data"]["is_digital_gift_opened"] is True
+            mock_mark.assert_awaited_once_with(voucher_id)
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
 
 
 

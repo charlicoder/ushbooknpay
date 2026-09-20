@@ -98,6 +98,8 @@ class GiftVoucherService:
         ordered_items: list[dict[str, Any]] | None = None,
         delivery_status: str | None = None,
         delivery_address: dict[str, Any] | None = None,
+        digital_product_data: dict[str, Any] | None = None,
+        is_digital_gift_opened: bool = False,
     ) -> GiftVoucher:
         """
         Create a new GiftVoucher.
@@ -138,6 +140,8 @@ class GiftVoucherService:
             ordered_items:            Optional list of item snapshots.
             delivery_status:          Optional delivery status ('ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received').
             delivery_address:         Optional delivery address snapshot.
+            digital_product_data:     Optional digital product snapshot (JSONB).
+            is_digital_gift_opened:   Whether digital gift has been opened (default: False).
 
         Returns:
             The newly created, flushed GiftVoucher ORM instance.
@@ -151,6 +155,8 @@ class GiftVoucherService:
             ordered_items=ordered_items,
             delivery_status=delivery_status,
             delivery_address=delivery_address,
+            digital_product_data=digital_product_data,
+            is_digital_gift_opened=is_digital_gift_opened,
             service_id=service_id,
             service_data=service_data or {},
             branch_id=branch_id,
@@ -227,6 +233,8 @@ class GiftVoucherService:
         ordered_items: list[dict[str, Any]] | None = None,
         delivery_status: str | None = None,
         delivery_address: dict[str, Any] | None = None,
+        digital_product_data: dict[str, Any] | None = None,
+        is_digital_gift_opened: bool | None = None,
     ) -> GiftVoucher:
         """
         Transition a voucher's status, setting ancillary fields as appropriate.
@@ -295,6 +303,12 @@ class GiftVoucherService:
 
         if delivery_address is not None:
             voucher.delivery_address = delivery_address
+
+        if digital_product_data is not None:
+            voucher.digital_product_data = digital_product_data
+
+        if is_digital_gift_opened is not None:
+            voucher.is_digital_gift_opened = is_digital_gift_opened
 
         if target_status == GiftVoucherStatus.ACTIVE:
             # Store gateway reference string and full response snapshot
@@ -582,6 +596,30 @@ class GiftVoucherService:
             raise ValueError("Invalid secret code.")
         return voucher
 
+    async def mark_digital_gift_opened(
+        self,
+        identifier: uuid.UUID | str,
+    ) -> GiftVoucher:
+        """
+        Mark a digital gift voucher as opened.
+        Identifier can be a voucher_id (UUID) or public_token (str).
+
+        Returns:
+            The updated GiftVoucher.
+        """
+        if isinstance(identifier, uuid.UUID):
+            voucher = await self._repo.get_by_id(identifier)
+        else:
+            voucher = await self._repo.get_by_public_token(identifier)
+        if voucher is None:
+            raise NotFoundError("Gift voucher not found.")
+
+        if not voucher.is_digital_gift_opened:
+            voucher.is_digital_gift_opened = True
+            await self._repo.flush()
+            logger.info("digital_gift_opened", voucher_id=str(voucher.id))
+        return voucher
+
     async def list_my_vouchers(
         self,
         sender_id: uuid.UUID,
@@ -601,6 +639,7 @@ class GiftVoucherService:
         status: str | None = None,
         delivery_status: str | None = None,
         gift_category: str | None = None,
+        is_digital_gift_opened: bool | None = None,
         expire_date: str | None = None,
         created_at: str | None = None,
         payment_through: str | None = None,
@@ -614,6 +653,7 @@ class GiftVoucherService:
             status=status,
             delivery_status=delivery_status,
             gift_category=gift_category,
+            is_digital_gift_opened=is_digital_gift_opened,
             expire_date=expire_date,
             created_at=created_at,
             payment_through=payment_through,
