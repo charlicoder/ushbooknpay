@@ -61,6 +61,15 @@ class Booking(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
 
+    # ── Booking Number ────────────────────────────────────────────────────
+    # Human-readable unique reference. Format: B{YY}{MM}{DD}{NNN}
+    # e.g. B260921001 for the 1st booking on 2026-09-21.
+    # Generated at creation time by the application layer; nullable for
+    # backward-compatibility with rows created before this column existed.
+    booking_number: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, unique=True, default=None
+    )
+
     # ── Customer Reference & Snapshot ─────────────────────────────────────
     customer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     customer_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)

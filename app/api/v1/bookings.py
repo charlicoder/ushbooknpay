@@ -681,6 +681,7 @@ async def create_booking(
         success=True,
         data=CreateBookingDataResponse(
             booking_id=str(booking.id),
+            booking_number=getattr(booking, "booking_number", None),
             customer_id=str(booking.customer_id),
             final_amount=str(booking.total_amount),
             status=booking.status,

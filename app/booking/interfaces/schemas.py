@@ -470,6 +470,7 @@ class BookingListItem(BaseModel):
     """Lightweight booking item for list views."""
 
     id: str
+    booking_number: str | None = None
     customer_id: str
     customer_data: dict[str, Any] | None = None
     branch_id: str | None = None
@@ -517,6 +518,7 @@ class BookingDetailResponse(BaseModel):
     """Full booking detail response."""
 
     id: str
+    booking_number: str | None = None
     customer_id: str
     customer_data: dict[str, Any] | None = None
     branch_id: str | None = None
@@ -569,6 +571,7 @@ class CreateBookingDataResponse(BaseModel):
     """Minimal response data for created booking."""
 
     booking_id: str
+    booking_number: str | None = None
     customer_id: str
     final_amount: str
     status: str

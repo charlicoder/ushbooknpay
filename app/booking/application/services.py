@@ -173,6 +173,7 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
 
     return {
         "booking_id": str(booking.id),
+        "booking_number": getattr(booking, "booking_number", None) or "",
         "booking_reference": str(booking_ref),
         "customer_id": str(booking.customer_id),
         "customer_name": c_name,
@@ -381,6 +382,10 @@ class BookingService:
             created_by=created_by,
         )
 
+        # ── Generate booking number (e.g. B260921001) ─────────────────────
+        booking_date = appointment_start.date() if hasattr(appointment_start, "date") else appointment_start
+        booking.booking_number = await self._repo.generate_booking_number(for_date=booking_date)
+
         booking = await self._repo.create(booking)
 
         # ── Temporary hold (only for unconfirmed branch bookings with a service arrangement) ─
@@ -414,6 +419,7 @@ class BookingService:
         await self._enqueue_event(
             BookingCreatedEvent(
                 booking_id=str(booking.id),
+                booking_number=getattr(booking, "booking_number", None) or "",
                 customer_id=str(booking.customer_id),
                 customer_name=_extract_customer_name(customer_dict),
                 customer_phone=str(customer_dict.get("phone_number") or customer_dict.get("phone") or ""),

@@ -122,6 +122,7 @@ class BookingCreatedEvent(BaseEvent):
     event_name: str = field(default="Booking.Created", init=False)
     event_type: str = field(default="booking.created", init=False)
     booking_id: str = ""
+    booking_number: str = ""
     customer_id: str = ""
     customer_name: str = ""
     customer_phone: str = ""
@@ -147,6 +148,7 @@ class BookingStatusUpdatedEvent(BaseEvent):
     event_name: str = field(default="Booking.StatusUpdated", init=False)
     event_type: str = field(default="booking.status_updated", init=False)
     booking_id: str = ""
+    booking_number: str = ""
     booking_reference: str = ""
     customer_id: str = ""
     customer_name: str = ""
@@ -207,6 +209,7 @@ class BookingConfirmedEvent(BaseEvent):
     event_name: str = field(default="Booking.Confirmed", init=False)
     event_type: str = field(default="booking.confirmed", init=False)
     booking_id: str = ""
+    booking_number: str = ""
     booking_reference: str = ""
     customer_id: str = ""
     customer_name: str = ""
@@ -263,6 +266,7 @@ class BookingPaymentPendingEvent(BaseEvent):
     event_name: str = field(default="Booking.PaymentPending", init=False)
     event_type: str = field(default="booking.payment_pending", init=False)
     booking_id: str = ""
+    booking_number: str = ""
     booking_reference: str = ""
     customer_id: str = ""
     customer_name: str = ""
@@ -345,6 +349,7 @@ class BookingCompletedEvent(BaseEvent):
     event_name: str = field(default="Booking.Completed", init=False)
     event_type: str = field(default="booking.completed", init=False)
     booking_id: str = ""
+    booking_number: str = ""
     booking_reference: str = ""
     customer_id: str = ""
     customer_name: str = ""
@@ -570,6 +575,7 @@ class BookingLoyaltyEvent(BaseEvent):
 
     # ── Core booking fields ───────────────────────────────────────────
     booking_id: str = ""
+    booking_number: str = ""
     booking_reference: str = ""
     customer_id: str = ""
     customer_name: str = ""
