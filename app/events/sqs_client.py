@@ -152,8 +152,6 @@ class SQSClient:
                 event_type = "booking.created"
             elif event_name == "Booking.Confirmed":
                 event_type = "booking.confirmed"
-            elif event_name == "Loyalty.Redeemed":
-                event_type = "loyalty.redeedmed"
             elif event_name:
                 event_type = event_name.lower().replace(".", "_")
 

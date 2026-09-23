@@ -181,18 +181,22 @@ class Settings(BaseSettings):
     HOME_SERVICE_BUFFER_MINUTES: int = Field(default=30, ge=0, le=120)
     TEMPORARY_HOLD_MINUTES: int = Field(default=15, ge=5, le=60)
     SLOT_DURATION_MINUTES: int = Field(default=30, ge=15, le=60)
-    LOYALTY_REWARD_EXPIRY_DAYS: int = Field(
-        default=60,
-        ge=1,
-        le=365,
-        description="Number of days after creation that a loyalty reward expires.",
-    )
     GIFT_VOUCHER_EXPIRE_DAYS: int = Field(
         default=60,
         ge=1,
         le=730,
         description="Number of days after creation that a gift voucher expires.",
     )
+    LOYALTY_POINTS_EXPIRY_DAYS: int = Field(
+        default=180,
+        ge=1,
+        le=3650,
+        description=(
+            "Rolling inactivity window (in days) before loyalty points expire. "
+            "The expiry date is reset on every qualifying booking confirmation."
+        ),
+    )
+
 
     # ── 10. Operational Tunables ─────────────────────────────────────────
     RATE_LIMIT_REQUESTS: int = Field(default=100, ge=1)

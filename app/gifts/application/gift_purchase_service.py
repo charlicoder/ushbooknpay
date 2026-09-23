@@ -50,6 +50,9 @@ class GiftPurchaseService:
         )
         if expire_date:
             purchase.expire_date = expire_date
+        else:
+            from app.gifts.infrastructure.models import _default_expire_date
+            purchase.expire_date = _default_expire_date()
 
         self.session.add(purchase)
 

@@ -131,7 +131,13 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
     # client receives a consistent shape regardless of when the booking was created.
     _raw_service_data = b.service_data or {}
     is_eligible = bool(_raw_service_data.get("is_eligible_for_loyalty", False))
-    service_data_out = {**_raw_service_data, "is_eligible_for_loyalty": is_eligible}
+    service_data_out = {
+        **_raw_service_data,
+        "is_eligible_for_loyalty": is_eligible,
+        "loyalty_points": int(_raw_service_data.get("loyalty_points") or 0),
+        "price_in_points": int(_raw_service_data.get("price_in_points") or 0),
+    }
+
 
     raw_base_price = getattr(b, "base_price", None)
     raw_app_date = getattr(b, "appointment_date", None) or getattr(b, "appointment_start", None)
@@ -293,15 +299,26 @@ async def create_booking(
         else str(body.booking_type or "branch_service")
     )
 
+    # ── Detect loyalty redemption booking ─────────────────────────────
+    is_loyalty_booking = (
+        booking_type_str == "loyalty"
+        or (body.payment_type and str(body.payment_type).lower() == "rewarded")
+        or body.reward_id is not None
+        or bool(body.loyalty_data and (body.loyalty_data.get("points_cost") or body.loyalty_data.get("reward_id")))
+    )
+
     # Auto-derive payment_type from booking_type when not explicitly provided
     if body.payment_type:
         payment_type_str = body.payment_type
+    elif is_loyalty_booking or booking_type_str == "loyalty":
+        payment_type_str = "rewarded"
     elif booking_type_str == "gift_voucher":
         payment_type_str = "gift_voucher"
-    elif booking_type_str == "loyalty":
-        payment_type_str = "rewarded"
     else:
         payment_type_str = "service"
+
+    if is_loyalty_booking and booking_type_str in ("branch_service", "branch", ""):
+        booking_type_str = "loyalty"
 
     # ── Status & Payment Status Resolution ────────────────────────────
     status_str: str | None = None
@@ -335,7 +352,7 @@ async def create_booking(
             pstatus_str = PaymentStatus.SUCCESS.value
 
     # Auto-infer relationships between status and payment_status
-    if booking_type_str == "loyalty":
+    if is_loyalty_booking or booking_type_str == "loyalty" or payment_type_str == "rewarded":
         if not pstatus_str:
             pstatus_str = PaymentStatus.REWARDED.value
         if not status_str:
@@ -367,7 +384,7 @@ async def create_booking(
     # home   → check-booking-therapists-availability (validates therapist only)
     selected_therapist_id: uuid.UUID | None = None
 
-    if booking_type_str in ("branch_service", "branch") and service_arrangement_id:
+    if booking_type_str in ("branch_service", "branch", "loyalty") and service_arrangement_id:
         # ── Branch booking: arrangement-level availability check ─────────
         try:
             avail_res = await ushauth.check_appointment_availability(
@@ -566,21 +583,99 @@ async def create_booking(
         **(body.branch_data or {}),
     }
 
+    # ── Fetch service & arrangement details from ushauth (source of truth) ──
+    db_service: dict[str, Any] = {}
+    if body.service_id:
+        try:
+            raw_svc = await ushauth.get_service(str(body.service_id))
+            db_service = raw_svc.get("data", raw_svc) if isinstance(raw_svc, dict) else {}
+        except Exception as exc:
+            logger.warning("fetch_service_details_failed", service_id=str(body.service_id), error=str(exc))
+
+    db_arrangement: dict[str, Any] = {}
+    if body.service_arrangement_id:
+        try:
+            raw_arr = await ushauth.get_service_arrangement(str(body.service_arrangement_id))
+            db_arrangement = raw_arr.get("data", raw_arr) if isinstance(raw_arr, dict) else {}
+        except Exception as exc:
+            logger.warning("fetch_arrangement_details_failed", arrangement_id=str(body.service_arrangement_id), error=str(exc))
+
+    # Resolve arrangement overrides for this service
+    db_arr_loyalty = None
+    db_arr_price_pts = None
+    if body.service_id and db_arrangement:
+        for asvc in db_arrangement.get("arrangement_services", []):
+            if str(asvc.get("service_id")) == str(body.service_id):
+                db_arr_loyalty = asvc.get("loyalty_points")
+                db_arr_price_pts = asvc.get("price_in_points")
+                break
+
+    # Determine loyalty values: database service details is source of truth
+    db_loyalty = db_service.get("loyalty_points")
+    db_price_pts = db_service.get("price_in_points")
+    db_eligible = db_service.get("is_eligible_for_loyalty")
+
+    if db_loyalty is not None and int(db_loyalty) > 0:
+        resolved_loyalty_points = int(db_loyalty)
+    elif body.loyalty_points and int(body.loyalty_points) > 0:
+        resolved_loyalty_points = int(body.loyalty_points)
+    else:
+        resolved_loyalty_points = int((body.service_data or {}).get("loyalty_points", 0) or 0)
+
+    if db_price_pts is not None and int(db_price_pts) > 0:
+        resolved_price_in_points = int(db_price_pts)
+    elif body.price_in_points and int(body.price_in_points) > 0:
+        resolved_price_in_points = int(body.price_in_points)
+    else:
+        resolved_price_in_points = int((body.service_data or {}).get("price_in_points", 0) or 0)
+
+    if db_eligible is not None:
+        resolved_is_eligible = bool(db_eligible)
+    else:
+        resolved_is_eligible = bool(
+            body.is_eligible_for_loyalty
+            or (body.service_data or {}).get("is_eligible_for_loyalty", False)
+        )
+
+    if db_arr_loyalty is not None and int(db_arr_loyalty) > 0:
+        resolved_arr_loyalty_points = int(db_arr_loyalty)
+    elif body.arrangement_loyalty_points is not None:
+        resolved_arr_loyalty_points = int(body.arrangement_loyalty_points)
+    else:
+        resolved_arr_loyalty_points = (body.service_arrangement_data or {}).get("loyalty_points")
+
+    if db_arr_price_pts is not None and int(db_arr_price_pts) > 0:
+        resolved_arr_price_in_points = int(db_arr_price_pts)
+    elif body.arrangement_price_in_points is not None:
+        resolved_arr_price_in_points = int(body.arrangement_price_in_points)
+    else:
+        resolved_arr_price_in_points = (body.service_arrangement_data or {}).get("price_in_points")
+
+    if is_loyalty_booking:
+        # Redeeming points to buy a service at booking must never earn loyalty points
+        resolved_loyalty_points = 0
+        resolved_arr_loyalty_points = 0
+        resolved_is_eligible = False
+
     service_name = (
         body.service_name
+        or db_service.get("name")
         or (body.service_data.get("service_name") or body.service_data.get("name") if body.service_data else "")
     )
     service_category = (
         body.service_category
+        or db_service.get("category")
         or (body.service_data.get("service_category") or body.service_data.get("category") if body.service_data else "")
     )
     service_base_price = str(
         body.base_price
+        or db_service.get("base_price")
         or (body.service_data.get("base_price") if body.service_data else "0")
         or "0"
     )
     service_base_duration = int(
         body.base_duration
+        or db_service.get("duration_minutes")
         or (body.service_data.get("base_duration") or body.service_data.get("duration") if body.service_data else 60)
         or 60
     )
@@ -591,22 +686,20 @@ async def create_booking(
         "base_price": service_base_price,
         "base_duration": service_base_duration,
         **(body.service_data or {}),
-        # Ensure is_eligible_for_loyalty is always explicitly stored.
-        # Top-level request field takes precedence; falls back to whatever
-        # the client may have nested inside service_data.
-        "is_eligible_for_loyalty": bool(
-            body.is_eligible_for_loyalty
-            or (body.service_data or {}).get("is_eligible_for_loyalty", False)
-        ),
+        "is_eligible_for_loyalty": resolved_is_eligible,
+        "loyalty_points": resolved_loyalty_points,
+        "price_in_points": resolved_price_in_points,
     }
 
     arrangement_type = (
         body.arrangement_type
+        or db_arrangement.get("arrangement_type")
         or (body.service_arrangement_data.get("arrangement_type") or body.service_arrangement_data.get("type") if body.service_arrangement_data else "")
     )
     room_name = (
         body.room_name
         or body.arrangement_name
+        or db_arrangement.get("name")
         or (body.service_arrangement_data.get("arrangement_name") or body.service_arrangement_data.get("room_name") or body.service_arrangement_data.get("name") if body.service_arrangement_data else "")
     )
     service_arrangement_data = {
@@ -615,7 +708,10 @@ async def create_booking(
         "room_name": room_name,
         "arrangement_name": room_name,
         **(body.service_arrangement_data or {}),
+        "loyalty_points": resolved_arr_loyalty_points,
+        "price_in_points": resolved_arr_price_in_points,
     }
+
 
     therapist_name = (
         body.therapist_name
@@ -676,12 +772,39 @@ async def create_booking(
             detail=exc.message,
         )
 
+    # ── Deduct loyalty points if this is a loyalty booking ──────────────
+    if is_loyalty_booking or booking_type_str == "loyalty":
+        points_to_deduct = (
+            resolved_arr_price_in_points
+            or resolved_price_in_points
+            or (int(body.price_in_points) if getattr(body, "price_in_points", None) else 0)
+            or (int(body.loyalty_points) if body.loyalty_points else 0)
+            or (int(body.loyalty_data.get("points_cost", 0)) if body.loyalty_data else 0)
+        )
+        if points_to_deduct > 0:
+            from app.loyalty.application.services import LoyaltyService
+            loyalty_svc = LoyaltyService(booking_service._session)
+            try:
+                await loyalty_svc.redeem_points(
+                    customer_id=customer_id,
+                    cost_in_points=points_to_deduct,
+                    booking_id=booking.id,
+                    booking_number=getattr(booking, "booking_number", None),
+                    created_by=created_by,
+                )
+            except ValueError as exc:
+                logger.error("loyalty_redeem_failed", customer_id=str(customer_id), error=str(exc))
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                )
+
     # ── 8. Return success response ──────────────────────────────────────
     return CreateBookingResponse(
         success=True,
         data=CreateBookingDataResponse(
             booking_id=str(booking.id),
-            booking_number=getattr(booking, "booking_number", None),
+            booking_number=getattr(booking, "booking_number", None) if isinstance(getattr(booking, "booking_number", None), str) else None,
             customer_id=str(booking.customer_id),
             final_amount=str(booking.total_amount),
             status=booking.status,

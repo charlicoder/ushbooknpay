@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
 
@@ -42,7 +42,7 @@ from app.voucher.domain.value_objects import (
     VoucherPaymentProvider,
     VoucherPaymentThrough,
 )
-from app.voucher.infrastructure.models import GiftVoucher
+from app.voucher.infrastructure.models import GiftVoucher, _default_expire_date
 from app.voucher.infrastructure.repository import GiftVoucherRepository
 
 logger = get_logger(__name__)
@@ -83,6 +83,7 @@ class GiftVoucherService:
         recipient_id: uuid.UUID | None = None,
         recipient_data: dict[str, Any] | None = None,
         gift_message: str | None = None,
+        gift_from: str | None = None,
         gift_template: str | None = None,
         booking_id: uuid.UUID | None = None,
         booking_data: dict[str, Any] | None = None,
@@ -94,6 +95,8 @@ class GiftVoucherService:
         payment_through: str | None = None,
         status: str | None = None,
         expire_date: datetime | None = None,
+        validity_days: int | None = None,
+        validity: int | None = None,
         gift_category: str | None = None,
         ordered_items: list[dict[str, Any]] | None = None,
         delivery_status: str | None = None,
@@ -136,6 +139,8 @@ class GiftVoucherService:
             payment_through:          Sales channel (ushspa, desk).
             status:                   Initial status ('created', 'payment_pending', 'active'). Defaults to 'created'.
             expire_date:              Optional explicit expiration timestamp. Defaults to +60 days.
+            validity_days:            Optional validity in days (defaults to 60 days).
+            validity:                 Alias for validity_days.
             gift_category:            Optional category ('digital', 'physical', 'service'). Defaults to 'service'.
             ordered_items:            Optional list of item snapshots.
             delivery_status:          Optional delivery status ('ordered', 'ready_to_go', 'on_the_way', 'delivered', 'received').
@@ -150,6 +155,16 @@ class GiftVoucherService:
         category = GiftCategory.normalise(gift_category)
         payment_provider = VoucherPaymentProvider.normalise(payment_provider)
         payment_through = VoucherPaymentThrough.normalise(payment_through)
+
+        # Resolve expire_date with default 60-day validity
+        resolved_expire_date = expire_date
+        if resolved_expire_date is None:
+            eff_days = validity_days if validity_days is not None else validity
+            if eff_days is not None and eff_days > 0:
+                resolved_expire_date = datetime.now(tz=timezone.utc) + timedelta(days=eff_days)
+            else:
+                resolved_expire_date = _default_expire_date()
+
         voucher = GiftVoucher(
             gift_category=category,
             ordered_items=ordered_items,
@@ -175,6 +190,7 @@ class GiftVoucherService:
             recipient_id=recipient_id,
             recipient_data=recipient_data or {},
             gift_message=gift_message,
+            gift_from=gift_from,
             gift_template=gift_template,
             booking_id=booking_id,
             booking_data=booking_data or {},
@@ -185,13 +201,17 @@ class GiftVoucherService:
             payment_provider=payment_provider,
             payment_through=payment_through,
             status=initial_status,
+            expire_date=resolved_expire_date,
         )
-        if expire_date is not None:
-            voucher.expire_date = expire_date
 
         if initial_status == GiftVoucherStatus.REDEEMED.value:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
             voucher.redeemed_by = created_by
+
+        # ── Assign auto-generated voucher number ─────────────────────────────
+        voucher.voucher_number = await self._repo.generate_voucher_number(
+            for_date=datetime.now(tz=timezone.utc).date()
+        )
 
         self._repo.add(voucher)
         await self._repo.flush()
@@ -560,14 +580,26 @@ class GiftVoucherService:
             raise NotFoundError(f"Gift voucher {voucher_id} not found.")
         return voucher
 
-    async def get_by_public_token(self, public_token: str) -> GiftVoucher:
+    async def get_by_public_token(
+        self,
+        public_token: str,
+    ) -> GiftVoucher:
         """
-        Return a GiftVoucher by its public URL token.
+        Return a GiftVoucher by its public URL token, UUID (voucher_id), or voucher_number.
 
         Raises:
             NotFoundError: if not found.
         """
         voucher = await self._repo.get_by_public_token(public_token)
+        if voucher is None:
+            try:
+                voucher_id = uuid.UUID(public_token)
+                voucher = await self._repo.get_by_id(voucher_id)
+            except (ValueError, AttributeError):
+                pass
+        if voucher is None:
+            voucher = await self._repo.get_by_voucher_number(public_token)
+
         if voucher is None:
             raise NotFoundError("Gift voucher not found.")
         return voucher

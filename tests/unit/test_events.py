@@ -11,8 +11,6 @@ from app.events.contracts import (
     BookingConfirmedEvent,
     BookingCancelledEvent,
     BookingStatusUpdatedEvent,
-    LoyaltyRewardedEvent,
-    LoyaltyRedeemedEvent,
 )
 
 
@@ -216,95 +214,3 @@ def test_booking_completed_event_payload():
     assert payload["status"] == "completed"
     assert payload["total_amount"] == "40.000"
 
-
-def test_loyalty_rewarded_event_payload():
-    """Verify Loyalty.Rewarded event produces event_type='loyalty.rewarded' in payload."""
-    event = LoyaltyRewardedEvent(
-        reward_id="r1111111-1111-1111-1111-111111111111",
-        tracker_id="t2222222-2222-2222-2222-222222222222",
-        customer_id="c3333333-3333-3333-3333-333333333333",
-        customer_name="Fatima Al-Mansoor",
-        customer_phone="+96590001122",
-        customer_email="fatima@example.com",
-        service_id="s4444444-4444-4444-4444-444444444444",
-        service_name="Deep Tissue Massage",
-        bookings_required=5,
-        total_rewards_earned=1,
-        reward_status="available",
-        expires_at="2026-09-10T12:00:00+00:00",
-        booking_id="b5555555-5555-5555-5555-555555555555",
-    )
-    payload = json.loads(event.to_json())
-
-    assert payload["event_name"] == "Loyalty.Rewarded"
-    assert payload["event_type"] == "loyalty.rewarded"
-    assert payload["reward_id"] == "r1111111-1111-1111-1111-111111111111"
-    assert payload["customer_name"] == "Fatima Al-Mansoor"
-    assert payload["service_name"] == "Deep Tissue Massage"
-    assert payload["bookings_required"] == 5
-    assert payload["total_rewards_earned"] == 1
-    assert payload["reward_status"] == "available"
-
-
-def test_loyalty_redeemed_event_payload():
-    """Verify Loyalty.Redeemed event produces event_type='loyalty.redeedmed' with all reward response data."""
-    reward_data = {
-        "id": "e405581a-1a5c-4be7-a76e-01213ebc7640",
-        "customer_id": "b92c374d-fdb5-48ff-96d5-bb4dc2abc452",
-        "service_id": "d104457d-98f6-49cf-afa3-c304fdd51ea4",
-        "service_arrangement_id": "dab7e167-7f57-4e30-984b-ba45f88c95f6",
-        "service_name": "24K Gold Luxury Rejuvenating Facial",
-        "status": "redeemed",
-        "earned_from_booking_id": "496a35f6-3b99-4a93-9f53-5ce98125d680",
-        "redeemed_in_booking_id": "e405581a-1a5c-4be7-a76e-01213ebc7640",
-        "redeemed_at": "2026-08-31T16:21:21.614703Z",
-        "expires_at": "2026-09-10T16:06:53.486752Z",
-        "created_at": "2026-08-31T16:06:53.481671Z",
-        # Booking context
-        "therapist_id": "aaa00000-0000-0000-0000-000000000001",
-        "appointment_date": "2026-09-01",
-        "appointment_time": "10:30",
-        "duration": 60,
-    }
-    event = LoyaltyRedeemedEvent(
-        reward=reward_data,
-        id=reward_data["id"],
-        reward_id=reward_data["id"],
-        customer_id=reward_data["customer_id"],
-        service_id=reward_data["service_id"],
-        service_arrangement_id=reward_data["service_arrangement_id"],
-        service_name=reward_data["service_name"],
-        status=reward_data["status"],
-        earned_from_booking_id=reward_data["earned_from_booking_id"],
-        redeemed_in_booking_id=reward_data["redeemed_in_booking_id"],
-        redeemed_at=reward_data["redeemed_at"],
-        expires_at=reward_data["expires_at"],
-        created_at=reward_data["created_at"],
-        therapist_id=reward_data["therapist_id"],
-        appointment_date=reward_data["appointment_date"],
-        appointment_time=reward_data["appointment_time"],
-        duration=reward_data["duration"],
-    )
-    payload = json.loads(event.to_json())
-
-    assert payload["event_name"] == "Loyalty.Redeemed"
-    assert payload["event_type"] == "loyalty.redeedmed"
-    assert payload["reward"] == reward_data
-    assert payload["reward"]["id"] == "e405581a-1a5c-4be7-a76e-01213ebc7640"
-    assert payload["reward"]["customer_id"] == "b92c374d-fdb5-48ff-96d5-bb4dc2abc452"
-    assert payload["reward"]["service_name"] == "24K Gold Luxury Rejuvenating Facial"
-    assert payload["reward"]["status"] == "redeemed"
-    assert payload["reward"]["redeemed_at"] == "2026-08-31T16:21:21.614703Z"
-    assert payload["reward"]["therapist_id"] == "aaa00000-0000-0000-0000-000000000001"
-    assert payload["reward"]["appointment_date"] == "2026-09-01"
-    assert payload["reward"]["appointment_time"] == "10:30"
-    assert payload["reward"]["duration"] == 60
-    assert payload["id"] == "e405581a-1a5c-4be7-a76e-01213ebc7640"
-    assert payload["customer_id"] == "b92c374d-fdb5-48ff-96d5-bb4dc2abc452"
-    assert payload["therapist_id"] == "aaa00000-0000-0000-0000-000000000001"
-    assert payload["appointment_date"] == "2026-09-01"
-    assert payload["appointment_time"] == "10:30"
-    assert payload["duration"] == 60
-    assert "data" not in payload  # data field removed — no duplication
-    assert "event_id" in payload
-    assert "occurred_at" in payload

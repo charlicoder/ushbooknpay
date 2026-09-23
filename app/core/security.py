@@ -48,6 +48,11 @@ class TokenPayload(BaseModel):
     is_staff: bool | None = None
     is_superuser: bool | None = None
 
+    @property
+    def user_id(self) -> str:
+        return self.sub
+
+
 
 async def validate_user_with_ushauth(
     token: str,

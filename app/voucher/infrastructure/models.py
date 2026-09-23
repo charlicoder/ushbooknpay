@@ -50,11 +50,13 @@ from app.voucher.domain.value_objects import (
 )
 
 
-def _default_expire_date() -> datetime:
-    """Return default expiry: now + GIFT_VOUCHER_EXPIRE_DAYS (default 60)."""
+def _default_expire_date(days: int = 60) -> datetime:
+    """Return default expiry: now + days (default 60 days / GIFT_VOUCHER_EXPIRE_DAYS)."""
     try:
         from app.core.config import get_settings
-        days = get_settings().GIFT_VOUCHER_EXPIRE_DAYS
+        config_days = get_settings().GIFT_VOUCHER_EXPIRE_DAYS
+        if config_days:
+            days = config_days
     except Exception:
         days = 60
     return datetime.now(tz=timezone.utc) + timedelta(days=days)
@@ -93,6 +95,13 @@ class GiftVoucher(Base):
     # ── Identity ──────────────────────────────────────────────────────────
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # ── Human-readable voucher reference (auto-generated) ─────────────────
+    # Format: V{YY}{MM}{DD}{NNN}  e.g. V260921001 for the first voucher on 2026-09-21.
+    # Nullable so existing rows are unaffected; populated immediately after flush.
+    voucher_number: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, unique=True, default=None
     )
 
     # ── Service & Branch snapshot (external refs — no FK) ─────────────────
@@ -183,6 +192,7 @@ class GiftVoucher(Base):
 
     # ── Personalisation ───────────────────────────────────────────────────
     gift_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gift_from: Mapped[str | None] = mapped_column(Text, nullable=True)
     gift_template: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # ── Security tokens ───────────────────────────────────────────────────
@@ -278,6 +288,7 @@ class GiftVoucher(Base):
         """
         return {
             "id": str(self.id),
+            "voucher_number": self.voucher_number or "",
             "service_id": str(self.service_id) if self.service_id else None,
             "service_data": self.service_data or {},
             "branch_id": str(self.branch_id) if self.branch_id else None,
@@ -305,6 +316,7 @@ class GiftVoucher(Base):
             "total_amount": str(self.total_amount),
             "currency": self.currency,
             "gift_message": self.gift_message,
+            "gift_from": self.gift_from,
             "gift_template": self.gift_template,
             "secret_code": self.secret_code,
             "public_token": self.public_token,

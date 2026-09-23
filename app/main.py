@@ -31,7 +31,7 @@ from pydantic import ValidationError
 
 from app.api.v1.router import api_router
 from app.booking.infrastructure.models import Booking, BookingStatusHistory, TemporaryHold  # noqa: F401
-from app.promotions.infrastructure.models import LoyaltyTracker, LoyaltyReward  # noqa: F401
+from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction  # noqa: F401
 from app.common.redis_client import close_redis, get_redis
 from app.core.config import get_settings
 from app.core.database import Base, dispose_engine, get_engine, get_session_factory

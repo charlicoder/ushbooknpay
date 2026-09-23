@@ -22,7 +22,12 @@ from starlette.datastructures import Headers, URL
 from app.core.config import Settings
 from app.core.security import _get_ushspa_token, verify_ushspa_token
 from app.main import app
-from app.voucher.api.router import admin_list_vouchers, list_all_vouchers, verify_public_voucher
+from app.voucher.api.router import (
+    admin_list_vouchers,
+    list_all_vouchers,
+    public_voucher_page,
+    verify_public_voucher,
+)
 from app.voucher.infrastructure.models import GiftVoucher
 from app.voucher.interfaces.schemas import VerifyVoucherSecretCodeRequest
 
@@ -537,4 +542,68 @@ async def test_verify_public_voucher_not_found():
 
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Gift voucher not found."
+
+
+# ── Public Voucher Page (voucher_number) Tests ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_public_voucher_page_includes_voucher_number():
+    """Verify GET /public/{public_token}/ includes voucher_number in response."""
+    session = AsyncMock()
+    v = _make_mock_voucher(status="active")
+    v.voucher_number = "V260921001"
+    v.public_token = "pub-test-token"
+
+    with patch(
+        "app.voucher.api.router.GiftVoucherService.get_by_public_token",
+        new_callable=AsyncMock,
+    ) as mock_get:
+        mock_get.return_value = v
+
+        resp = await public_voucher_page("pub-test-token", session)
+
+        assert resp.status_code == 200
+        data = json.loads(resp.body)
+        assert data["success"] is True
+        assert data["data"]["voucher_number"] == "V260921001"
+        assert data["data"]["public_token"] == "pub-test-token"
+        assert "secret_code" not in data["data"]
+        mock_get.assert_awaited_once_with("pub-test-token")
+
+
+@pytest.mark.asyncio
+async def test_public_voucher_service_lookup_by_uuid_or_number():
+    """Verify GiftVoucherService.get_by_public_token falls back to id and voucher_number."""
+    from app.voucher.application.voucher_service import GiftVoucherService
+
+    session = AsyncMock()
+    service = GiftVoucherService(session)
+
+    # 1. Fallback to UUID
+    voucher_id = uuid.uuid4()
+    mock_v_by_id = _make_mock_voucher(voucher_id=voucher_id)
+    mock_v_by_id.voucher_number = "V260921002"
+
+    service._repo.get_by_public_token = AsyncMock(return_value=None)
+    service._repo.get_by_id = AsyncMock(return_value=mock_v_by_id)
+    service._repo.get_by_voucher_number = AsyncMock(return_value=None)
+
+    res = await service.get_by_public_token(str(voucher_id))
+    assert res == mock_v_by_id
+    assert res.voucher_number == "V260921002"
+    service._repo.get_by_id.assert_awaited_once_with(voucher_id)
+
+    # 2. Fallback to voucher_number
+    mock_v_by_num = _make_mock_voucher()
+    mock_v_by_num.voucher_number = "V260921003"
+
+    service._repo.get_by_public_token = AsyncMock(return_value=None)
+    service._repo.get_by_id = AsyncMock(return_value=None)
+    service._repo.get_by_voucher_number = AsyncMock(return_value=mock_v_by_num)
+
+    res_num = await service.get_by_public_token("V260921003")
+    assert res_num == mock_v_by_num
+    assert res_num.voucher_number == "V260921003"
+    service._repo.get_by_voucher_number.assert_awaited_once_with("V260921003")
+
 

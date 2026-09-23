@@ -99,6 +99,16 @@ def _extract_is_digital_gift_opened(v: Any) -> bool:
     return bool(getattr(v, "is_digital_gift_opened", False))
 
 
+def _extract_voucher_number(v: Any) -> str | None:
+    vn = getattr(v, "voucher_number", None)
+    return vn if isinstance(vn, str) and vn else None
+
+
+def _extract_gift_from(v: Any) -> str | None:
+    gf = getattr(v, "gift_from", None)
+    return gf if isinstance(gf, str) and gf else None
+
+
 def _delivery_labels(ds_str: str | None) -> tuple[str | None, str | None]:
     if not ds_str or not isinstance(ds_str, str):
         return None, None
@@ -115,6 +125,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
     label_en, label_ar = _delivery_labels(delivery_status)
     return GiftVoucherResponse(
         id=v.id,
+        voucher_number=_extract_voucher_number(v),
         gift_category=_extract_gift_category(v),
         ordered_items=_extract_ordered_items(v),
         delivery_status=delivery_status,
@@ -144,6 +155,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         total_amount=str(v.total_amount),
         currency=v.currency,
         gift_message=v.gift_message,
+        gift_from=_extract_gift_from(v),
         gift_template=v.gift_template,
         secret_code=v.secret_code,
         public_token=v.public_token,
@@ -170,6 +182,7 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
     label_en, label_ar = _delivery_labels(delivery_status)
     return GiftVoucherPublicResponse(
         id=v.id,
+        voucher_number=_extract_voucher_number(v),
         gift_category=_extract_gift_category(v),
         ordered_items=_extract_ordered_items(v),
         delivery_status=delivery_status,
@@ -193,6 +206,7 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
         total_amount=str(v.total_amount),
         currency=v.currency,
         gift_message=v.gift_message,
+        gift_from=_extract_gift_from(v),
         gift_template=v.gift_template,
         public_token=v.public_token,
         created_at=v.created_at,
@@ -205,6 +219,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
     label_en, label_ar = _delivery_labels(delivery_status)
     return GiftVoucherListItem(
         id=v.id,
+        voucher_number=_extract_voucher_number(v),
         gift_category=_extract_gift_category(v),
         ordered_items=_extract_ordered_items(v),
         delivery_status=delivery_status,
@@ -228,6 +243,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         recipient_id=v.recipient_id,
         recipient_data=v.recipient_data or {},
         gift_message=v.gift_message,
+        gift_from=_extract_gift_from(v),
         secret_code=v.secret_code,
         public_token=v.public_token,
         redeemed_at=v.redeemed_at,
@@ -370,6 +386,7 @@ async def create_gift_voucher(
             recipient_id=recipient_id,
             recipient_data=recipient_data,
             gift_message=body.gift_message,
+            gift_from=body.gift_from,
             gift_template=body.gift_template,
             booking_id=body.booking_id,
             booking_data=body.booking_data,
@@ -381,6 +398,8 @@ async def create_gift_voucher(
             payment_through=body.payment_through,
             status=body.status,
             expire_date=body.expire_date,
+            validity_days=body.validity_days,
+            validity=body.validity,
             gift_category=body.gift_category,
             ordered_items=body.ordered_items,
             delivery_status=body.delivery_status,

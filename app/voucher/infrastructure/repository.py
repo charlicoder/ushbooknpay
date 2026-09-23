@@ -11,7 +11,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Sequence
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, cast, func, or_, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.voucher.domain.value_objects import GiftVoucherStatus
@@ -84,6 +84,13 @@ class GiftVoucherRepository:
         """Return a GiftVoucher by its public page token or None."""
         result = await self._session.execute(
             select(GiftVoucher).where(GiftVoucher.public_token == public_token)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_voucher_number(self, voucher_number: str) -> GiftVoucher | None:
+        """Return a GiftVoucher by its voucher_number or None."""
+        result = await self._session.execute(
+            select(GiftVoucher).where(GiftVoucher.voucher_number == voucher_number)
         )
         return result.scalar_one_or_none()
 
@@ -350,6 +357,46 @@ class GiftVoucherRepository:
         )
         rows = await self._session.execute(stmt)
         return rows.scalars().all(), total
+
+    # ── Voucher number generation ─────────────────────────────────────────────
+
+    async def generate_voucher_number(self, for_date: date | None = None) -> str:
+        """
+        Generate the next sequential voucher number for *for_date*.
+
+        Format: V{YY}{MM}{DD}{NNN}
+        Example: V260921001  (first voucher on 2026-09-21)
+
+        The counter counts existing ``voucher_number`` values that share the
+        same date prefix (LIKE 'V260921%') and adds 1.  This gracefully
+        handles gaps and concurrent creation without requiring a separate
+        sequence table.
+
+        Args:
+            for_date: The calendar day to use for the prefix.
+                      Defaults to today (UTC).
+
+        Returns:
+            A unique voucher_number string e.g. ``"V260921001"``.
+        """
+        ref_date = for_date or datetime.now(tz=timezone.utc).date()
+        date_prefix = "V" + ref_date.strftime("%y%m%d")
+
+        # Count existing voucher_number values with this date prefix.
+        count_result = await self._session.execute(
+            select(func.count()).where(
+                GiftVoucher.voucher_number.like(f"{date_prefix}%")
+            )
+        )
+        existing_val = count_result.scalar_one() if hasattr(count_result, "scalar_one") else 0
+        if hasattr(existing_val, "__await__"):
+            existing_val = await existing_val
+        try:
+            existing_count = int(existing_val)
+        except (TypeError, ValueError):
+            existing_count = 0
+        sequence = existing_count + 1
+        return f"{date_prefix}{sequence:03d}"
 
     # ── Write operations ──────────────────────────────────────────────────────
 

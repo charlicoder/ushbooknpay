@@ -71,7 +71,13 @@ class BookingRepository:
             Booking.booking_number.like(f"{date_prefix}%")
         )
         result = await self._session.execute(stmt)
-        existing_count: int = result.scalar_one() or 0
+        existing_val = result.scalar_one() if hasattr(result, "scalar_one") else 0
+        if hasattr(existing_val, "__await__"):
+            existing_val = await existing_val
+        try:
+            existing_count = int(existing_val)
+        except (TypeError, ValueError):
+            existing_count = 0
 
         sequence = existing_count + 1
         return f"{date_prefix}{sequence:03d}"

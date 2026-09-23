@@ -46,7 +46,7 @@ class ShopOrder(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    # Human-readable order number (ORD-YYYY-NNNN)
+    # Human-readable order number (ORD-YYMMDDNNN)
     order_number: Mapped[str] = mapped_column(
         String(30), nullable=False, unique=True, index=True
     )

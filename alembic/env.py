@@ -17,8 +17,8 @@ from app.booking.infrastructure.models import Booking, BookingStatusHistory, Tem
 from app.core.config import get_settings
 from app.core.database import Base
 from app.events.outbox.models import OutboxEvent  # noqa
+from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction  # noqa
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory  # noqa
-from app.promotions.infrastructure.models import LoyaltyTracker, LoyaltyReward  # noqa
 from app.shop.infrastructure.models import ShopOrder, ShopOrderItem, ShopOrderStatusHistory  # noqa
 
 config = context.config

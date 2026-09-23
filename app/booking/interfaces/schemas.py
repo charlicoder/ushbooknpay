@@ -78,8 +78,33 @@ class CreateBookingRequest(BaseModel):
         alias="isEligibleForLoyalty",
         description="Whether this service participates in the loyalty programme",
     )
+    loyalty_points: int = Field(
+        default=0,
+        alias="loyaltyPoints",
+        ge=0,
+        description="Points awarded to the customer after a confirmed booking (service-level).",
+    )
+    arrangement_loyalty_points: int | None = Field(
+        default=None,
+        alias="arrangementLoyaltyPoints",
+        ge=0,
+        description="Arrangement-specific override for loyalty points earned (takes precedence over loyalty_points).",
+    )
+    price_in_points: int = Field(
+        default=0,
+        alias="priceInPoints",
+        ge=0,
+        description="Points required to redeem this service for free (service-level).",
+    )
+    arrangement_price_in_points: int | None = Field(
+        default=None,
+        alias="arrangementPriceInPoints",
+        ge=0,
+        description="Arrangement-specific override for redemption cost in points.",
+    )
     base_price: str | Decimal | float | None = Field(default=None, alias="basePrice")
     base_duration: int | None = Field(default=None, alias="baseDuration")
+
 
     # Branch info
     branch_id: uuid.UUID | None = Field(default=None, alias="branchId")

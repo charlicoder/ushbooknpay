@@ -12,7 +12,7 @@ Responsibilities:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -173,18 +173,31 @@ class ShopOrderRepository:
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
-    async def next_order_number(self) -> str:
+    async def next_order_number(self, for_date: date | None = None) -> str:
         """
-        Generate the next sequential order number in the format ORD-YYYY-NNNN.
+        Generate the next sequential order number in the format ORD-YYMMDDNNN.
 
-        Uses a DB count query so it's race-safe within a serializable transaction.
+        Rules and structure:
+            "ORD-" + "YY" + "MM" + "DD" + 3-digit auto increment from 001 to 999
+            where YY is the last two digits of year, MM is the month, DD is the day.
+            Example: For date 2026/09/21, the first order_number will be ORD-260921001.
+
+        Uses a DB count query matched on date prefix (e.g. 'ORD-260921%').
         """
-        from datetime import date
+        target_date = for_date or date.today()
+        date_prefix = "ORD-" + target_date.strftime("%y%m%d")
 
-        year = date.today().year
         stmt = select(func.count(ShopOrder.id)).where(
-            func.extract("year", ShopOrder.created_at) == year
+            ShopOrder.order_number.like(f"{date_prefix}%")
         )
         result = await self._session.execute(stmt)
-        count = result.scalar_one() or 0
-        return f"ORD-{year}-{count + 1:04d}"
+        existing_val = result.scalar_one() if hasattr(result, "scalar_one") else 0
+        if hasattr(existing_val, "__await__"):
+            existing_val = await existing_val
+        try:
+            existing_count = int(existing_val)
+        except (TypeError, ValueError):
+            existing_count = 0
+
+        sequence = existing_count + 1
+        return f"{date_prefix}{sequence:03d}"

@@ -64,12 +64,6 @@ class BaseEvent:
             return "booking.payment_pending"
         elif name == "Booking.Completed":
             return "booking.completed"
-        elif name == "Booking.Loyalty":
-            return "bookings.loyalty"
-        elif name == "Loyalty.Rewarded":
-            return "loyalty.rewarded"
-        elif name == "Loyalty.Redeemed":
-            return "loyalty.redeedmed"
         elif name == "Voucher.Active":
             return "voucher.active"
         elif name == "Voucher.PaymentPending":
@@ -84,7 +78,10 @@ class BaseEvent:
             return "gift.redeemed"
         elif name == "Gift.Delivered":
             return "gift.delivered"
+        elif name == "Loyalty.Points.Credited":
+            return "loyalty.points_credited"
         return name.lower().replace(".", "_")
+
 
 
 # ── Booking Events ────────────────────────────────────────────────────────────
@@ -189,6 +186,10 @@ class BookingStatusUpdatedEvent(BaseEvent):
     internal_notes: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
+    loyalty_points: int = 0
+    arrangement_loyalty_points: int | None = None
+    price_in_points: int = 0
+    arrangement_price_in_points: int | None = None
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
     voucher_id: str = ""
@@ -250,6 +251,10 @@ class BookingConfirmedEvent(BaseEvent):
     internal_notes: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
+    loyalty_points: int = 0                          # Service-level earn points
+    arrangement_loyalty_points: int | None = None    # Arrangement override (None = use service level)
+    price_in_points: int = 0                         # Service-level redemption cost in points
+    arrangement_price_in_points: int | None = None   # Arrangement redemption cost override
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
     voucher_id: str = ""
@@ -307,6 +312,10 @@ class BookingPaymentPendingEvent(BaseEvent):
     internal_notes: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
+    loyalty_points: int = 0
+    arrangement_loyalty_points: int | None = None
+    price_in_points: int = 0
+    arrangement_price_in_points: int | None = None
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
     voucher_id: str = ""
@@ -323,6 +332,7 @@ class BookingCancelledEvent(BaseEvent):
     event_name: str = field(default="Booking.Cancelled", init=False)
     event_type: str = field(default="booking.cancelled", init=False)
     booking_id: str = ""
+    booking_number: str = ""
     customer_id: str = ""
     branch_id: str = ""
     service_id: str = ""
@@ -340,6 +350,11 @@ class BookingCancelledEvent(BaseEvent):
     cancellation_reason: str = ""
     refund_issued: bool = False
     refund_amount: str | None = None
+    # Loyalty fields — used by ushnotice to reverse points on cancellation
+    is_eligible_for_loyalty: bool = False
+    loyalty_points: int = 0
+    arrangement_loyalty_points: int | None = None
+
 
 
 @dataclass
@@ -390,6 +405,10 @@ class BookingCompletedEvent(BaseEvent):
     internal_notes: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
+    loyalty_points: int = 0
+    arrangement_loyalty_points: int | None = None
+    price_in_points: int = 0
+    arrangement_price_in_points: int | None = None
     loyalty_data: dict[str, Any] = field(default_factory=dict)
     reward_id: str = ""
     voucher_id: str = ""
@@ -513,156 +532,6 @@ class RefundIssuedEvent(BaseEvent):
     currency: str = "KWD"
 
 
-# ── Loyalty Events ────────────────────────────────────────────────────────────
-
-
-@dataclass
-class LoyaltyRewardedEvent(BaseEvent):
-    """
-    Fired when a customer earns a loyalty reward (every N confirmed branch bookings).
-
-    Published by ushbooknpay immediately after the LoyaltyReward record is created
-    and the booking_count resets to zero.
-
-    Consumers (e.g. ushnotice) use this event to send reward notifications
-    via Email, SMS, or WhatsApp.
-    """
-
-    event_name: str = field(default="Loyalty.Rewarded", init=False)
-    event_type: str = field(default="loyalty.rewarded", init=False)
-
-    # Reward + tracker identifiers
-    reward_id: str = ""
-    tracker_id: str = ""
-
-    # Customer context — passed in from the caller when available
-    customer_id: str = ""
-    customer_name: str = ""
-    customer_phone: str = ""
-    customer_email: str = ""
-
-    # Service context
-    service_id: str = ""
-    service_name: str = ""
-    service_arrangement_id: str = ""
-
-    # Loyalty program metadata
-    bookings_required: int = 5
-    total_rewards_earned: int = 0
-
-    # Reward lifecycle
-    reward_status: str = "available"
-    expires_at: str = ""  # ISO datetime
-
-    # Booking that triggered the reward (the Nth booking)
-    booking_id: str = ""
-
-
-@dataclass
-class BookingLoyaltyEvent(BaseEvent):
-    """
-    Fired when a loyalty-type booking is confirmed with payment_status=rewarded.
-
-    Triggered on both POST /api/v1/bookings/ and PATCH /api/v1/bookings/<id>/status/
-    whenever: booking_type == 'loyalty' AND status == 'confirmed' AND payment_status == 'rewarded'.
-
-    Carries the full booking snapshot plus the loyalty/reward data so downstream
-    consumers (ushnotice, analytics, etc.) can act on the redeemed reward.
-    """
-
-    event_name: str = field(default="Booking.Loyalty", init=False)
-    event_type: str = field(default="bookings.loyalty", init=False)
-
-    # ── Core booking fields ───────────────────────────────────────────
-    booking_id: str = ""
-    booking_number: str = ""
-    booking_reference: str = ""
-    customer_id: str = ""
-    customer_name: str = ""
-    customer_phone: str = ""
-    customer_email: str = ""
-    customer_data: dict[str, Any] = field(default_factory=dict)
-    branch_id: str = ""
-    branch_name: str = ""
-    branch_data: dict[str, Any] = field(default_factory=dict)
-    service_id: str = ""
-    service_name: str = ""
-    service_data: dict[str, Any] = field(default_factory=dict)
-    service_arrangement_id: str = ""
-    service_arrangement_name: str = ""
-    service_arrangement_data: dict[str, Any] = field(default_factory=dict)
-    therapist_id: str = ""
-    therapist_name: str = ""
-    therapist_data: dict[str, Any] = field(default_factory=dict)
-    appointment_start: str = ""
-    appointment_end: str = ""
-    appointment_date: str = ""
-    appointment_starttime: str = ""
-    appointment_endtime: str = ""
-    appointment_time: str = ""
-    duration_minutes: int = 0
-    extra_minutes: int = 0
-    total_duration: int = 0
-    addons_duration: int = 0
-    booking_type: str = "loyalty"
-    payment_type: str = "service"
-    status: str = "confirmed"
-    payment_status: str = "rewarded"
-    total_amount: str = ""
-    currency: str = "KWD"
-    pricing: dict[str, Any] = field(default_factory=dict)
-    addons: list[dict[str, Any]] = field(default_factory=list)
-    customer_notes: str | None = None
-    internal_notes: str | None = None
-    payment_data: dict[str, Any] = field(default_factory=dict)
-    is_eligible_for_loyalty: bool = True
-    created_at: str = ""
-    updated_at: str = ""
-    created_by: str = ""
-
-    # ── Loyalty / reward snapshot ─────────────────────────────────────
-    reward_id: str = ""
-    loyalty_data: dict[str, Any] = field(default_factory=dict)
-    voucher_id: str = ""
-    voucher_data: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class LoyaltyRedeemedEvent(BaseEvent):
-    """
-    Fired when a customer redeems a loyalty reward.
-
-    Published after POST /api/v1/promotions/loyalty/rewards/<reward_id>/redeem/
-    with event_type="loyalty.redeedmed".
-    """
-
-    event_name: str = field(default="Loyalty.Redeemed", init=False)
-    event_type: str = field(default="loyalty.redeedmed", init=False)
-
-    # Full reward dictionary matching the redeem response (no nested 'data' duplication)
-    reward: dict[str, Any] = field(default_factory=dict)
-
-    # Flattened reward fields
-    id: str = ""
-    reward_id: str = ""
-    customer_id: str = ""
-    service_id: str = ""
-    service_arrangement_id: str | None = None
-    service_name: str = ""
-    status: str = "redeemed"
-    earned_from_booking_id: str | None = None
-    redeemed_in_booking_id: str | None = None
-    redeemed_at: str = ""
-    expires_at: str = ""
-    created_at: str = ""
-
-    # Booking context — populated from the linked booking at redemption time
-    therapist_id: str = ""
-    appointment_date: str = ""
-    appointment_time: str = ""
-    duration: int = 0
-
-
 # ── Gift Voucher Events ───────────────────────────────────────────────────────
 
 
@@ -680,6 +549,7 @@ class VoucherActiveEvent(BaseEvent):
 
     # ── Voucher identity ──────────────────────────────────────────────
     id: str = ""
+    voucher_number: str = ""
     status: str = "active"
     gift_category: str = "service"
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
@@ -709,6 +579,7 @@ class VoucherActiveEvent(BaseEvent):
 
     # ── Personalisation ───────────────────────────────────────────────
     gift_message: str | None = None
+    gift_from: str | None = None
     gift_template: str | None = None
     expire_date: str | None = None
 
@@ -752,6 +623,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
 
     # ── Voucher identity ──────────────────────────────────────────────
     id: str = ""
+    voucher_number: str = ""
     status: str = "payment_pending"
     gift_category: str = "service"
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
@@ -781,6 +653,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
 
     # ── Personalisation ───────────────────────────────────────────────
     gift_message: str | None = None
+    gift_from: str | None = None
     gift_template: str | None = None
     expire_date: str | None = None
 
@@ -826,6 +699,7 @@ class VoucherRedeemedEvent(BaseEvent):
 
     # ── Voucher identity ──────────────────────────────────────────────
     id: str = ""
+    voucher_number: str = ""
     status: str = "redeemed"
     gift_category: str = "service"
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
@@ -854,6 +728,7 @@ class VoucherRedeemedEvent(BaseEvent):
 
     # ── Personalisation ───────────────────────────────────────────────
     gift_message: str | None = None
+    gift_from: str | None = None
     gift_template: str | None = None
     expire_date: str | None = None
 
@@ -963,6 +838,7 @@ class GiftPurchaseCompletedEvent(BaseEvent):
     expire_date: str | None = None
 
     gift_message: str | None = None
+    gift_from: str | None = None
     gift_template: str | None = None
 
     sender_id: str = ""
@@ -1037,3 +913,26 @@ class GiftDeliveredEvent(BaseEvent):
     recipient_language: str = "ar"
     tracking_reference: str | None = None
     delivered_at: str | None = None
+
+
+# ── Loyalty Events ────────────────────────────────────────────────────────────
+
+
+@dataclass
+class LoyaltyPointsCreditedEvent(BaseEvent):
+    """
+    Fired by ushbooknpay after loyalty points are successfully credited to a customer.
+
+    Published after the internal credit API is called by ushnotice. Can be used
+    by future consumers (push notifications, analytics, etc.).
+    """
+
+    event_name: str = field(default="Loyalty.Points.Credited", init=False)
+    event_type: str = field(default="loyalty.points_credited", init=False)
+
+    customer_id: str = ""
+    booking_id: str = ""
+    booking_number: str = ""
+    points_credited: int = 0
+    new_balance: int = 0
+    points_expire_at: str = ""    # ISO datetime string

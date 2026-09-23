@@ -10,7 +10,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import availability, bookings, payments
 from app.gifts.api.router import router as gifts_router
-from app.promotions.api.router import router as promotions_router
+from app.loyalty.api.router import router as loyalty_router
 from app.shop.api.router import router as shop_router
 from app.voucher.api.router import (
     list_my_received_vouchers,
@@ -23,10 +23,10 @@ api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(availability.router)
 api_router.include_router(bookings.router)
 api_router.include_router(payments.router)
-api_router.include_router(promotions_router)
 api_router.include_router(vouchers_router)
 api_router.include_router(shop_router)
 api_router.include_router(gifts_router)
+api_router.include_router(loyalty_router)
 
 api_router.add_api_route(
     "/my-bookings/",

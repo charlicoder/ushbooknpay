@@ -56,7 +56,6 @@ from app.events.contracts import (
     BookingCancelledEvent,
     BookingConfirmedEvent,
     BookingCreatedEvent,
-    BookingLoyaltyEvent,
     BookingNoShowEvent,
     BookingCompletedEvent,
     BookingPaymentPendingEvent,
@@ -97,11 +96,32 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     therapist_dict = booking.therapist_data or {}
     payment_data = booking.payment_data or {}
 
+    b_type = getattr(booking, "booking_type", "branch_service")
+    booking_type_str = b_type if isinstance(b_type, str) else "branch_service"
+    p_type = getattr(booking, "payment_type", "service")
+    payment_type_str = p_type if isinstance(p_type, str) else "service"
+
+    is_loyalty_redemption = (
+        booking_type_str == "loyalty"
+        or payment_type_str == "rewarded"
+        or str(getattr(booking, "payment_status", "")).lower() == "rewarded"
+        or bool(getattr(booking, "reward_id", None))
+        or bool((booking.loyalty_data or {}).get("points_cost"))
+        or bool((booking.loyalty_data or {}).get("reward_id"))
+    )
+
     # Always ensure is_eligible_for_loyalty is present inside service_data so
-    # every SQS consumer (ushnotice, loyalty service, etc.) reads a consistent shape.
     _raw_service_dict = booking.service_data or {}
-    is_eligible_for_loyalty: bool = bool(_raw_service_dict.get("is_eligible_for_loyalty"))
-    service_dict = {**_raw_service_dict, "is_eligible_for_loyalty": is_eligible_for_loyalty}
+    is_eligible_for_loyalty: bool = False if is_loyalty_redemption else bool(_raw_service_dict.get("is_eligible_for_loyalty"))
+    loyalty_points: int = 0 if is_loyalty_redemption else int(_raw_service_dict.get("loyalty_points") or 0)
+    price_in_points: int = int(_raw_service_dict.get("price_in_points") or 0)
+    service_dict = {
+        **_raw_service_dict,
+        "is_eligible_for_loyalty": is_eligible_for_loyalty,
+        "loyalty_points": loyalty_points,
+        "price_in_points": price_in_points,
+    }
+
 
     appt_start = booking.appointment_start
     appt_end = booking.appointment_end
@@ -226,7 +246,15 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "internal_notes": booking.internal_notes,
         "payment_data": payment_data,
         "is_eligible_for_loyalty": is_eligible_for_loyalty,  # top-level for backward compat
+        # Loyalty points fields — included in every booking event so consumers
+        # (ushnotice / future loyalty processors) can award/charge points without
+        # making an extra API call back to ushauth.
+        "loyalty_points": 0 if is_loyalty_redemption else int(_raw_service_dict.get("loyalty_points") or 0),
+        "arrangement_loyalty_points": None if is_loyalty_redemption else arr_dict.get("loyalty_points"),  # None = use service level
+        "price_in_points": int(_raw_service_dict.get("price_in_points") or 0),
+        "arrangement_price_in_points": arr_dict.get("price_in_points"),  # None = use service level
         "created_at": booking.created_at.isoformat() if getattr(booking, "created_at", None) else "",
+
         "updated_at": booking.updated_at.isoformat() if getattr(booking, "updated_at", None) else "",
         "created_by": getattr(booking, "created_by", None) or "",
         # Loyalty booking fields (only populated for booking_type='loyalty')
@@ -259,10 +287,123 @@ class BookingService:
         self,
         session: AsyncSession,
         settings: Settings | None = None,
+        ushauth_client: Any = None,
     ) -> None:
         self._session = session
         self._repo = BookingRepository(session)
         self._settings = settings or get_settings()
+        self._ushauth = ushauth_client
+
+    def _get_ushauth_client(self) -> Any:
+        if self._ushauth is not None:
+            return self._ushauth
+        try:
+            from app.api.deps import get_http_client
+            from app.common.redis_client import get_redis
+            from app.integrations.ushauth_client import USHAuthClient
+            self._ushauth = USHAuthClient(
+                http_client=get_http_client(),
+                redis_client=get_redis(),
+                settings=self._settings,
+            )
+        except Exception as exc:
+            logger.debug("init_ushauth_client_failed", error=str(exc))
+            return None
+        return self._ushauth
+
+    async def _ensure_booking_loyalty_details(self, booking: Booking) -> None:
+        """
+        Ensure booking.service_data and service_arrangement_data have the correct
+        loyalty_points, price_in_points, and is_eligible_for_loyalty from ushauth
+        if they are currently 0 or missing.
+        """
+        b_type = getattr(booking, "booking_type", "branch_service")
+        b_type_str = b_type if isinstance(b_type, str) else "branch_service"
+        p_type = getattr(booking, "payment_type", "service")
+        p_type_str = p_type if isinstance(p_type, str) else "service"
+        if (
+            b_type_str == "loyalty"
+            or p_type_str == "rewarded"
+            or str(getattr(booking, "payment_status", "")).lower() == "rewarded"
+            or bool(getattr(booking, "reward_id", None))
+            or bool((booking.loyalty_data or {}).get("points_cost"))
+            or bool((booking.loyalty_data or {}).get("reward_id"))
+        ):
+            # Redemption bookings must never earn loyalty points — do not refresh
+            return
+
+        service_dict = booking.service_data or {}
+        arr_dict = booking.service_arrangement_data or {}
+
+        needs_service_refresh = (
+            bool(booking.service_id)
+            and int(service_dict.get("loyalty_points") or 0) == 0
+        )
+        needs_arr_refresh = (
+            bool(booking.service_arrangement_id)
+            and arr_dict.get("loyalty_points") is None
+        )
+
+        if not (needs_service_refresh or needs_arr_refresh):
+            return
+
+        try:
+            ushauth = self._get_ushauth_client()
+            if ushauth is None:
+                return
+
+            modified = False
+
+            if needs_service_refresh and booking.service_id:
+                raw_svc = await ushauth.get_service(str(booking.service_id))
+                svc_data = raw_svc.get("data", raw_svc) if isinstance(raw_svc, dict) else {}
+                db_loyalty = svc_data.get("loyalty_points")
+                db_price_pts = svc_data.get("price_in_points")
+                db_eligible = svc_data.get("is_eligible_for_loyalty")
+
+                updated_service = dict(service_dict)
+                if db_loyalty is not None and int(db_loyalty) > 0:
+                    updated_service["loyalty_points"] = int(db_loyalty)
+                    modified = True
+                if db_price_pts is not None and int(db_price_pts) > 0:
+                    updated_service["price_in_points"] = int(db_price_pts)
+                    modified = True
+                if db_eligible is not None:
+                    updated_service["is_eligible_for_loyalty"] = bool(db_eligible)
+                    modified = True
+
+                booking.service_data = updated_service
+
+            if needs_arr_refresh and booking.service_arrangement_id:
+                raw_arr = await ushauth.get_service_arrangement(str(booking.service_arrangement_id))
+                arr_data = raw_arr.get("data", raw_arr) if isinstance(raw_arr, dict) else {}
+                updated_arr = dict(arr_dict)
+                for asvc in arr_data.get("arrangement_services", []):
+                    if str(asvc.get("service_id")) == str(booking.service_id):
+                        if asvc.get("loyalty_points") is not None:
+                            updated_arr["loyalty_points"] = asvc["loyalty_points"]
+                            modified = True
+                        if asvc.get("price_in_points") is not None:
+                            updated_arr["price_in_points"] = asvc["price_in_points"]
+                            modified = True
+                        break
+                booking.service_arrangement_data = updated_arr
+
+            if modified:
+                await self._repo.update(booking)
+                logger.info(
+                    "booking_loyalty_details_refreshed_from_db",
+                    booking_id=str(booking.id),
+                    service_loyalty_points=(booking.service_data or {}).get("loyalty_points"),
+                    arrangement_loyalty_points=(booking.service_arrangement_data or {}).get("loyalty_points"),
+                )
+        except Exception as exc:
+            logger.warning(
+                "ensure_booking_loyalty_details_failed",
+                booking_id=str(booking.id),
+                error=str(exc),
+            )
+
 
     async def get_busy_therapist_ids(
         self,
@@ -441,19 +582,16 @@ class BookingService:
 
         logger.info("booking_created", booking_id=str(booking.id))
 
-        # If a booking arrives already confirmed, fire BookingLoyaltyEvent or BookingConfirmedEvent immediately.
+        # If a booking arrives already confirmed, fire BookingConfirmedEvent immediately.
         if booking.status == BookingStatus.CONFIRMED.value:
+            await self._ensure_booking_loyalty_details(booking)
             ev_data = _build_booking_event_data(booking)
-            if (
-                booking.booking_type == "loyalty"
-                and booking.payment_status == PaymentStatus.REWARDED.value
-            ):
-                await self._enqueue_event(BookingLoyaltyEvent(**ev_data))
-            else:
-                await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+            await self._enqueue_event(BookingConfirmedEvent(**ev_data))
         elif booking.status == BookingStatus.PAYMENT_PENDING.value:
+            await self._ensure_booking_loyalty_details(booking)
             ev_data = _build_booking_event_data(booking)
             await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
+
 
         return booking
 
@@ -655,8 +793,10 @@ class BookingService:
             correlation_id=correlation_id,
         )
 
+        await self._ensure_booking_loyalty_details(booking)
         ev_data = _build_booking_event_data(booking)
         await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+
 
         logger.info("booking_confirmed", booking_id=str(booking.id))
         return booking
@@ -693,9 +833,25 @@ class BookingService:
         customer_dict = booking.customer_data or {}
         appt_start = booking.appointment_start
         appt_end = booking.appointment_end
+        # Resolve loyalty fields from stored service/arrangement snapshots
+        _cancel_service_dict = booking.service_data or {}
+        _cancel_arr_dict = booking.service_arrangement_data or {}
+        _b_type = getattr(booking, "booking_type", "branch_service")
+        _b_type_str = _b_type if isinstance(_b_type, str) else "branch_service"
+        _p_type = getattr(booking, "payment_type", "service")
+        _p_type_str = _p_type if isinstance(_p_type, str) else "service"
+        _is_loyalty_bk = (
+            _b_type_str == "loyalty"
+            or _p_type_str == "rewarded"
+            or str(getattr(booking, "payment_status", "")).lower() == "rewarded"
+            or bool(getattr(booking, "reward_id", None))
+            or bool((booking.loyalty_data or {}).get("points_cost"))
+            or bool((booking.loyalty_data or {}).get("reward_id"))
+        )
         await self._enqueue_event(
             BookingCancelledEvent(
                 booking_id=str(booking.id),
+                booking_number=str(getattr(booking, "booking_number", "") or ""),
                 customer_id=str(booking.customer_id),
                 branch_id=str(booking.branch_id),
                 service_id=str(booking.service_id),
@@ -711,8 +867,13 @@ class BookingService:
                 cancellation_reason=reason,
                 refund_issued=refund_amount is not None and refund_amount > 0,
                 refund_amount=str(refund_amount) if refund_amount else None,
+                # Loyalty fields
+                is_eligible_for_loyalty=False if _is_loyalty_bk else bool(_cancel_service_dict.get("is_eligible_for_loyalty", False)),
+                loyalty_points=0 if _is_loyalty_bk else int(_cancel_service_dict.get("loyalty_points") or 0),
+                arrangement_loyalty_points=None if _is_loyalty_bk else _cancel_arr_dict.get("loyalty_points"),
             )
         )
+
 
         logger.info("booking_cancelled", booking_id=str(booking.id), reason=reason)
         return booking
@@ -894,7 +1055,10 @@ class BookingService:
         reason: str | None = None,
         source: str = "admin",
     ) -> None:
+        if new_status in (BookingStatus.CONFIRMED, "confirmed"):
+            await self._ensure_booking_loyalty_details(booking)
         ev_data = _build_booking_event_data(booking)
+
         new_status_val = new_status.value if hasattr(new_status, "value") else str(new_status)
         old_status_val = (
             old_status.value
@@ -904,12 +1068,6 @@ class BookingService:
 
         if new_status in (BookingStatus.CONFIRMED, "confirmed"):
             await self._enqueue_event(BookingConfirmedEvent(**ev_data))
-            # Also fire the loyalty-specific event when this is a loyalty reward redemption.
-            if (
-                booking.booking_type == "loyalty"
-                and booking.payment_status == PaymentStatus.REWARDED.value
-            ):
-                await self._enqueue_event(BookingLoyaltyEvent(**ev_data))
         elif new_status in (BookingStatus.PAYMENT_PENDING, "payment_pending"):
             await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
         elif new_status in (BookingStatus.COMPLETED, "completed"):
@@ -932,6 +1090,9 @@ class BookingService:
                     customer_phone=ev_data["customer_phone"],
                     cancellation_reason=reason or "",
                     refund_issued=False,
+                    is_eligible_for_loyalty=bool(ev_data.get("is_eligible_for_loyalty")),
+                    loyalty_points=int(ev_data.get("loyalty_points") or 0),
+                    arrangement_loyalty_points=ev_data.get("arrangement_loyalty_points"),
                 )
             )
         elif new_status in (BookingStatus.NO_SHOW, "no_show"):
@@ -989,3 +1150,4 @@ class BookingService:
                 event_name=getattr(event, "event_name", type(event).__name__),
                 error=str(exc),
             )
+

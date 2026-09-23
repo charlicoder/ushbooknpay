@@ -127,6 +127,9 @@ class CreateGiftVoucherRequest(BaseModel):
     gift_message: str | None = Field(
         default=None, description="Optional personalised gift message."
     )
+    gift_from: str | None = Field(
+        default=None, description="Optional name or signature of the gift giver."
+    )
     gift_template: str | None = Field(
         default=None, max_length=100, description="Optional gift card template identifier."
     )
@@ -172,6 +175,16 @@ class CreateGiftVoucherRequest(BaseModel):
     expire_date: datetime | None = Field(
         default=None,
         description="Optional explicit expiration date/time (ISO 8601). Defaults to 60 days from now.",
+    )
+    validity_days: int | None = Field(
+        default=60,
+        ge=1,
+        description="Optional validity period in days from creation. Defaults to 60 days.",
+    )
+    validity: int | None = Field(
+        default=None,
+        ge=1,
+        description="Alias for validity_days. Defaults to 60 days if neither validity nor expire_date is provided.",
     )
 
     # ── Authoring ─────────────────────────────────────────────────────
@@ -238,9 +251,12 @@ class CreateGiftVoucherRequest(BaseModel):
         "payment_id",
         "payment_url",
         "gift_message",
+        "gift_from",
         "gift_template",
         "recipient_phone",
         "expire_date",
+        "validity_days",
+        "validity",
         mode="before",
     )
     @classmethod
@@ -664,6 +680,10 @@ class UpdateGiftVoucherRequest(BaseModel):
         default=None,
         description="Personalised gift message.",
     )
+    gift_from: str | None = Field(
+        default=None,
+        description="Name or signature of the gift giver.",
+    )
     gift_template: str | None = Field(
         default=None,
         max_length=100,
@@ -722,6 +742,7 @@ class UpdateGiftVoucherRequest(BaseModel):
         "payment_id",
         "payment_url",
         "gift_message",
+        "gift_from",
         "gift_template",
         "recipient_phone",
         "expire_date",
@@ -818,6 +839,7 @@ class GiftVoucherResponse(BaseModel):
     """Full detail response — returned to the sender and admin."""
 
     id: uuid.UUID
+    voucher_number: str | None = None
     gift_category: str = GiftCategory.SERVICE.value
     ordered_items: list[dict[str, Any]] | None = None
     delivery_status: str | None = None
@@ -846,8 +868,9 @@ class GiftVoucherResponse(BaseModel):
     total_duration: int
     total_amount: str  # String to preserve KWD 3-decimal precision
     currency: str
-    gift_message: str | None
-    gift_template: str | None
+    gift_message: str | None = None
+    gift_from: str | None = None
+    gift_template: str | None = None
     # secret_code is intentionally included in the full response for the sender
     # so they can see the code that was sent to the recipient.
     secret_code: str
@@ -878,6 +901,7 @@ class GiftVoucherPublicResponse(BaseModel):
     """
 
     id: uuid.UUID
+    voucher_number: str | None = None
     gift_category: str = GiftCategory.SERVICE.value
     ordered_items: list[dict[str, Any]] | None = None
     delivery_status: str | None = None
@@ -901,8 +925,9 @@ class GiftVoucherPublicResponse(BaseModel):
     total_duration: int
     total_amount: str
     currency: str
-    gift_message: str | None
-    gift_template: str | None
+    gift_message: str | None = None
+    gift_from: str | None = None
+    gift_template: str | None = None
     public_token: str
     # secret_code is OMITTED from the public response
     # payment_id / payment_data are OMITTED from the public response
@@ -915,6 +940,7 @@ class GiftVoucherListItem(BaseModel):
     """Lightweight list item for paginated responses."""
 
     id: uuid.UUID
+    voucher_number: str | None = None
     gift_category: str = GiftCategory.SERVICE.value
     ordered_items: list[dict[str, Any]] | None = None
     delivery_status: str | None = None
@@ -938,6 +964,7 @@ class GiftVoucherListItem(BaseModel):
     recipient_id: uuid.UUID | None = None
     recipient_data: dict[str, Any]
     gift_message: str | None = None
+    gift_from: str | None = None
     secret_code: str | None = None
     public_token: str
     redeemed_at: datetime | None

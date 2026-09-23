@@ -1,1 +1,0 @@
-# Promotions module — Loyalty Rewards

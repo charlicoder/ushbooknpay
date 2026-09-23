@@ -82,9 +82,11 @@ USHAuthDep = Annotated[USHAuthClient, Depends(get_ushauth_client)]
 async def get_booking_service(
     session: DBSession,
     settings: AppSettings,
+    ushauth: USHAuthDep,
 ) -> BookingService:
     """Provide a BookingService per request."""
-    return BookingService(session=session, settings=settings)
+    return BookingService(session=session, settings=settings, ushauth_client=ushauth)
+
 
 
 BookingServiceDep = Annotated[BookingService, Depends(get_booking_service)]

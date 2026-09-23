@@ -917,6 +917,88 @@ def test_router_digital_product_data_serialization():
     assert item.is_digital_gift_opened is True
 
 
+def test_voucher_gift_from_support():
+    """Verify gift_from field is supported across models, schemas, serializers, and events."""
+    from app.events.contracts import (
+        VoucherActiveEvent,
+        VoucherPaymentPendingEvent,
+        VoucherRedeemedEvent,
+    )
+    from app.voucher.api.router import (
+        _voucher_to_list_item,
+        _voucher_to_public,
+        _voucher_to_response,
+    )
+    from app.voucher.interfaces.schemas import (
+        CreateGiftVoucherRequest,
+        UpdateGiftVoucherRequest,
+    )
+
+    # 1. Model & to_snapshot()
+    now = datetime.now(timezone.utc)
+    v = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=None,
+        total_amount=Decimal("45.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Sender"},
+        gift_message="Happy Birthday!",
+        gift_from="Your Friend Sarah",
+        status="active",
+        secret_code="SEC123",
+        public_token="PUB123",
+        extra_time=0,
+        total_duration=0,
+        expire_date=now,
+        created_at=now,
+        updated_at=now,
+    )
+    assert v.gift_from == "Your Friend Sarah"
+    snapshot = v.to_snapshot()
+    assert snapshot["gift_from"] == "Your Friend Sarah"
+
+    # 2. SQS events
+    active_ev = VoucherActiveEvent(**snapshot)
+    assert active_ev.gift_from == "Your Friend Sarah"
+
+    pending_ev = VoucherPaymentPendingEvent(**snapshot)
+    assert pending_ev.gift_from == "Your Friend Sarah"
+
+    redeemed_ev = VoucherRedeemedEvent(**snapshot)
+    assert redeemed_ev.gift_from == "Your Friend Sarah"
+
+    # 3. Router serializers
+    resp = _voucher_to_response(v)
+    assert resp.gift_from == "Your Friend Sarah"
+
+    pub = _voucher_to_public(v)
+    assert pub.gift_from == "Your Friend Sarah"
+
+    item = _voucher_to_list_item(v)
+    assert item.gift_from == "Your Friend Sarah"
+
+    # 4. Request schemas
+    req = CreateGiftVoucherRequest(
+        total_amount=Decimal("45.000"),
+        gift_from="Your Friend Sarah",
+    )
+    assert req.gift_from == "Your Friend Sarah"
+
+    # Empty string coerced to None
+    req_empty = CreateGiftVoucherRequest(
+        total_amount=Decimal("45.000"),
+        gift_from="   ",
+    )
+    assert req_empty.gift_from is None
+
+    update_req = UpdateGiftVoucherRequest(
+        gift_from="Aunt Emily",
+    )
+    assert update_req.gift_from == "Aunt Emily"
+
+
+
 
 
 
