@@ -59,6 +59,14 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
 
+def _safe_str(val: Any) -> str | None:
+    """Safely extract string, ignoring non-string/non-scalar types like MagicMock."""
+    if val is None or not isinstance(val, (str, int, float, uuid.UUID)):
+        return None
+    s = str(val).strip()
+    return s if s else None
+
+
 def _booking_to_list_item(b: object) -> BookingListItem:
     """Map ORM Booking to BookingListItem."""
     b_type = getattr(b, "booking_type", "branch")
@@ -80,8 +88,8 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         appointment_date=raw_app_date,
         appointment_start=b.appointment_start,
         appointment_end=b.appointment_end,
-        duration_minutes=b.duration_minutes,
-        extra_minutes=b.extra_minutes,
+        duration_minutes=int(getattr(b, "duration_minutes", 0) or 0),
+        extra_minutes=int(getattr(b, "extra_minutes", 0) or 0),
         total_duration=getattr(b, "total_duration", None),
         addons_duration=getattr(b, "addons_duration", None),
         base_price=str(raw_base_price) if raw_base_price is not None else None,
@@ -89,6 +97,12 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         payment_type=getattr(b, "payment_type", "service") or "service",
         status=b.status,
         payment_status=b.payment_status,
+        payment_id=_safe_str(getattr(b, "payment_id", None)),
+        payment_provider=_safe_str(getattr(b, "payment_provider", None)),
+        payment_gateway=_safe_str(getattr(b, "payment_gateway", None)),
+        payment_through=_safe_str(getattr(b, "payment_through", None)),
+        payment_method=_safe_str(getattr(b, "payment_method", None)),
+        payment_url=_safe_str(getattr(b, "payment_url", None)),
         payment_data=b.payment_data or {},
         total_amount=str(b.total_amount),
         currency=b.currency,
@@ -98,7 +112,9 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         voucher_id=str(b.voucher_id) if getattr(b, "voucher_id", None) and isinstance(getattr(b, "voucher_id", None), (str, uuid.UUID)) else None,
         voucher_data=getattr(b, "voucher_data", None) if isinstance(getattr(b, "voucher_data", None), dict) else None,
         created_at=b.created_at,
-        created_by=str(getattr(b, "created_by", None) or "") or None,
+        created_by_user=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
+        created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
+        created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
     )
 
 
@@ -141,31 +157,39 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
 
     raw_base_price = getattr(b, "base_price", None)
     raw_app_date = getattr(b, "appointment_date", None) or getattr(b, "appointment_start", None)
+    raw_branch_data = b.branch_data if isinstance(getattr(b, "branch_data", None), dict) else None
+    raw_arr_data = b.service_arrangement_data if isinstance(getattr(b, "service_arrangement_data", None), dict) else None
     return BookingDetailResponse(
         id=str(b.id),
         customer_id=str(b.customer_id),
-        customer_data=b.customer_data,
-        branch_id=str(b.branch_id) if b.branch_id else None,
-        branch_data=b.branch_data,
+        customer_data=b.customer_data if isinstance(getattr(b, "customer_data", None), dict) else {},
+        branch_id=str(b.branch_id) if getattr(b, "branch_id", None) and isinstance(b.branch_id, (str, uuid.UUID)) else None,
+        branch_data=raw_branch_data,
         service_id=str(b.service_id),
         service_data=service_data_out,
-        service_arrangement_id=str(b.service_arrangement_id) if b.service_arrangement_id else None,
-        service_arrangement_data=b.service_arrangement_data,
+        service_arrangement_id=str(b.service_arrangement_id) if getattr(b, "service_arrangement_id", None) and isinstance(b.service_arrangement_id, (str, uuid.UUID)) else None,
+        service_arrangement_data=raw_arr_data,
         therapist_id=str(b.therapist_id),
-        therapist_data=b.therapist_data,
+        therapist_data=b.therapist_data if isinstance(getattr(b, "therapist_data", None), dict) else {},
         appointment_date=raw_app_date,
         appointment_start=b.appointment_start,
         appointment_end=b.appointment_end,
-        duration_minutes=b.duration_minutes,
-        extra_minutes=b.extra_minutes,
+        duration_minutes=int(getattr(b, "duration_minutes", 0) or 0),
+        extra_minutes=int(getattr(b, "extra_minutes", 0) or 0),
         total_duration=getattr(b, "total_duration", None),
         addons_duration=getattr(b, "addons_duration", None),
         base_price=str(raw_base_price) if raw_base_price is not None else None,
         price_for_extra_minutes=str(b.price_for_extra_minutes),
-        booking_type=getattr(b, "booking_type", "branch_service") or "branch_service",
-        payment_type=getattr(b, "payment_type", "service") or "service",
+        booking_type=_safe_str(getattr(b, "booking_type", None)) or "branch_service",
+        payment_type=_safe_str(getattr(b, "payment_type", None)) or "service",
         status=b.status,
         payment_status=b.payment_status,
+        payment_id=_safe_str(getattr(b, "payment_id", None)),
+        payment_provider=_safe_str(getattr(b, "payment_provider", None)),
+        payment_gateway=_safe_str(getattr(b, "payment_gateway", None)),
+        payment_through=_safe_str(getattr(b, "payment_through", None)),
+        payment_method=_safe_str(getattr(b, "payment_method", None)),
+        payment_url=_safe_str(getattr(b, "payment_url", None)),
         payment_data=b.payment_data or {},
         pricing=PricingBreakdownSchema(
             arrangement_price=str(b.arrangement_price),
@@ -188,7 +212,9 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         voucher_data=getattr(b, "voucher_data", None) if isinstance(getattr(b, "voucher_data", None), dict) else None,
         created_at=b.created_at,
         updated_at=b.updated_at,
-        created_by=str(getattr(b, "created_by", None) or "") or None,
+        created_by_user=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
+        created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
+        created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
     )
 
 
@@ -212,7 +238,18 @@ async def create_booking(
 ) -> CreateBookingResponse:
     """Create a new booking."""
     # ── Always track who made the request ───────────────────────────────
-    created_by: str = current_user.sub
+    created_by_user: str = str(body.created_by_user or body.created_by or current_user.sub)
+    created_by: str = created_by_user
+    created_by_user_data: dict[str, Any] | None = body.created_by_user_data
+    if created_by_user_data is None:
+        created_by_user_data = {
+            "id": current_user.sub,
+            "first_name": current_user.first_name or "",
+            "last_name": current_user.last_name or "",
+            "phone_number": current_user.phone_number or "",
+            "email": current_user.email or "",
+            "role": getattr(current_user, "role", None),
+        }
 
     # ── Resolve customer_id and customer_data ────────────────────────────
     # If the caller supplies a customer_id in the body, fetch that customer's
@@ -749,6 +786,12 @@ async def create_booking(
             pricing=pricing,
             addons=addon_records,
             customer_notes=body.customer_notes or body.customer_message or None,
+            payment_id=body.payment_id,
+            payment_provider=body.payment_provider,
+            payment_gateway=body.payment_gateway,
+            payment_through=body.payment_through,
+            payment_method=body.payment_method,
+            payment_url=body.payment_url,
             payment_data=body.payment_data,
             idempotency_key=idempotency_key,
             booking_type=booking_type_str,
@@ -759,6 +802,8 @@ async def create_booking(
             reward_id=body.reward_id,
             voucher_id=body.voucher_id,
             voucher_data=body.voucher_data,
+            created_by_user=created_by_user,
+            created_by_user_data=created_by_user_data,
             created_by=created_by,
         )
     except DoubleBookingError as exc:
@@ -809,6 +854,12 @@ async def create_booking(
             final_amount=str(booking.total_amount),
             status=booking.status,
             payment_status=booking.payment_status,
+            payment_id=_safe_str(getattr(booking, "payment_id", None)),
+            payment_provider=_safe_str(getattr(booking, "payment_provider", None)),
+            payment_gateway=_safe_str(getattr(booking, "payment_gateway", None)),
+            payment_through=_safe_str(getattr(booking, "payment_through", None)),
+            payment_method=_safe_str(getattr(booking, "payment_method", None)),
+            payment_url=_safe_str(getattr(booking, "payment_url", None)),
             payment_type=booking.payment_type,
             payment_data=booking.payment_data,
             is_eligible_for_loyalty=bool((booking.service_data or {}).get("is_eligible_for_loyalty", False)),
@@ -816,6 +867,9 @@ async def create_booking(
             reward_id=str(booking.reward_id) if getattr(booking, "reward_id", None) else None,
             voucher_id=str(booking.voucher_id) if getattr(booking, "voucher_id", None) else None,
             voucher_data=getattr(booking, "voucher_data", None),
+            created_by_user=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
+            created_by_user_data=getattr(booking, "created_by_user_data", None) if isinstance(getattr(booking, "created_by_user_data", None), dict) else None,
+            created_by=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
         ),
     )
 
@@ -998,7 +1052,16 @@ async def update_booking(
         booking_id=booking_id,
         status=body.status,
         payment_status=body.payment_status,
+        payment_id=body.payment_id,
+        payment_provider=body.payment_provider,
+        payment_gateway=body.payment_gateway,
+        payment_through=body.payment_through,
+        payment_method=body.payment_method,
+        payment_url=body.payment_url,
+        payment_type=body.payment_type,
         payment_data=body.payment_data,
+        created_by_user=body.created_by_user or body.created_by,
+        created_by_user_data=body.created_by_user_data,
         therapist_id=body.therapist_id,
         therapist_data=therapist_data,
         appointment_start=body.appointment_start,
@@ -1137,6 +1200,13 @@ async def update_booking_status(
         booking_id=booking_id,
         new_status=body.status,
         payment_status=payment_status,
+        payment_id=body.payment_id,
+        payment_provider=body.payment_provider,
+        payment_gateway=body.payment_gateway,
+        payment_through=body.payment_through,
+        payment_method=body.payment_method,
+        payment_url=body.payment_url,
+        payment_type=body.payment_type,
         payment_data=body.payment_data,
         reason=body.reason,
         source=body.source,

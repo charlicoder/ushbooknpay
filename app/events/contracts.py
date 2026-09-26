@@ -201,6 +201,14 @@ class BookingStatusUpdatedEvent(BaseEvent):
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
+    created_by_user: str = ""
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    payment_id: str = ""
+    payment_provider: str = ""
+    payment_gateway: str = ""
+    payment_through: str = ""
+    payment_method: str = ""
+    payment_url: str = ""
 
 
 @dataclass
@@ -243,6 +251,12 @@ class BookingConfirmedEvent(BaseEvent):
     payment_type: str = "service"
     status: str = "confirmed"
     payment_status: str = "paid"
+    payment_id: str = ""
+    payment_provider: str = ""
+    payment_gateway: str = ""
+    payment_through: str = ""
+    payment_method: str = ""
+    payment_url: str = ""
     total_amount: str = ""
     currency: str = "KWD"
     pricing: dict[str, Any] = field(default_factory=dict)
@@ -262,6 +276,8 @@ class BookingConfirmedEvent(BaseEvent):
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
+    created_by_user: str = ""
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -304,6 +320,12 @@ class BookingPaymentPendingEvent(BaseEvent):
     payment_type: str = "service"
     status: str = "payment_pending"
     payment_status: str = "pending"
+    payment_id: str = ""
+    payment_provider: str = ""
+    payment_gateway: str = ""
+    payment_through: str = ""
+    payment_method: str = ""
+    payment_url: str = ""
     total_amount: str = ""
     currency: str = "KWD"
     pricing: dict[str, Any] = field(default_factory=dict)
@@ -323,6 +345,8 @@ class BookingPaymentPendingEvent(BaseEvent):
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
+    created_by_user: str = ""
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -397,6 +421,12 @@ class BookingCompletedEvent(BaseEvent):
     payment_type: str = "service"
     status: str = "completed"
     payment_status: str = ""
+    payment_id: str = ""
+    payment_provider: str = ""
+    payment_gateway: str = ""
+    payment_through: str = ""
+    payment_method: str = ""
+    payment_url: str = ""
     total_amount: str = ""
     currency: str = "KWD"
     pricing: dict[str, Any] = field(default_factory=dict)
@@ -416,6 +446,8 @@ class BookingCompletedEvent(BaseEvent):
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
+    created_by_user: str = ""
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -807,8 +839,27 @@ class ShopOrderCreatedEvent(BaseEvent):
     # status at time of event (always "success" since we only fire on success)
     payment_status: str = "success"
     payment_method: str = ""       # card, knet, apple_pay, cash, etc.
-    payment_type: str = ""         # gateway, desk, gift_voucher, etc.
+    payment_through: str = ""      # ushspa, ushdesk, other
+    payment_type: str = ""         # gateway, desk, gift_voucher, etc. (kept for backward compatibility)
     payment_provider: str = ""     # MyFatoorah, DirectLink, Other
+
+    # ── Requester user info ───────────────────────────────────────────
+    order_requested_by_user: str | None = None
+    order_requested_by_user_data: dict = field(default_factory=dict)
+
+    # ── Payment transaction metadata ──────────────────────────────────
+    payment_url: str = ""
+    payment_data: dict = field(default_factory=dict)
+    payment_id: str = ""
+    invoice_id: str = ""
+    transaction_id: str = ""
+    reference_id: str = ""
+    track_id: str = ""
+    transaction_date: str = ""
+    transaction_status: str = ""
+    payment_gateway: str = ""
+    country: str = ""
+    created_by: str = ""
 
     # ── Items snapshot ────────────────────────────────────────────────
     # List of dicts: {product_id, product_name, product_name_ar, quantity, unit_price, line_total}

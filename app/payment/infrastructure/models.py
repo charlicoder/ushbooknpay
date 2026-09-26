@@ -141,7 +141,17 @@ class Payment(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    created_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    @property
+    def created_by(self) -> str | None:
+        """Backward compatibility alias for created_by_user."""
+        return self.created_by_user
+
+    @created_by.setter
+    def created_by(self, value: Any) -> None:
+        self.created_by_user = str(value) if value is not None else None
 
     # ── Relationships ─────────────────────────────────────────────────────
     status_history: Mapped[list["PaymentStatusHistory"]] = relationship(
@@ -173,7 +183,7 @@ class Payment(Base):
         Index("ix_payments_track_id", "track_id"),
         Index("ix_payments_reference_id", "reference_id"),
         Index("ix_payments_created_at", "created_at"),
-        Index("ix_payments_created_by", "created_by"),
+        Index("ix_payments_created_by_user", "created_by_user"),
     )
 
     def __repr__(self) -> str:

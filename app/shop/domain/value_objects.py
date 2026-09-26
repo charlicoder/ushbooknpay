@@ -29,6 +29,31 @@ class OrderPaymentStatus(str, Enum):
     REFUNDED = "refunded"
 
 
+class ShopPaymentThrough(str, Enum):
+    """Payment channels for shop orders."""
+
+    USHSPA = "ushspa"
+    USHDESK = "ushdesk"
+    OTHER = "other"
+
+    @classmethod
+    def normalise(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        v = value.strip().lower()
+        mapping = {
+            "ushspa": cls.USHSPA.value,
+            "app": cls.USHSPA.value,
+            "mobile": cls.USHSPA.value,
+            "ushdesk": cls.USHDESK.value,
+            "desk": cls.USHDESK.value,
+            "pos": cls.USHDESK.value,
+            "counter": cls.USHDESK.value,
+            "other": cls.OTHER.value,
+        }
+        return mapping.get(v, cls.OTHER.value)
+
+
 # ── Multilingual status labels ────────────────────────────────────────────────
 
 DELIVERY_STATUS_LABELS: dict[str, dict[str, str]] = {

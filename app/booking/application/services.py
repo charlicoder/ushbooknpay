@@ -238,6 +238,12 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "payment_type": payment_type_str,
         "status": booking.status,
         "payment_status": booking.payment_status,
+        "payment_id": str(getattr(booking, "payment_id", None) or ""),
+        "payment_provider": str(getattr(booking, "payment_provider", None) or ""),
+        "payment_gateway": str(getattr(booking, "payment_gateway", None) or ""),
+        "payment_through": str(getattr(booking, "payment_through", None) or ""),
+        "payment_method": str(getattr(booking, "payment_method", None) or ""),
+        "payment_url": str(getattr(booking, "payment_url", None) or ""),
         "total_amount": str(booking.total_amount),
         "currency": booking.currency,
         "pricing": pricing_dict,
@@ -256,11 +262,12 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "created_at": booking.created_at.isoformat() if getattr(booking, "created_at", None) else "",
 
         "updated_at": booking.updated_at.isoformat() if getattr(booking, "updated_at", None) else "",
-        "created_by": getattr(booking, "created_by", None) or "",
+        "created_by": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
+        "created_by_user": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
+        "created_by_user_data": getattr(booking, "created_by_user_data", None) or {},
         # Loyalty booking fields (only populated for booking_type='loyalty')
         "loyalty_data": booking.loyalty_data or {},
         "reward_id": str(booking.reward_id) if getattr(booking, "reward_id", None) else "",
-        # Gift voucher fields (populated when booking is paid with a gift voucher)
         "voucher_id": str(booking.voucher_id) if getattr(booking, "voucher_id", None) else "",
         "voucher_data": booking.voucher_data or {},
     }
@@ -439,6 +446,12 @@ class BookingService:
         pricing: PricingBreakdown,
         addons: list[dict] | None = None,
         customer_notes: str | None = None,
+        payment_id: str | None = None,
+        payment_provider: str | None = None,
+        payment_gateway: str | None = None,
+        payment_through: str | None = None,
+        payment_method: str | None = None,
+        payment_url: str | None = None,
         payment_data: dict | None = None,
         idempotency_key: str | None = None,
         booking_type: str = "branch_service",
@@ -449,6 +462,8 @@ class BookingService:
         reward_id: uuid.UUID | None = None,
         voucher_id: uuid.UUID | None = None,
         voucher_data: dict | None = None,
+        created_by_user: str | None = None,
+        created_by_user_data: dict | None = None,
         created_by: str | None = None,
     ) -> Booking:
         """
@@ -512,6 +527,12 @@ class BookingService:
             payment_status=payment_status,
             booking_type=booking_type,
             payment_type=payment_type,
+            payment_id=payment_id,
+            payment_provider=payment_provider,
+            payment_gateway=payment_gateway,
+            payment_through=payment_through,
+            payment_method=payment_method,
+            payment_url=payment_url,
             addons=addons or [],
             customer_notes=customer_notes,
             payment_data=payment_data or {},
@@ -520,7 +541,8 @@ class BookingService:
             reward_id=reward_id,
             voucher_id=voucher_id,
             voucher_data=voucher_data,
-            created_by=created_by,
+            created_by_user=created_by_user or created_by,
+            created_by_user_data=created_by_user_data,
         )
 
         # ── Generate booking number (e.g. B260921001) ─────────────────────
@@ -604,7 +626,16 @@ class BookingService:
         *,
         status: BookingStatus | None = None,
         payment_status: PaymentStatus | None = None,
+        payment_id: str | None = None,
+        payment_provider: str | None = None,
+        payment_gateway: str | None = None,
+        payment_through: str | None = None,
+        payment_method: str | None = None,
+        payment_url: str | None = None,
+        payment_type: str | None = None,
         payment_data: dict | None = None,
+        created_by_user: str | None = None,
+        created_by_user_data: dict | None = None,
         therapist_id: uuid.UUID | None = None,
         therapist_data: dict | None = None,
         appointment_start: datetime | None = None,
@@ -668,6 +699,24 @@ class BookingService:
             booking.payment_status = payment_status.value
         if payment_data is not None:
             booking.payment_data = {**(booking.payment_data or {}), **payment_data}
+        if payment_id is not None:
+            booking.payment_id = payment_id
+        if payment_provider is not None:
+            booking.payment_provider = payment_provider
+        if payment_gateway is not None:
+            booking.payment_gateway = payment_gateway
+        if payment_through is not None:
+            booking.payment_through = payment_through
+        if payment_method is not None:
+            booking.payment_method = payment_method
+        if payment_url is not None:
+            booking.payment_url = payment_url
+        if payment_type is not None:
+            booking.payment_type = payment_type
+        if created_by_user is not None:
+            booking.created_by_user = created_by_user
+        if created_by_user_data is not None:
+            booking.created_by_user_data = created_by_user_data
 
         # ── Loyalty fields ────────────────────────────────────────────
         if loyalty_data is not None:
@@ -950,7 +999,16 @@ class BookingService:
         new_status: BookingStatus,
         *,
         payment_status: PaymentStatus | None = None,
+        payment_id: str | None = None,
+        payment_provider: str | None = None,
+        payment_gateway: str | None = None,
+        payment_through: str | None = None,
+        payment_method: str | None = None,
+        payment_url: str | None = None,
+        payment_type: str | None = None,
         payment_data: dict | None = None,
+        created_by_user: str | None = None,
+        created_by_user_data: dict | None = None,
         reason: str | None = None,
         source: str = "admin",
         changed_by: str | None = None,
@@ -968,7 +1026,16 @@ class BookingService:
             booking_id=booking_id,
             status=new_status,
             payment_status=payment_status,
+            payment_id=payment_id,
+            payment_provider=payment_provider,
+            payment_gateway=payment_gateway,
+            payment_through=payment_through,
+            payment_method=payment_method,
+            payment_url=payment_url,
+            payment_type=payment_type,
             payment_data=payment_data,
+            created_by_user=created_by_user,
+            created_by_user_data=created_by_user_data,
             reason=reason,
             source=source,
             changed_by=changed_by,

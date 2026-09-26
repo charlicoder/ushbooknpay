@@ -45,7 +45,11 @@ from app.core.exceptions import (
 )
 from app.core.security import TokenPayload, require_authenticated_user
 from app.shop.application.services import ShopOrderService
-from app.shop.domain.value_objects import DeliveryStatus, OrderPaymentStatus
+from app.shop.domain.value_objects import (
+    DeliveryStatus,
+    OrderPaymentStatus,
+    ShopPaymentThrough,
+)
 from app.shop.infrastructure.repository import ShopOrderNotFoundError
 from app.shop.interfaces.schemas import (
     ConfirmReceivedRequest,
@@ -106,6 +110,7 @@ async def list_orders(
     svc: Annotated[ShopOrderService, Depends(_service)],
     delivery_status: str | None = Query(default=None, description="Filter by delivery status"),
     payment_status: str | None = Query(default=None, description="Filter by payment status"),
+    payment_through: str | None = Query(default=None, description="Filter by payment channel (ushspa, ushdesk, other)"),
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
     search: str | None = Query(default=None, description="Search by order number, name, or phone"),
@@ -116,6 +121,7 @@ async def list_orders(
     orders, total = await svc.list_orders(
         delivery_status=delivery_status,
         payment_status=payment_status,
+        payment_through=payment_through,
         from_date=from_date,
         to_date=to_date,
         search=search,
@@ -216,14 +222,23 @@ async def update_payment_status(
         if current_user.user_type in ("staff", "admin", "superuser")
         else f"customer:{current_user.sub}"
     )
+    payment_through = body.payment_through or body.payment_type
+    if not payment_through:
+        if current_user.user_type in ("staff", "admin", "superuser"):
+            payment_through = ShopPaymentThrough.USHDESK.value
+        else:
+            payment_through = ShopPaymentThrough.USHSPA.value
+
     try:
         order = await svc.update_payment_status(
             order_id=order_id,
             new_payment_status=body.payment_status,
             changed_by=changed_by,
             payment_method=body.payment_method,
-            payment_type=body.payment_type,
+            payment_through=payment_through,
             payment_provider=body.payment_provider,
+            payment_url=body.payment_url,
+            payment_data=body.payment_data,
         )
     except (NotFoundError, ShopOrderNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -260,12 +275,49 @@ async def create_order(
         or ""
     )
 
+    # 1. Resolve order_requested_by_user
+    # When requested from ushspa app it will be logged in user_id
+    order_requested_by_user = body.order_requested_by_user or customer_id
+
+    # 2. Resolve order_requested_by_user_data (store user data name, image, id etc in json)
+    if body.order_requested_by_user_data is not None:
+        order_requested_by_user_data = body.order_requested_by_user_data
+    else:
+        user_image = (
+            getattr(current_user, "avatar", None)
+            or getattr(current_user, "image", None)
+            or ""
+        )
+        order_requested_by_user_data = {
+            "id": str(order_requested_by_user),
+            "name": customer_name,
+            "first_name": current_user.first_name or "",
+            "last_name": current_user.last_name or "",
+            "phone": customer_phone,
+            "email": current_user.email or "",
+            "image": user_image,
+        }
+
+    # 3. Resolve payment_through (ushspa, ushdesk, other)
+    payment_through = body.payment_through or body.payment_type
+    if not payment_through and current_user.user_type == "customer":
+        payment_through = ShopPaymentThrough.USHSPA.value
+
     try:
         order = await svc.create_order(
             body=body,
             customer_id=customer_id,
             customer_name=customer_name,
             customer_phone=customer_phone,
+            order_requested_by_user=order_requested_by_user,
+            order_requested_by_user_data=order_requested_by_user_data,
+            payment_through=payment_through,
+            payment_status=body.payment_status,
+            payment_method=body.payment_method,
+            payment_provider=body.payment_provider,
+            payment_invoice_id=body.payment_invoice_id,
+            payment_url=body.payment_url,
+            payment_data=body.payment_data,
         )
     except ValidationError as exc:
         raise HTTPException(

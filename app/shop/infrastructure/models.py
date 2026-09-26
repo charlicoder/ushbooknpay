@@ -26,7 +26,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -59,6 +59,14 @@ class ShopOrder(Base):
     customer_phone: Mapped[str] = mapped_column(String(30), nullable=False, default="")
     # Contact number explicitly supplied in the order (may differ from JWT phone)
     contact_number: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+
+    # ── Requester user info ───────────────────────────────────────────────
+    order_requested_by_user: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    order_requested_by_user_data: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
 
     # ── Structured delivery address ───────────────────────────────────────
     area: Mapped[str] = mapped_column(String(100), nullable=False, default="")
@@ -123,8 +131,19 @@ class ShopOrder(Base):
     )
     # Payment classification — set when PATCH /orders/{id}/payment/ is called
     payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True)    # card, knet, cash, apple_pay…
-    payment_type: Mapped[str | None] = mapped_column(String(50), nullable=True)      # gateway, desk, gift_voucher…
+    payment_through: Mapped[str | None] = mapped_column(String(50), nullable=True)   # ushspa, ushdesk, other…
     payment_provider: Mapped[str | None] = mapped_column(String(50), nullable=True)  # MyFatoorah, DirectLink, Other…
+    payment_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payment_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    @property
+    def payment_type(self) -> str | None:
+        """Deprecated alias for payment_through."""
+        return self.payment_through
+
+    @payment_type.setter
+    def payment_type(self, value: str | None) -> None:
+        self.payment_through = value
 
     # ── Internal notes ────────────────────────────────────────────────────
     internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)

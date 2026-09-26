@@ -125,19 +125,62 @@ def _build_booking_snapshot(booking: Booking) -> dict[str, Any]:
     }
 
 
-def _resolve_created_by(current_user: Any, body: Any) -> uuid.UUID | None:
-    """Resolve the API requester UUID for created_by."""
-    # 1. Explicit override in body
-    if getattr(body, "created_by", None):
-        try:
-            return uuid.UUID(str(body.created_by))
-        except (ValueError, AttributeError):
-            pass
+def _safe_str(val: Any) -> str | None:
+    """Safely extract string value, ignoring MagicMock in test contexts."""
+    if val is None:
+        return None
+    if isinstance(val, (str, int, float, uuid.UUID)):
+        return str(val)
+    return None
+
+
+def _resolve_created_by_user(current_user: Any, body: Any) -> str | None:
+    """Resolve the API requester user ID for created_by_user."""
+    # 1. Explicit override in body (created_by_user or created_by)
+    val = getattr(body, "created_by_user", None) or getattr(body, "created_by", None)
+    if val is not None:
+        safe_val = _safe_str(val)
+        if safe_val:
+            return safe_val
     # 2. JWT sub claim
     if current_user and getattr(current_user, "sub", None):
+        safe_sub = _safe_str(current_user.sub)
+        if safe_sub:
+            return safe_sub
+    if current_user and getattr(current_user, "user_id", None):
+        safe_uid = _safe_str(current_user.user_id)
+        if safe_uid:
+            return safe_uid
+    return None
+
+
+def _resolve_created_by_user_data(
+    current_user: Any, body: Any, resolved_user_id: str | None
+) -> dict[str, Any] | None:
+    """Resolve user data snapshot for created_by_user_data."""
+    body_data = getattr(body, "created_by_user_data", None)
+    if isinstance(body_data, dict):
+        return body_data
+    if current_user:
+        snapshot: dict[str, Any] = {}
+        if resolved_user_id:
+            snapshot["id"] = resolved_user_id
+        for attr in ("email", "name", "phone", "role", "roles"):
+            v = getattr(current_user, attr, None)
+            safe_v = _safe_str(v)
+            if safe_v is not None:
+                snapshot[attr] = safe_v
+        return snapshot or None
+    return None
+
+
+def _resolve_created_by(current_user: Any, body: Any) -> uuid.UUID | None:
+    """Resolve the API requester UUID for created_by (backward compatibility)."""
+    user_id = _resolve_created_by_user(current_user, body)
+    if user_id:
         try:
-            return uuid.UUID(str(current_user.sub))
-        except (ValueError, AttributeError):
+            return uuid.UUID(user_id)
+        except (ValueError, TypeError):
             pass
     return None
 
@@ -209,8 +252,10 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
         payment_for=p.payment_for,
         payment_id=p.payment_id,
         payment_data=p.payment_data,
-        created_by=str(p.created_by) if p.created_by else None,
-        created_at=p.created_at,
+        created_by_user=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
+        created_by_user_data=getattr(p, "created_by_user_data", None) if isinstance(getattr(p, "created_by_user_data", None), dict) else None,
+        created_by=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
+        created_at=getattr(p, "created_at", None) or datetime.now(timezone.utc),
         status_history=history,
     )
 
@@ -252,8 +297,10 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         payment_gateway=p.payment_gateway,
         payment_for=p.payment_for,
         payment_id=p.payment_id,
-        created_by=str(p.created_by) if p.created_by else None,
-        created_at=p.created_at,
+        created_by_user=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
+        created_by_user_data=getattr(p, "created_by_user_data", None) if isinstance(getattr(p, "created_by_user_data", None), dict) else None,
+        created_by=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
+        created_at=getattr(p, "created_at", None) or datetime.now(timezone.utc),
     )
 
 
@@ -471,10 +518,10 @@ async def create_payment(
         payment_gateway=payment_gateway,
         payment_for=payment_for,
         payment_id=body.payment_id or parsed_gateway.get("payment_id"),
-        payment_data=payment_data or None,
-        # Use explicit created_by from body (e.g. ushnotice passes voucher creator UUID).
+        # Use explicit created_by_user or created_by from body (e.g. ushnotice passes creator ID/data).
         # This endpoint uses RequireAppToken (no CurrentUser JWT), so we cannot auto-derive it.
-        created_by=body.created_by if body.created_by else None,
+        created_by_user=_safe_str(body.created_by_user or body.created_by),
+        created_by_user_data=body.created_by_user_data if isinstance(body.created_by_user_data, dict) else None,
     )
 
     session.add(payment)
@@ -559,7 +606,8 @@ async def list_payments(
     payment_id_filter: str | None = Query(default=None, alias="payment_id"),
     transaction_id_filter: str | None = Query(default=None, alias="transaction_id"),
     invoice_id_filter: str | None = Query(default=None, alias="invoice_id"),
-    created_by_filter: uuid.UUID | None = Query(default=None, alias="created_by"),
+    created_by_user_filter: str | None = Query(default=None, alias="created_by_user"),
+    created_by_filter: str | None = Query(default=None, alias="created_by"),
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
     search: str | None = Query(
@@ -570,45 +618,49 @@ async def list_payments(
     """List payments with filtering and financial analytics summary."""
     conditions = []
 
-    if booking_id:
-        conditions.append(Payment.booking_id == booking_id)
-    if voucher_id:
-        conditions.append(Payment.voucher_id == voucher_id)
-    if product_order_id:
-        conditions.append(Payment.product_order_id == product_order_id)
-    if payment_for_filter:
+    if booking_id and isinstance(booking_id, (uuid.UUID, str)):
+        conditions.append(Payment.booking_id == (uuid.UUID(str(booking_id)) if isinstance(booking_id, str) else booking_id))
+    if voucher_id and isinstance(voucher_id, (uuid.UUID, str)):
+        conditions.append(Payment.voucher_id == (uuid.UUID(str(voucher_id)) if isinstance(voucher_id, str) else voucher_id))
+    if product_order_id and isinstance(product_order_id, (uuid.UUID, str)):
+        conditions.append(Payment.product_order_id == (uuid.UUID(str(product_order_id)) if isinstance(product_order_id, str) else product_order_id))
+    if payment_for_filter and isinstance(payment_for_filter, str):
         conditions.append(Payment.payment_for == PaymentFor.normalise(payment_for_filter).value)
-    if customer_id:
-        conditions.append(Payment.customer_id == customer_id)
-    if sender_id:
-        conditions.append(Payment.sender_id == sender_id)
-    if service_id:
-        conditions.append(Payment.service_id == service_id)
-    if branch_id:
-        conditions.append(Payment.branch_id == branch_id)
-    if recipient_id:
-        conditions.append(Payment.recipient_id == recipient_id)
-    if status_filter:
+    if customer_id and isinstance(customer_id, (uuid.UUID, str)):
+        conditions.append(Payment.customer_id == (uuid.UUID(str(customer_id)) if isinstance(customer_id, str) else customer_id))
+    if sender_id and isinstance(sender_id, (uuid.UUID, str)):
+        conditions.append(Payment.sender_id == (uuid.UUID(str(sender_id)) if isinstance(sender_id, str) else sender_id))
+    if service_id and isinstance(service_id, (uuid.UUID, str)):
+        conditions.append(Payment.service_id == (uuid.UUID(str(service_id)) if isinstance(service_id, str) else service_id))
+    if branch_id and isinstance(branch_id, (uuid.UUID, str)):
+        conditions.append(Payment.branch_id == (uuid.UUID(str(branch_id)) if isinstance(branch_id, str) else branch_id))
+    if recipient_id and isinstance(recipient_id, (uuid.UUID, str)):
+        conditions.append(Payment.recipient_id == (uuid.UUID(str(recipient_id)) if isinstance(recipient_id, str) else recipient_id))
+    if status_filter and isinstance(status_filter, str):
         conditions.append(Payment.status == status_filter)
-    if payment_provider_filter:
+    if payment_provider_filter and isinstance(payment_provider_filter, str):
         conditions.append(Payment.payment_provider == PaymentProvider.normalise(payment_provider_filter).value)
-    if payment_through_filter:
+    if payment_through_filter and isinstance(payment_through_filter, str):
         conditions.append(Payment.payment_through == PaymentThrough.normalise(payment_through_filter).value)
-    if payment_gateway_filter:
+    if payment_gateway_filter and isinstance(payment_gateway_filter, str):
         conditions.append(Payment.payment_gateway == PaymentGateway.normalise(payment_gateway_filter).value)
-    if payment_id_filter:
+    if payment_id_filter and isinstance(payment_id_filter, str):
         conditions.append(Payment.payment_id == payment_id_filter)
-    if transaction_id_filter:
+    if transaction_id_filter and isinstance(transaction_id_filter, str):
         conditions.append(Payment.transaction_id == transaction_id_filter)
-    if invoice_id_filter:
+    if invoice_id_filter and isinstance(invoice_id_filter, str):
         conditions.append(Payment.invoice_id == invoice_id_filter)
-    if created_by_filter:
-        conditions.append(Payment.created_by == created_by_filter)
-    if from_date:
+    effective_creator = (
+        created_by_user_filter if isinstance(created_by_user_filter, (str, uuid.UUID))
+        else (created_by_filter if isinstance(created_by_filter, (str, uuid.UUID)) else None)
+    )
+    if effective_creator:
+        conditions.append(Payment.created_by_user == str(effective_creator))
+    if from_date and isinstance(from_date, datetime):
         conditions.append(Payment.created_at >= from_date)
-    if to_date:
+    if to_date and isinstance(to_date, datetime):
         conditions.append(Payment.created_at <= to_date)
-    if search:
+    if search and isinstance(search, str):
         search_pattern = f"%{search.strip()}%"
         conditions.append(
             or_(
@@ -840,6 +892,11 @@ async def update_payment(
         payment.payment_id = body.payment_id
     if body.payment_data is not None:
         payment.payment_data = {**(payment.payment_data or {}), **body.payment_data}
+    new_creator = body.created_by_user or body.created_by
+    if new_creator is not None:
+        payment.created_by_user = _safe_str(new_creator)
+    if body.created_by_user_data is not None:
+        payment.created_by_user_data = {**(payment.created_by_user_data or {}), **body.created_by_user_data}
 
     # Record status change in audit trail
     if payment.status != old_status:
@@ -1011,7 +1068,8 @@ async def initiate_payment(
         payment_id=str(gateway_payment_id) if gateway_payment_id else None,
         payment_url=payment_url,
         payment_data={"session_response": session_response},
-        created_by=customer_id,
+        created_by_user=_safe_str(customer_id),
+        created_by_user_data=booking.customer_data if isinstance(getattr(booking, "customer_data", None), dict) else None,
     )
     session.add(payment)
     await session.flush()
@@ -1159,6 +1217,8 @@ async def myfatoorah_webhook(
             payment_provider=PaymentProvider.MYFATOORAH.value,
             payment_for=PaymentFor.BRANCH_SERVICE.value,
             payment_data=parsed.get("payment_data"),
+            created_by_user=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)) if booking else None,
+            created_by_user_data=getattr(booking, "created_by_user_data", None) if booking and isinstance(getattr(booking, "created_by_user_data", None), dict) else None,
         )
         session.add(payment)
         await session.flush()

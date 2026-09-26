@@ -110,6 +110,8 @@ class ShopOrderRepository:
         customer_id: uuid.UUID | None = None,
         delivery_status: str | None = None,
         payment_status: str | None = None,
+        payment_through: str | None = None,
+        order_requested_by_user: uuid.UUID | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         search: str | None = None,
@@ -130,12 +132,18 @@ class ShopOrderRepository:
         if customer_id is not None:
             base = base.where(ShopOrder.customer_id == customer_id)
             count_base = count_base.where(ShopOrder.customer_id == customer_id)
+        if order_requested_by_user is not None:
+            base = base.where(ShopOrder.order_requested_by_user == order_requested_by_user)
+            count_base = count_base.where(ShopOrder.order_requested_by_user == order_requested_by_user)
         if delivery_status:
             base = base.where(ShopOrder.delivery_status == delivery_status)
             count_base = count_base.where(ShopOrder.delivery_status == delivery_status)
         if payment_status:
             base = base.where(ShopOrder.payment_status == payment_status)
             count_base = count_base.where(ShopOrder.payment_status == payment_status)
+        if payment_through:
+            base = base.where(ShopOrder.payment_through == payment_through)
+            count_base = count_base.where(ShopOrder.payment_through == payment_through)
         if from_date:
             base = base.where(ShopOrder.created_at >= from_date)
             count_base = count_base.where(ShopOrder.created_at >= from_date)

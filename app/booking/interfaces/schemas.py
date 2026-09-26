@@ -19,7 +19,15 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.booking.domain.value_objects import BookingStatus, BookingType, PaymentStatus, PaymentType
+from app.booking.domain.value_objects import (
+    BookingPaymentGateway,
+    BookingPaymentProvider,
+    BookingPaymentThrough,
+    BookingStatus,
+    BookingType,
+    PaymentStatus,
+    PaymentType,
+)
 
 
 # ── Shared sub-schemas ────────────────────────────────────────────────────────
@@ -264,7 +272,44 @@ class CreateBookingRequest(BaseModel):
     total_price: str | Decimal | float | None = Field(default=None, alias="totalPrice")
     total_duration: int | None = Field(default=None, alias="totalDuration")
     currency: str = Field(default="KWD")
+
+    # Payment fields
+    payment_id: str | None = Field(default=None, alias="paymentId")
+    payment_provider: str | None = Field(
+        default=None,
+        alias="paymentProvider",
+        description="Payment provider: MyFatoorah, PaymentLink, Deema, Other",
+    )
+    payment_gateway: str | None = Field(
+        default=None,
+        alias="paymentGateway",
+        description="Payment gateway: KNET, TAP, Other",
+    )
+    payment_through: str | None = Field(
+        default=None,
+        alias="paymentThrough",
+        description="Payment channel: ushspa, ushdesk, other",
+    )
+    payment_method: str | None = Field(default=None, alias="paymentMethod")
+    payment_url: str | None = Field(default=None, alias="paymentUrl")
     payment_data: dict[str, Any] | None = Field(default=None, alias="paymentData")
+
+    # Creator / User fields
+    created_by_user: str | None = Field(
+        default=None,
+        alias="createdByUserId",
+        description="User UUID who created the booking",
+    )
+    created_by: str | None = Field(
+        default=None,
+        alias="createdBy",
+        description="Alias for created_by_user",
+    )
+    created_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="createdByUserData",
+        description="Snapshot of user data (name, image, id, etc.) in json",
+    )
 
     # Loyalty booking fields (only sent when booking_type='loyalty')
     loyalty_data: dict[str, Any] | None = Field(
@@ -294,6 +339,34 @@ class CreateBookingRequest(BaseModel):
         default=None, max_length=255, alias="Idempotency-Key"
     )
 
+    @field_validator("payment_provider", mode="before")
+    @classmethod
+    def sanitize_payment_provider(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentProvider.normalise(str(v)).value
+
+    @field_validator("payment_gateway", mode="before")
+    @classmethod
+    def sanitize_payment_gateway(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentGateway.normalise(str(v)).value
+
+    @field_validator("payment_through", mode="before")
+    @classmethod
+    def sanitize_payment_through(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentThrough.normalise(str(v)).value
+
+    @model_validator(mode="after")
+    def sync_created_by_fields(self) -> "CreateBookingRequest":
+        if not self.created_by_user and self.created_by:
+            self.created_by_user = self.created_by
+        elif self.created_by_user and not self.created_by:
+            self.created_by = self.created_by_user
+        return self
 
     model_config = {
         "populate_by_name": True,
@@ -324,6 +397,43 @@ class UpdateBookingRequest(BaseModel):
         default=None,
         alias="paymentType",
         description="Payment type: service, gift_voucher, rewarded",
+    )
+
+    # Payment fields
+    payment_id: str | None = Field(default=None, alias="paymentId")
+    payment_provider: str | None = Field(
+        default=None,
+        alias="paymentProvider",
+        description="Payment provider: MyFatoorah, PaymentLink, Deema, Other",
+    )
+    payment_gateway: str | None = Field(
+        default=None,
+        alias="paymentGateway",
+        description="Payment gateway: KNET, TAP, Other",
+    )
+    payment_through: str | None = Field(
+        default=None,
+        alias="paymentThrough",
+        description="Payment channel: ushspa, ushdesk, other",
+    )
+    payment_method: str | None = Field(default=None, alias="paymentMethod")
+    payment_url: str | None = Field(default=None, alias="paymentUrl")
+
+    # Creator / User fields
+    created_by_user: str | None = Field(
+        default=None,
+        alias="createdByUserId",
+        description="User UUID who created or updated the booking",
+    )
+    created_by: str | None = Field(
+        default=None,
+        alias="createdBy",
+        description="Alias for created_by_user",
+    )
+    created_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="createdByUserData",
+        description="Snapshot of user data (name, image, id, etc.) in json",
     )
 
     therapist_id: uuid.UUID | None = Field(
@@ -370,6 +480,35 @@ class UpdateBookingRequest(BaseModel):
         description="Snapshot of the gift voucher at redemption time.",
     )
 
+    @field_validator("payment_provider", mode="before")
+    @classmethod
+    def sanitize_payment_provider(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentProvider.normalise(str(v)).value
+
+    @field_validator("payment_gateway", mode="before")
+    @classmethod
+    def sanitize_payment_gateway(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentGateway.normalise(str(v)).value
+
+    @field_validator("payment_through", mode="before")
+    @classmethod
+    def sanitize_payment_through(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentThrough.normalise(str(v)).value
+
+    @model_validator(mode="after")
+    def sync_created_by_fields(self) -> "UpdateBookingRequest":
+        if not self.created_by_user and self.created_by:
+            self.created_by_user = self.created_by
+        elif self.created_by_user and not self.created_by:
+            self.created_by = self.created_by_user
+        return self
+
     @field_validator("therapist_id", "voucher_id", mode="before")
     @classmethod
     def coerce_empty_uuid_to_none(cls, v: Any) -> Any:
@@ -383,6 +522,11 @@ class UpdateBookingRequest(BaseModel):
         if v is not None and v.tzinfo is None:
             raise ValueError("appointment_start must include timezone information.")
         return v
+
+    model_config = {
+        "populate_by_name": True,
+        "extra": "allow",
+    }
 
 
 class CancelBookingRequest(BaseModel):
@@ -419,6 +563,46 @@ class UpdateBookingStatusRequest(BaseModel):
         alias="paymentType",
         description="Payment type: service, gift_voucher, rewarded",
     )
+    # Payment fields
+    payment_id: str | None = Field(default=None, alias="paymentId")
+    payment_provider: str | None = Field(
+        default=None,
+        alias="paymentProvider",
+        description="Payment provider: MyFatoorah, PaymentLink, Deema, Other",
+    )
+    payment_gateway: str | None = Field(
+        default=None,
+        alias="paymentGateway",
+        description="Payment gateway: KNET, TAP, Other",
+    )
+    payment_through: str | None = Field(
+        default=None,
+        alias="paymentThrough",
+        description="Payment channel: ushspa, ushdesk, other",
+    )
+    payment_method: str | None = Field(default=None, alias="paymentMethod")
+    payment_url: str | None = Field(default=None, alias="paymentUrl")
+
+    @field_validator("payment_provider", mode="before")
+    @classmethod
+    def sanitize_payment_provider(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentProvider.normalise(str(v)).value
+
+    @field_validator("payment_gateway", mode="before")
+    @classmethod
+    def sanitize_payment_gateway(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentGateway.normalise(str(v)).value
+
+    @field_validator("payment_through", mode="before")
+    @classmethod
+    def sanitize_payment_through(cls, v: Any) -> str | None:
+        if not v:
+            return None
+        return BookingPaymentThrough.normalise(str(v)).value
     reason: str | None = Field(
         default=None, max_length=500, description="Reason for status change"
     )
@@ -518,6 +702,12 @@ class BookingListItem(BaseModel):
     payment_type: str = "service"
     status: str
     payment_status: str
+    payment_id: str | None = None
+    payment_provider: str | None = None
+    payment_gateway: str | None = None
+    payment_through: str | None = None
+    payment_method: str | None = None
+    payment_url: str | None = None
     payment_data: dict[str, Any] | None = None
     total_amount: str
     currency: str
@@ -527,7 +717,17 @@ class BookingListItem(BaseModel):
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
     created_at: datetime
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
+
+    @model_validator(mode="after")
+    def sync_created_by(self) -> "BookingListItem":
+        if not self.created_by and self.created_by_user:
+            self.created_by = self.created_by_user
+        elif not self.created_by_user and self.created_by:
+            self.created_by_user = self.created_by
+        return self
 
     @field_validator("appointment_date", mode="before")
     @classmethod
@@ -567,6 +767,12 @@ class BookingDetailResponse(BaseModel):
     payment_type: str = "service"
     status: str
     payment_status: str
+    payment_id: str | None = None
+    payment_provider: str | None = None
+    payment_gateway: str | None = None
+    payment_through: str | None = None
+    payment_method: str | None = None
+    payment_url: str | None = None
     payment_data: dict[str, Any] | None = None
     pricing: PricingBreakdownSchema
     addons: list[AddonSchema]
@@ -580,7 +786,17 @@ class BookingDetailResponse(BaseModel):
     voucher_data: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
+
+    @model_validator(mode="after")
+    def sync_created_by(self) -> "BookingDetailResponse":
+        if not self.created_by and self.created_by_user:
+            self.created_by = self.created_by_user
+        elif not self.created_by_user and self.created_by:
+            self.created_by_user = self.created_by
+        return self
 
     @field_validator("appointment_date", mode="before")
     @classmethod
@@ -601,13 +817,30 @@ class CreateBookingDataResponse(BaseModel):
     final_amount: str
     status: str
     payment_status: str | None = None
+    payment_id: str | None = None
+    payment_provider: str | None = None
+    payment_gateway: str | None = None
+    payment_through: str | None = None
+    payment_method: str | None = None
+    payment_url: str | None = None
+    payment_type: str | None = None
+    payment_data: dict[str, Any] | None = None
     is_eligible_for_loyalty: bool = False
     loyalty_data: dict[str, Any] | None = None
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
-    payment_type: str | None = None
-    payment_data: dict[str, Any] | None = None
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
+    created_by: str | None = None
+
+    @model_validator(mode="after")
+    def sync_created_by(self) -> "CreateBookingDataResponse":
+        if not self.created_by and self.created_by_user:
+            self.created_by = self.created_by_user
+        elif not self.created_by_user and self.created_by:
+            self.created_by_user = self.created_by
+        return self
 
 
 class CreateBookingResponse(BaseModel):

@@ -41,6 +41,7 @@ class TokenPayload(BaseModel):
     email: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    avatar: str | None = None
     dob: str | None = None
     gender: str | None = None
     permissions: list[str] | dict[str, Any] | None = None
@@ -51,6 +52,10 @@ class TokenPayload(BaseModel):
     @property
     def user_id(self) -> str:
         return self.sub
+
+    @property
+    def image(self) -> str | None:
+        return self.avatar
 
 
 
@@ -164,6 +169,12 @@ async def validate_user_with_ushauth(
     role = profile_dict.get("role")
     is_staff = profile_dict.get("is_staff")
     is_superuser = profile_dict.get("is_superuser")
+    avatar = (
+        profile_dict.get("avatar")
+        or profile_dict.get("image")
+        or profile_dict.get("profile_picture")
+        or profile_dict.get("avatar_url")
+    )
 
     payload = TokenPayload(
         sub=sub,
@@ -172,6 +183,7 @@ async def validate_user_with_ushauth(
         email=profile_dict.get("email"),
         first_name=profile_dict.get("first_name"),
         last_name=profile_dict.get("last_name"),
+        avatar=str(avatar) if avatar else None,
         dob=str(profile_dict.get("dob")) if profile_dict.get("dob") else None,
         gender=profile_dict.get("gender"),
         permissions=permissions,

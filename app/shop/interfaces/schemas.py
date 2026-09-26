@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.shop.domain.value_objects import (
     DeliveryStatus,
     OrderPaymentStatus,
+    ShopPaymentThrough,
     get_status_label,
 )
 
@@ -107,11 +108,61 @@ class CreateShopOrderRequest(BaseModel):
     items: list[OrderItemIn] = Field(min_length=1)
     internal_notes: str | None = Field(default=None, max_length=500)
 
+    # ── Requester user info ───────────────────────────────────────────────
+    order_requested_by_user: uuid.UUID | None = Field(
+        default=None,
+        description="User ID of the user requesting the order (when requested from ushspa app it will be logged in user_id).",
+    )
+    order_requested_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        description="User snapshot (name, image, id etc.) in JSON format.",
+    )
+
+    # ── Payment channel & gateway data ────────────────────────────────────
+    payment_through: str | None = Field(
+        default=None,
+        description="Payment channel: ushspa, ushdesk, other.",
+    )
+    payment_type: str | None = Field(
+        default=None,
+        description="Deprecated alias for payment_through.",
+    )
+    payment_status: str | None = Field(
+        default=None,
+        description="Payment status at order creation time (e.g. 'success' for pre-paid orders).",
+    )
+    payment_method: str | None = Field(
+        default=None,
+        description="How the customer paid: KNET, card, cash, apple_pay, etc.",
+    )
+    payment_provider: str | None = Field(
+        default=None,
+        description="Payment provider: MyFatoorah, DirectLink, Deema, Other.",
+    )
+    payment_invoice_id: str | None = Field(
+        default=None,
+        description="Payment gateway invoice/transaction ID.",
+    )
+    payment_url: str | None = Field(
+        default=None,
+        description="Payment gateway checkout/redirect URL.",
+    )
+    payment_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Payment transaction metadata snapshot (JSONB).",
+    )
+
     # ── Frontend-computed totals (accepted & ignored) ─────────────────────
     # Backend always recomputes from live product prices
     total_amount: str | None = Field(default=None)
     delivery_charge: str | None = Field(default=None)
     final_amount: str | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def sync_payment_fields(self) -> "CreateShopOrderRequest":
+        if self.payment_type and not self.payment_through:
+            self.payment_through = self.payment_type
+        return self
 
     @field_validator("items")
     @classmethod
@@ -155,7 +206,7 @@ class UpdatePaymentStatusRequest(BaseModel):
     """
     Update payment status from ushdesk (mark as paid) or mobile gateway callback.
 
-    payment_method, payment_type, and payment_provider are optional but should be
+    payment_method, payment_through, and payment_provider are optional but should be
     supplied when marking an order as paid so the payment record can be classified.
     """
 
@@ -164,14 +215,32 @@ class UpdatePaymentStatusRequest(BaseModel):
         default=None,
         description="How the customer paid: card, knet, cash, apple_pay, etc.",
     )
+    payment_through: str | None = Field(
+        default=None,
+        description="Payment channel: ushspa, ushdesk, other.",
+    )
     payment_type: str | None = Field(
         default=None,
-        description="Payment channel: gateway, desk, gift_voucher, etc.",
+        description="Deprecated alias for payment_through.",
     )
     payment_provider: str | None = Field(
         default=None,
         description="Payment provider: MyFatoorah, DirectLink, Deema, Other.",
     )
+    payment_url: str | None = Field(
+        default=None,
+        description="Payment gateway checkout/redirect URL.",
+    )
+    payment_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Payment transaction metadata snapshot (JSONB).",
+    )
+
+    @model_validator(mode="after")
+    def sync_payment_fields(self) -> "UpdatePaymentStatusRequest":
+        if self.payment_type and not self.payment_through:
+            self.payment_through = self.payment_type
+        return self
 
 
 # ── Customer confirm received ─────────────────────────────────────────────────
@@ -222,6 +291,14 @@ class ShopOrderListItem(BaseModel):
     delivery_status_label: str
     delivery_status_label_ar: str
     payment_status: str
+    payment_method: str | None = None
+    payment_through: str | None = None
+    payment_provider: str | None = None
+    payment_invoice_id: str | None = None
+    payment_url: str | None = None
+    payment_data: dict[str, Any] | None = None
+    order_requested_by_user: uuid.UUID | None = None
+    order_requested_by_user_data: dict[str, Any] | None = None
     items_count: int
     # Tracking token fields
     public_token: str
@@ -250,6 +327,14 @@ class ShopOrderDetailResponse(BaseModel):
     delivery_status_label: str
     delivery_status_label_ar: str
     payment_status: str
+    payment_method: str | None = None
+    payment_through: str | None = None
+    payment_provider: str | None = None
+    payment_invoice_id: str | None = None
+    payment_url: str | None = None
+    payment_data: dict[str, Any] | None = None
+    order_requested_by_user: uuid.UUID | None = None
+    order_requested_by_user_data: dict[str, Any] | None = None
     internal_notes: str | None
     items: list[OrderItemOut]
     status_history: list[StatusHistoryOut]
@@ -329,6 +414,7 @@ def _build_tracking_url(order: Any) -> str:
 
 def order_to_list_item(order: Any) -> ShopOrderListItem:
     ds = DeliveryStatus(order.delivery_status)
+    pay_data: dict | None = getattr(order, "payment_data", None)
     return ShopOrderListItem(
         id=order.id,
         order_number=order.order_number,
@@ -343,6 +429,14 @@ def order_to_list_item(order: Any) -> ShopOrderListItem:
         delivery_status_label=get_status_label(ds, "en"),
         delivery_status_label_ar=get_status_label(ds, "ar"),
         payment_status=order.payment_status,
+        payment_method=getattr(order, "payment_method", None),
+        payment_through=getattr(order, "payment_through", None),
+        payment_provider=getattr(order, "payment_provider", None),
+        payment_invoice_id=str(pay_data["invoiceId"]) if pay_data and pay_data.get("invoiceId") else None,
+        payment_url=getattr(order, "payment_url", None),
+        payment_data=pay_data,
+        order_requested_by_user=getattr(order, "order_requested_by_user", None),
+        order_requested_by_user_data=getattr(order, "order_requested_by_user_data", None),
         items_count=len(order.items),
         public_token=order.public_token,
         token_expires_at=order.token_expires_at,
@@ -371,6 +465,18 @@ def order_to_detail(order: Any) -> ShopOrderDetailResponse:
         delivery_status_label=get_status_label(ds, "en"),
         delivery_status_label_ar=get_status_label(ds, "ar"),
         payment_status=order.payment_status,
+        payment_method=getattr(order, "payment_method", None),
+        payment_through=getattr(order, "payment_through", None),
+        payment_provider=getattr(order, "payment_provider", None),
+        payment_invoice_id=(
+            str(getattr(order, "payment_data", None)["invoiceId"])
+            if getattr(order, "payment_data", None) and getattr(order, "payment_data", None).get("invoiceId")
+            else None
+        ),
+        payment_url=getattr(order, "payment_url", None),
+        payment_data=getattr(order, "payment_data", None),
+        order_requested_by_user=getattr(order, "order_requested_by_user", None),
+        order_requested_by_user_data=getattr(order, "order_requested_by_user_data", None),
         internal_notes=order.internal_notes,
         items=[
             OrderItemOut(

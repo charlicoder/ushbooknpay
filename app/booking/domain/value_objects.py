@@ -75,10 +75,80 @@ class ServiceType(str, Enum):
 
 
 class PaymentProvider(str, Enum):
-    """Supported payment providers."""
+    """Supported payment providers (legacy)."""
 
     MYFATOORAH = "myfatoorah"
     TAP = "tap"
+
+
+class BookingPaymentProvider(str, Enum):
+    """Supported payment providers for bookings."""
+
+    MYFATOORAH = "MyFatoorah"
+    PAYMENTLINK = "PaymentLink"
+    DEEMA = "Deema"
+    OTHER = "Other"
+
+    @classmethod
+    def normalise(cls, value: str | None) -> "BookingPaymentProvider":
+        if not value:
+            return cls.OTHER
+        v = value.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+        mapping = {
+            "myfatoorah": cls.MYFATOORAH,
+            "myfatora": cls.MYFATOORAH,
+            "fatoorah": cls.MYFATOORAH,
+            "paymentlink": cls.PAYMENTLINK,
+            "directlink": cls.PAYMENTLINK,
+            "direct": cls.PAYMENTLINK,
+            "deema": cls.DEEMA,
+            "other": cls.OTHER,
+        }
+        return mapping.get(v, cls.OTHER)
+
+
+class BookingPaymentGateway(str, Enum):
+    """Supported payment gateways for bookings."""
+
+    KNET = "KNET"
+    TAP = "TAP"
+    OTHER = "Other"
+
+    @classmethod
+    def normalise(cls, value: str | None) -> "BookingPaymentGateway":
+        if not value:
+            return cls.OTHER
+        v = value.strip().upper().replace("-", "").replace("_", "").replace(" ", "")
+        mapping = {
+            "KNET": cls.KNET,
+            "TAP": cls.TAP,
+            "OTHER": cls.OTHER,
+        }
+        return mapping.get(v, cls.OTHER)
+
+
+class BookingPaymentThrough(str, Enum):
+    """Sales/Payment channel for bookings."""
+
+    USHSPA = "ushspa"
+    USHDESK = "ushdesk"
+    OTHER = "other"
+
+    @classmethod
+    def normalise(cls, value: str | None) -> "BookingPaymentThrough":
+        if not value:
+            return cls.OTHER
+        v = value.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
+        mapping = {
+            "ushspa": cls.USHSPA,
+            "app": cls.USHSPA,
+            "ushdesk": cls.USHDESK,
+            "desk": cls.USHDESK,
+            "pos": cls.USHDESK,
+            "counter": cls.USHDESK,
+            "other": cls.OTHER,
+        }
+        return mapping.get(v, cls.OTHER)
 
 
 # ── Value Objects ─────────────────────────────────────────────────────────────

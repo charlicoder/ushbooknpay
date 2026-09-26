@@ -185,6 +185,14 @@ class Booking(Base):
         JSONB, nullable=True, server_default=text("'{}'::jsonb")
     )
 
+    # ── Payment Details ───────────────────────────────────────────────────────
+    payment_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    payment_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    payment_gateway: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    payment_through: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    payment_url: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+
     # ── Loyalty ───────────────────────────────────────────────────────
     # Populated for booking_type='loyalty' (reward-redeemed bookings).
     # loyalty_data stores a snapshot of the tracker and reward at booking time.
@@ -209,9 +217,10 @@ class Booking(Base):
     )
 
     # ── Audit ─────────────────────────────────────────────────────────────
-    # created_by stores the User UUID (sub) of the API caller — set once at
-    # creation and never updated.  Nullable so legacy rows are backward-compat.
-    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    # created_by_user stores the User UUID (sub) of the API caller — set once at
+    # creation and never updated. Nullable so legacy rows are backward-compat.
+    created_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    created_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -221,6 +230,15 @@ class Booking(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    @property
+    def created_by(self) -> str | None:
+        """Backward-compatibility property for created_by."""
+        return self.created_by_user
+
+    @created_by.setter
+    def created_by(self, value: str | None) -> None:
+        self.created_by_user = value
 
     # ── Relationships ─────────────────────────────────────────────────────
     status_history: Mapped[list["BookingStatusHistory"]] = relationship(
@@ -244,6 +262,10 @@ class Booking(Base):
         Index("ix_bookings_booking_type", "booking_type"),
         # Fast lookup by payment_type
         Index("ix_bookings_payment_type", "payment_type"),
+        # Fast lookup by payment_id
+        Index("ix_bookings_payment_id", "payment_id"),
+        # Fast lookup by created_by_user
+        Index("ix_bookings_created_by_user", "created_by_user"),
         # Idempotency key uniqueness
         UniqueConstraint("idempotency_key", name="uq_bookings_idempotency_key"),
         # Enforce valid booking_type values

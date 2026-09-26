@@ -134,22 +134,45 @@ class CreatePaymentRequestSchema(BaseModel):
         description="Full raw response from gateway — will be parsed and merged into payment_data.",
     )
 
-    # ── created_by override (normally auto-set from JWT) ──────────────────
-    created_by: uuid.UUID | None = Field(default=None, description="API requester UUID (auto-set from JWT if omitted).")
+    # ── created_by_user / created_by ──────────────────────────────────────
+    created_by_user: str | None = Field(
+        default=None,
+        description="API requester user identifier (auto-set from JWT if omitted).",
+    )
+    created_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        description="User snapshot data (name, image, id, etc.) in JSONB.",
+    )
+    created_by: str | None = Field(
+        default=None,
+        description="Backward-compat alias for created_by_user.",
+    )
 
     # ── Validators ────────────────────────────────────────────────────────
     @field_validator(
         "recipient_phone", "transaction_date", "transaction_status", "receipt_image",
         "country", "invoice_id", "payment_url", "transaction_id", "track_id", "reference_id",
         "payment_method", "payment_through", "payment_provider", "payment_gateway",
-        "payment_for", "payment_id", "status",
+        "payment_for", "payment_id", "status", "created_by", "created_by_user",
         mode="before",
     )
     @classmethod
     def coerce_empty_str(cls, v: Any) -> Any:
         return _coerce_empty(v)
 
-    model_config = {"extra": "allow"}
+    @model_validator(mode="before")
+    @classmethod
+    def sync_creator_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cbu = data.get("created_by_user")
+            cb = data.get("created_by")
+            if cbu is not None and cb is None:
+                data["created_by"] = str(cbu)
+            elif cb is not None and cbu is None:
+                data["created_by_user"] = str(cb)
+        return data
+
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
 
 class UpdatePaymentRequestSchema(BaseModel):
@@ -222,11 +245,26 @@ class UpdatePaymentRequestSchema(BaseModel):
     # Gateway response ingest
     gateway_response: dict[str, Any] | None = None
 
-    # Audit
+    # Audit & Creator
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
+    created_by: str | None = None
     reason: str | None = Field(default=None, description="Reason for update (audit log).")
     source: str = Field(default="admin", description="Actor making the change.")
 
-    model_config = {"extra": "allow"}
+    @model_validator(mode="before")
+    @classmethod
+    def sync_creator_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cbu = data.get("created_by_user")
+            cb = data.get("created_by")
+            if cbu is not None and cb is None:
+                data["created_by"] = str(cbu)
+            elif cb is not None and cbu is None:
+                data["created_by_user"] = str(cb)
+        return data
+
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
 
 class InitiatePaymentRequest(BaseModel):
@@ -305,8 +343,22 @@ class PaymentListItem(BaseModel):
     payment_for: str | None = None
     payment_id: str | None = None
 
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
     created_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_creator_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cbu = data.get("created_by_user")
+            cb = data.get("created_by")
+            if cbu is not None and cb is None:
+                data["created_by"] = str(cbu)
+            elif cb is not None and cbu is None:
+                data["created_by_user"] = str(cb)
+        return data
 
 
 class PaymentDetailResponse(BaseModel):
@@ -367,8 +419,22 @@ class PaymentDetailResponse(BaseModel):
     payment_id: str | None = None
     payment_data: dict[str, Any] | None = None
 
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
     created_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_creator_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cbu = data.get("created_by_user")
+            cb = data.get("created_by")
+            if cbu is not None and cb is None:
+                data["created_by"] = str(cbu)
+            elif cb is not None and cbu is None:
+                data["created_by_user"] = str(cb)
+        return data
 
     status_history: list[PaymentStatusHistoryItem] | None = None
 

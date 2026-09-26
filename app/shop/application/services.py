@@ -32,7 +32,11 @@ from app.shop.domain.state_machine import (
     DeliveryStateMachine,
     InvalidDeliveryTransitionError,
 )
-from app.shop.domain.value_objects import DeliveryStatus, OrderPaymentStatus
+from app.shop.domain.value_objects import (
+    DeliveryStatus,
+    OrderPaymentStatus,
+    ShopPaymentThrough,
+)
 from app.shop.infrastructure.models import (
     ShopOrder,
     ShopOrderItem,
@@ -90,6 +94,15 @@ class ShopOrderService:
         customer_id: uuid.UUID,
         customer_name: str,
         customer_phone: str,
+        order_requested_by_user: uuid.UUID | None = None,
+        order_requested_by_user_data: dict[str, Any] | None = None,
+        payment_through: str | None = None,
+        payment_status: str | None = None,
+        payment_method: str | None = None,
+        payment_provider: str | None = None,
+        payment_invoice_id: str | None = None,
+        payment_url: str | None = None,
+        payment_data: dict[str, Any] | None = None,
     ) -> ShopOrder:
         """
         Validate products against ushauth, snapshot prices, persist the order,
@@ -144,6 +157,32 @@ class ShopOrderService:
         public_token = _generate_public_token()      # URL-safe random string
         token_expires_at = _token_expiry(weeks=1)    # expires in 1 week
 
+        # Normalise / resolve requester user and payment channel
+        req_user = order_requested_by_user or body.order_requested_by_user
+        req_user_data = order_requested_by_user_data or body.order_requested_by_user_data
+        through_raw = payment_through or body.payment_through or body.payment_type
+        chosen_payment_through = ShopPaymentThrough.normalise(through_raw) if through_raw else None
+        chosen_payment_url = payment_url or body.payment_url
+        chosen_payment_data = payment_data or body.payment_data
+
+        # Resolve payment classification fields from kwargs then body
+        chosen_payment_method = payment_method or body.payment_method
+        chosen_payment_provider = payment_provider or body.payment_provider
+        chosen_payment_invoice_id = payment_invoice_id or body.payment_invoice_id
+
+        # Resolve initial payment status: honour explicit value if valid, else NOT_INITIATED
+        raw_payment_status = payment_status or body.payment_status
+        try:
+            chosen_payment_status = OrderPaymentStatus(raw_payment_status).value if raw_payment_status else OrderPaymentStatus.NOT_INITIATED.value
+        except ValueError:
+            chosen_payment_status = OrderPaymentStatus.NOT_INITIATED.value
+
+        # Merge payment_invoice_id into payment_data so it's persisted in the JSONB blob
+        if chosen_payment_invoice_id and isinstance(chosen_payment_data, dict):
+            chosen_payment_data = {**chosen_payment_data, "invoiceId": chosen_payment_invoice_id}
+        elif chosen_payment_invoice_id and chosen_payment_data is None:
+            chosen_payment_data = {"invoiceId": chosen_payment_invoice_id}
+
         # ── 4. Persist ────────────────────────────────────────────────────
         order = ShopOrder(
             id=uuid.uuid4(),
@@ -152,6 +191,8 @@ class ShopOrderService:
             customer_name=customer_name,
             customer_phone=customer_phone,
             contact_number=body.contact_number or customer_phone or "",
+            order_requested_by_user=req_user,
+            order_requested_by_user_data=req_user_data,
             # Structured address fields
             area=body.area or "",
             block=body.block or "",
@@ -169,7 +210,12 @@ class ShopOrderService:
             discount=Decimal("0.000"),
             total_amount=total_amount,
             currency="KWD",
-            payment_status=OrderPaymentStatus.NOT_INITIATED.value,
+            payment_status=chosen_payment_status,
+            payment_method=chosen_payment_method,
+            payment_through=chosen_payment_through,
+            payment_provider=chosen_payment_provider,
+            payment_url=chosen_payment_url,
+            payment_data=chosen_payment_data,
             internal_notes=body.internal_notes,
             items=order_items,
         )
@@ -256,12 +302,15 @@ class ShopOrderService:
         new_payment_status: OrderPaymentStatus,
         changed_by: str,
         payment_method: str | None = None,
-        payment_type: str | None = None,
+        payment_through: str | None = None,
         payment_provider: str | None = None,
+        payment_type: str | None = None,
+        payment_url: str | None = None,
+        payment_data: dict[str, Any] | None = None,
     ) -> ShopOrder:
         """Update payment_status — called by ushdesk (mark paid) or mobile gateway callback.
 
-        Also stores payment classification fields (method/type/provider) so that
+        Also stores payment classification fields (method/through/provider/url/data) so that
         the SQS ShopOrderCreatedEvent carries enough data for ushnotice to create
         a payment record without a second DB lookup.
 
@@ -272,12 +321,17 @@ class ShopOrderService:
         order.payment_status = new_payment_status.value
 
         # Store classification when provided (overwrite if already set)
+        through_val = payment_through or payment_type
+        if through_val is not None:
+            order.payment_through = ShopPaymentThrough.normalise(through_val)
         if payment_method is not None:
             order.payment_method = payment_method
-        if payment_type is not None:
-            order.payment_type = payment_type
         if payment_provider is not None:
             order.payment_provider = payment_provider
+        if payment_url is not None:
+            order.payment_url = payment_url
+        if payment_data is not None:
+            order.payment_data = payment_data
 
         await self._repo.update(order)
         await self._session.commit()
@@ -288,8 +342,8 @@ class ShopOrderService:
             order_number=order.order_number,
             from_payment_status=previous_payment_status,
             to_payment_status=new_payment_status.value,
-            payment_method=payment_method,
-            payment_type=payment_type,
+            payment_method=order.payment_method,
+            payment_through=order.payment_through,
             changed_by=changed_by,
         )
 
@@ -385,6 +439,8 @@ class ShopOrderService:
         *,
         delivery_status: str | None = None,
         payment_status: str | None = None,
+        payment_through: str | None = None,
+        order_requested_by_user: uuid.UUID | None = None,
         from_date: Any | None = None,
         to_date: Any | None = None,
         search: str | None = None,
@@ -394,6 +450,8 @@ class ShopOrderService:
         return await self._repo.list_orders(
             delivery_status=delivery_status,
             payment_status=payment_status,
+            payment_through=payment_through,
+            order_requested_by_user=order_requested_by_user,
             from_date=from_date,
             to_date=to_date,
             search=search,
@@ -423,6 +481,111 @@ class ShopOrderService:
         from app.events.contracts import ShopOrderCreatedEvent
         from app.events.sqs_client import get_sqs_client
 
+        # ── Extract gateway metadata from payment_data if present ─────────────
+        pdata = order.payment_data if isinstance(order.payment_data, dict) else {}
+        inner_data = (
+            pdata.get("data") if isinstance(pdata.get("data"), dict)
+            else pdata.get("Data") if isinstance(pdata.get("Data"), dict)
+            else {}
+        )
+        txns = (
+            inner_data.get("InvoiceTransactions")
+            or pdata.get("InvoiceTransactions")
+            or pdata.get("invoice_transactions")
+            or []
+        )
+        first_txn = txns[0] if isinstance(txns, list) and len(txns) > 0 and isinstance(txns[0], dict) else {}
+
+        invoice_id = str(
+            pdata.get("invoiceId")
+            or pdata.get("invoice_id")
+            or inner_data.get("InvoiceId")
+            or inner_data.get("invoice_id")
+            or ""
+        )
+        payment_id = str(
+            first_txn.get("PaymentId")
+            or first_txn.get("payment_id")
+            or pdata.get("paymentId")
+            or pdata.get("payment_id")
+            or inner_data.get("PaymentId")
+            or ""
+        )
+        transaction_id = str(
+            first_txn.get("TransactionId")
+            or first_txn.get("transaction_id")
+            or pdata.get("transactionId")
+            or pdata.get("transaction_id")
+            or payment_id
+            or ""
+        )
+        reference_id = str(
+            first_txn.get("ReferenceId")
+            or first_txn.get("reference_id")
+            or pdata.get("referenceId")
+            or pdata.get("reference_id")
+            or ""
+        )
+        track_id = str(
+            first_txn.get("TrackId")
+            or first_txn.get("track_id")
+            or pdata.get("trackId")
+            or pdata.get("track_id")
+            or pdata.get("trace_id")
+            or ""
+        )
+        transaction_date = str(
+            first_txn.get("TransactionDate")
+            or first_txn.get("transaction_date")
+            or pdata.get("transactionDate")
+            or pdata.get("transaction_date")
+            or inner_data.get("CreatedDate")
+            or ""
+        )
+        transaction_status = str(
+            first_txn.get("TransactionStatus")
+            or first_txn.get("transaction_status")
+            or pdata.get("status")
+            or inner_data.get("InvoiceStatus")
+            or ""
+        )
+        country = str(
+            first_txn.get("Country")
+            or first_txn.get("country")
+            or pdata.get("country")
+            or inner_data.get("Country")
+            or ""
+        )
+        gw_raw = str(
+            first_txn.get("PaymentGateway")
+            or first_txn.get("payment_gateway")
+            or pdata.get("paymentGateway")
+            or order.payment_method
+            or ""
+        ).upper()
+        if "KNET" in gw_raw or "K-NET" in gw_raw:
+            payment_gateway = "KNET"
+        elif "TAP" in gw_raw:
+            payment_gateway = "TAP"
+        elif gw_raw:
+            payment_gateway = "Other"
+        else:
+            payment_gateway = ""
+
+        payment_url = str(
+            order.payment_url
+            or pdata.get("paymentUrl")
+            or pdata.get("payment_url")
+            or inner_data.get("PaymentURL")
+            or ""
+        )
+        created_by = str(
+            order.order_requested_by_user
+            or order.customer_id
+            or inner_data.get("UserDefinedField")
+            or ""
+        )
+
         event = ShopOrderCreatedEvent(
             # ── Identity ─────────────────────────────────────────────
             order_id=str(order.id),
@@ -437,6 +600,9 @@ class ShopOrderService:
                 "phone": order.customer_phone,
                 "contact_number": order.contact_number or order.customer_phone,
             },
+            # ── Requester user info ──────────────────────────────────
+            order_requested_by_user=str(order.order_requested_by_user) if order.order_requested_by_user else None,
+            order_requested_by_user_data=order.order_requested_by_user_data or {},
             # ── Delivery ─────────────────────────────────────────────
             delivery_address=order.formatted_address,
             # ── Tracking ─────────────────────────────────────────────
@@ -449,8 +615,22 @@ class ShopOrderService:
             # ── Payment classification ────────────────────────────────
             payment_status=order.payment_status,           # always "success" at this point
             payment_method=order.payment_method or "",     # e.g. "card", "cash", "knet"
-            payment_type=order.payment_type or "",         # e.g. "gateway", "desk"
+            payment_through=order.payment_through or "",   # e.g. "ushspa", "ushdesk", "other"
+            payment_type=order.payment_through or "",      # kept for backward compatibility with ushnotice
             payment_provider=order.payment_provider or "", # e.g. "MyFatoorah", "DirectLink"
+            # ── Payment transaction metadata ──────────────────────────
+            payment_url=payment_url,
+            payment_data=pdata,
+            payment_id=payment_id,
+            invoice_id=invoice_id,
+            transaction_id=transaction_id,
+            reference_id=reference_id,
+            track_id=track_id,
+            transaction_date=transaction_date,
+            transaction_status=transaction_status,
+            payment_gateway=payment_gateway,
+            country=country,
+            created_by=created_by,
             # ── Items snapshot ────────────────────────────────────────
             items=[
                 {

@@ -90,6 +90,7 @@ docker-compose up postgres redis -d
 ```bash
 pip install -e ".[dev]"
 alembic upgrade head
+docker exec ushbooknpay alembic upgrade head
 ```
 
 ### 4. Start the service
