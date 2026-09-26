@@ -87,6 +87,7 @@ class BookingPaymentProvider(str, Enum):
     MYFATOORAH = "MyFatoorah"
     PAYMENTLINK = "PaymentLink"
     DEEMA = "Deema"
+    KNET_CARD = "KNET Card"
     OTHER = "Other"
 
     @classmethod
@@ -102,6 +103,9 @@ class BookingPaymentProvider(str, Enum):
             "directlink": cls.PAYMENTLINK,
             "direct": cls.PAYMENTLINK,
             "deema": cls.DEEMA,
+            "knetcard": cls.KNET_CARD,
+            "knet": cls.KNET_CARD,
+            "card": cls.KNET_CARD,
             "other": cls.OTHER,
         }
         return mapping.get(v, cls.OTHER)

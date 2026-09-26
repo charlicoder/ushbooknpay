@@ -25,8 +25,10 @@ class PaymentProvider(str, Enum):
     """Supported payment providers / gateways used to process the transaction."""
 
     MYFATOORAH = "MyFatoorah"
+    PAYMENTLINK = "PaymentLink"
     DIRECTLINK = "DirectLink"
     DEEMA = "Deema"
+    KNET_CARD = "KNET Card"
     OTHER = "Other"
 
     @classmethod
@@ -39,9 +41,13 @@ class PaymentProvider(str, Enum):
             "myfatoorah": cls.MYFATOORAH,
             "myfatora": cls.MYFATOORAH,
             "fatoorah": cls.MYFATOORAH,
+            "paymentlink": cls.PAYMENTLINK,
             "directlink": cls.DIRECTLINK,
             "direct": cls.DIRECTLINK,
             "deema": cls.DEEMA,
+            "knetcard": cls.KNET_CARD,
+            "knet": cls.KNET_CARD,
+            "card": cls.KNET_CARD,
             "other": cls.OTHER,
         }
         return mapping.get(v, cls.OTHER)
@@ -51,6 +57,7 @@ class PaymentThrough(str, Enum):
     """Channel through which payment was processed."""
 
     USHSPA = "ushspa"
+    USHDESK = "ushdesk"
     DESK = "desk"
     OTHER = "other"
 
@@ -58,13 +65,14 @@ class PaymentThrough(str, Enum):
     def normalise(cls, value: str) -> "PaymentThrough":
         if not value:
             return cls.OTHER
-        v = value.strip().lower()
+        v = value.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
         mapping = {
             "ushspa": cls.USHSPA,
             "app": cls.USHSPA,
-            "desk": cls.DESK,
-            "pos": cls.DESK,
-            "counter": cls.DESK,
+            "ushdesk": cls.USHDESK,
+            "desk": cls.USHDESK,
+            "pos": cls.USHDESK,
+            "counter": cls.USHDESK,
             "other": cls.OTHER,
         }
         return mapping.get(v, cls.OTHER)
