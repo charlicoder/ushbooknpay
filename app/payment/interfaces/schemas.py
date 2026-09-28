@@ -290,11 +290,27 @@ class PaymentStatusHistoryItem(BaseModel):
     old_status: str | None = None
     new_status: str
     source: str | None = None
+    change_by_user: str | None = None
+    change_by_user_data: dict[str, Any] | None = None
+    created_by_user: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     reason: str | None = None
     provider_reference: str | None = None
     correlation_id: str | None = None
     metadata: dict[str, Any] | None = None
     created_at: datetime
+
+    @model_validator(mode="after")
+    def sync_user_fields(self) -> "PaymentStatusHistoryItem":
+        if not self.created_by_user and self.change_by_user:
+            self.created_by_user = self.change_by_user
+        elif not self.change_by_user and self.created_by_user:
+            self.change_by_user = self.created_by_user
+        if not self.created_by_user_data and self.change_by_user_data:
+            self.created_by_user_data = self.change_by_user_data
+        elif not self.change_by_user_data and self.created_by_user_data:
+            self.change_by_user_data = self.created_by_user_data
+        return self
 
 
 class PaymentListItem(BaseModel):

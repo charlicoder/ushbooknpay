@@ -214,12 +214,31 @@ class PaymentStatusHistory(Base):
     provider_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    change_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    change_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     payment: Mapped["Payment"] = relationship("Payment", back_populates="status_history")
 
+    @property
+    def change_by(self) -> str | None:
+        return self.change_by_user
+
+    @property
+    def created_by(self) -> str | None:
+        return self.change_by_user
+
+    @property
+    def created_by_user(self) -> str | None:
+        return self.change_by_user
+
+    @property
+    def created_by_user_data(self) -> dict | None:
+        return self.change_by_user_data
+
     __table_args__ = (
         Index("ix_payment_status_history_payment_id", "payment_id"),
+        Index("ix_payment_status_history_change_by_user", "change_by_user"),
     )

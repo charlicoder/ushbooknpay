@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-import structlog
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.booking.domain.rules import (
@@ -265,6 +265,8 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "created_by": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
         "created_by_user": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
         "created_by_user_data": getattr(booking, "created_by_user_data", None) or {},
+        "change_by_user": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
+        "change_by_user_data": getattr(booking, "created_by_user_data", None) or {},
         # Loyalty booking fields (only populated for booking_type='loyalty')
         "loyalty_data": booking.loyalty_data or {},
         "reward_id": str(booking.reward_id) if getattr(booking, "reward_id", None) else "",
@@ -465,6 +467,7 @@ class BookingService:
         created_by_user: str | None = None,
         created_by_user_data: dict | None = None,
         created_by: str | None = None,
+        source: str | None = None,
     ) -> Booking:
         """
         Create a new booking.
@@ -569,8 +572,24 @@ class BookingService:
             if booking.status in BookingStatus._value2member_map_
             else BookingStatus.REQUESTED
         )
+        effective_source = (
+            source
+            or payment_through
+            or (created_by_user_data.get("role") if isinstance(created_by_user_data, dict) and created_by_user_data.get("role") in ("admin", "desk", "agent") else None)
+            or "ushspa"
+        )
+        effective_user = (
+            created_by_user
+            or created_by
+            or (str(customer_id) if customer_id else "customer")
+        )
         await self._record_status_change(
-            booking, None, initial_status_enum, source=created_by or "customer"
+            booking,
+            None,
+            initial_status_enum,
+            source=effective_source,
+            changed_by=effective_user,
+            change_by_user_data=created_by_user_data,
         )
 
         # ── Enqueue SQS event for Booking.Created ─────────────────────────
@@ -599,6 +618,10 @@ class BookingService:
                 total_amount=str(booking.total_amount),
                 currency=booking.currency,
                 status=booking.status,
+                created_by_user=str(effective_user),
+                created_by_user_data=created_by_user_data or {},
+                change_by_user=str(effective_user),
+                change_by_user_data=created_by_user_data or {},
             )
         )
 
@@ -645,6 +668,7 @@ class BookingService:
         reason: str | None = None,
         source: str = "admin",
         changed_by: str | None = None,
+        change_by_user_data: dict | None = None,
         correlation_id: str | None = None,
         loyalty_data: dict | None = None,
         reward_id: uuid.UUID | None = None,
@@ -656,6 +680,8 @@ class BookingService:
         Follows REST standard for partial/full update.
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
+        effective_changed_by = changed_by or created_by_user
+        effective_changed_user_data = change_by_user_data or created_by_user_data
 
         # ── Update timing / therapist if provided ────────────────────────
         target_therapist_id = therapist_id or booking.therapist_id
@@ -697,6 +723,37 @@ class BookingService:
         # ── Payment status & Meta ────────────────────────────────────────
         if payment_status is not None:
             booking.payment_status = payment_status.value
+            try:
+                from app.payment.domain.value_objects import PaymentTransactionStatus
+
+                p_stat_str = str(payment_status.value).lower().strip()
+                if p_stat_str in ("refunded", "cancelled"):
+                    target_status = (
+                        PaymentTransactionStatus.REFUNDED.value
+                        if p_stat_str == "refunded"
+                        else PaymentTransactionStatus.CANCELLED.value
+                    )
+                    await self._sync_booking_payment_status(
+                        booking,
+                        target_status,
+                        source=source,
+                        reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                        change_by_user=effective_changed_by,
+                        change_by_user_data=effective_changed_user_data,
+                        correlation_id=correlation_id,
+                    )
+                elif p_stat_str in ("success", "paid"):
+                    await self._sync_booking_payment_status(
+                        booking,
+                        PaymentTransactionStatus.SUCCESS.value,
+                        source=source,
+                        reason=reason or "Payment status updated to success",
+                        change_by_user=effective_changed_by,
+                        change_by_user_data=effective_changed_user_data,
+                        correlation_id=correlation_id,
+                    )
+            except Exception as exc:
+                logger.warning("sync_booking_payment_status_failed", error=str(exc))
         if payment_data is not None:
             booking.payment_data = {**(booking.payment_data or {}), **payment_data}
         if payment_id is not None:
@@ -761,13 +818,22 @@ class BookingService:
                 old_status,
                 status,
                 source=source,
-                changed_by=changed_by,
+                changed_by=effective_changed_by,
+                change_by_user_data=effective_changed_user_data,
                 reason=reason,
                 correlation_id=correlation_id,
             )
 
             # Dispatch SQS event
-            await self._dispatch_status_event(booking, old_status, status, reason=reason, source=source)
+            await self._dispatch_status_event(
+                booking,
+                old_status,
+                status,
+                reason=reason,
+                source=source,
+                changed_by=effective_changed_by,
+                change_by_user_data=effective_changed_user_data,
+            )
         else:
             await self._repo.update(booking)
             try:
@@ -781,6 +847,8 @@ class BookingService:
                     current_status,
                     reason=reason or "Booking updated",
                     source=source,
+                    changed_by=effective_changed_by,
+                    change_by_user_data=effective_changed_user_data,
                 )
 
         logger.info("booking_updated", booking_id=str(booking.id))
@@ -795,6 +863,9 @@ class BookingService:
         payment_id: str,
         payment_data: dict | None = None,
         correlation_id: str | None = None,
+        changed_by: str | None = None,
+        change_by_user_data: dict | None = None,
+        source: str | None = "payment_webhook",
     ) -> Booking:
         """
         Transition booking from PAYMENT_PENDING → CONFIRMED.
@@ -836,9 +907,14 @@ class BookingService:
 
         await self._repo.update(booking)
         await self._repo.delete_hold(booking_id)
+        effective_user = changed_by or payment_id
         await self._record_status_change(
-            booking, old_status, BookingStatus.CONFIRMED,
-            source="payment_webhook", changed_by=payment_id,
+            booking,
+            old_status,
+            BookingStatus.CONFIRMED,
+            source=source or "payment_webhook",
+            changed_by=effective_user,
+            change_by_user_data=change_by_user_data,
             correlation_id=correlation_id,
         )
 
@@ -858,6 +934,8 @@ class BookingService:
         *,
         reason: str = "",
         cancelled_by: str = "customer",
+        change_by_user: str | None = None,
+        change_by_user_data: dict | None = None,
         refund_amount: Decimal | None = None,
         correlation_id: str | None = None,
     ) -> Booking:
@@ -874,55 +952,72 @@ class BookingService:
 
         await self._repo.update(booking)
         await self._repo.delete_hold(booking_id)
+
+        effective_user = change_by_user or cancelled_by
         await self._record_status_change(
-            booking, old_status, BookingStatus.CANCELLED,
-            source=cancelled_by, reason=reason, correlation_id=correlation_id,
+            booking,
+            old_status,
+            BookingStatus.CANCELLED,
+            source=cancelled_by,
+            changed_by=effective_user,
+            change_by_user_data=change_by_user_data,
+            reason=reason,
+            correlation_id=correlation_id,
         )
 
-        customer_dict = booking.customer_data or {}
-        appt_start = booking.appointment_start
-        appt_end = booking.appointment_end
-        # Resolve loyalty fields from stored service/arrangement snapshots
-        _cancel_service_dict = booking.service_data or {}
-        _cancel_arr_dict = booking.service_arrangement_data or {}
-        _b_type = getattr(booking, "booking_type", "branch_service")
-        _b_type_str = _b_type if isinstance(_b_type, str) else "branch_service"
-        _p_type = getattr(booking, "payment_type", "service")
-        _p_type_str = _p_type if isinstance(_p_type, str) else "service"
-        _is_loyalty_bk = (
-            _b_type_str == "loyalty"
-            or _p_type_str == "rewarded"
-            or str(getattr(booking, "payment_status", "")).lower() == "rewarded"
-            or bool(getattr(booking, "reward_id", None))
-            or bool((booking.loyalty_data or {}).get("points_cost"))
-            or bool((booking.loyalty_data or {}).get("reward_id"))
-        )
+        if (
+            (refund_amount is not None and refund_amount > 0)
+            or str(booking.payment_status).lower() in ("success", "paid")
+        ):
+            booking.payment_status = PaymentStatus.REFUNDED.value
+            await self._repo.update(booking)
+            try:
+                from app.payment.domain.value_objects import PaymentTransactionStatus
+
+                await self._sync_booking_payment_status(
+                    booking,
+                    PaymentTransactionStatus.REFUNDED.value,
+                    source=cancelled_by,
+                    reason=reason or "Booking cancelled - payment refunded",
+                    change_by_user=effective_user,
+                    change_by_user_data=change_by_user_data,
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                logger.warning("sync_booking_payment_status_failed", error=str(exc))
+        elif not booking.payment_status or str(booking.payment_status).lower() in ("unpaid", "pending", "not_initiated"):
+            booking.payment_status = PaymentStatus.CANCELLED.value
+            await self._repo.update(booking)
+            try:
+                from app.payment.domain.value_objects import PaymentTransactionStatus
+
+                await self._sync_booking_payment_status(
+                    booking,
+                    PaymentTransactionStatus.CANCELLED.value,
+                    source=cancelled_by,
+                    reason=reason or "Booking cancelled",
+                    change_by_user=effective_user,
+                    change_by_user_data=change_by_user_data,
+                    correlation_id=correlation_id,
+                )
+            except Exception as exc:
+                logger.warning("sync_booking_payment_status_failed", error=str(exc))
+
+        ev_data = _build_booking_event_data(booking)
+        ev_data.pop("change_by_user", None)
+        ev_data.pop("change_by_user_data", None)
         await self._enqueue_event(
             BookingCancelledEvent(
-                booking_id=str(booking.id),
-                booking_number=str(getattr(booking, "booking_number", "") or ""),
-                customer_id=str(booking.customer_id),
-                branch_id=str(booking.branch_id),
-                service_id=str(booking.service_id),
-                service_arrangement_id=str(booking.service_arrangement_id),
-                therapist_id=str(booking.therapist_id),
-                appointment_start=appt_start.isoformat(),
-                appointment_end=appt_end.isoformat(),
-                appointment_date=appt_start.strftime("%Y-%m-%d"),
-                appointment_starttime=appt_start.strftime("%H:%M"),
-                appointment_endtime=appt_end.strftime("%H:%M"),
-                customer_name=_extract_customer_name(customer_dict),
-                customer_phone=str(customer_dict.get("phone_number") or customer_dict.get("phone") or ""),
-                cancellation_reason=reason,
+                **ev_data,
+                cancellation_reason=reason or "",
+                reason=reason or "",
+                cancelled_by=cancelled_by,
+                change_by_user=str(effective_user),
+                change_by_user_data=change_by_user_data or {},
                 refund_issued=refund_amount is not None and refund_amount > 0,
                 refund_amount=str(refund_amount) if refund_amount else None,
-                # Loyalty fields
-                is_eligible_for_loyalty=False if _is_loyalty_bk else bool(_cancel_service_dict.get("is_eligible_for_loyalty", False)),
-                loyalty_points=0 if _is_loyalty_bk else int(_cancel_service_dict.get("loyalty_points") or 0),
-                arrangement_loyalty_points=None if _is_loyalty_bk else _cancel_arr_dict.get("loyalty_points"),
             )
         )
-
 
         logger.info("booking_cancelled", booking_id=str(booking.id), reason=reason)
         return booking
@@ -937,6 +1032,9 @@ class BookingService:
         new_end: datetime,
         customer_id: uuid.UUID,
         correlation_id: str | None = None,
+        change_by_user: str | None = None,
+        change_by_user_data: dict | None = None,
+        source: str = "customer",
     ) -> Booking:
         """
         Customer requests a reschedule.
@@ -962,9 +1060,16 @@ class BookingService:
         ).strip()
 
         await self._repo.update(booking)
+        effective_user = change_by_user or str(customer_id)
         await self._record_status_change(
-            booking, old_status, BookingStatus.RESCHEDULE_REQUESTED,
-            source="customer", correlation_id=correlation_id,
+            booking,
+            old_status,
+            BookingStatus.RESCHEDULE_REQUESTED,
+            source=source,
+            changed_by=effective_user,
+            change_by_user_data=change_by_user_data,
+            reason=f"Reschedule requested: {new_start.isoformat()} to {new_end.isoformat()}",
+            correlation_id=correlation_id,
         )
 
         await self._enqueue_event(
@@ -1012,6 +1117,7 @@ class BookingService:
         reason: str | None = None,
         source: str = "admin",
         changed_by: str | None = None,
+        change_by_user_data: dict | None = None,
         correlation_id: str | None = None,
         loyalty_data: dict | None = None,
         reward_id: uuid.UUID | None = None,
@@ -1039,6 +1145,7 @@ class BookingService:
             reason=reason,
             source=source,
             changed_by=changed_by,
+            change_by_user_data=change_by_user_data,
             correlation_id=correlation_id,
             loyalty_data=loyalty_data,
             reward_id=reward_id,
@@ -1121,10 +1228,16 @@ class BookingService:
         *,
         reason: str | None = None,
         source: str = "admin",
+        changed_by: str | None = None,
+        change_by_user_data: dict | None = None,
     ) -> None:
         if new_status in (BookingStatus.CONFIRMED, "confirmed"):
             await self._ensure_booking_loyalty_details(booking)
         ev_data = _build_booking_event_data(booking)
+        if changed_by:
+            ev_data["change_by_user"] = str(changed_by)
+        if change_by_user_data is not None:
+            ev_data["change_by_user_data"] = change_by_user_data
 
         new_status_val = new_status.value if hasattr(new_status, "value") else str(new_status)
         old_status_val = (
@@ -1140,26 +1253,19 @@ class BookingService:
         elif new_status in (BookingStatus.COMPLETED, "completed"):
             await self._enqueue_event(BookingCompletedEvent(**ev_data))
         elif new_status in (BookingStatus.CANCELLED, "cancelled"):
+            ev_cancel = dict(ev_data)
+            ev_cancel.pop("change_by_user", None)
+            ev_cancel.pop("change_by_user_data", None)
             await self._enqueue_event(
                 BookingCancelledEvent(
-                    booking_id=ev_data["booking_id"],
-                    customer_id=ev_data["customer_id"],
-                    branch_id=ev_data["branch_id"],
-                    service_id=ev_data["service_id"],
-                    service_arrangement_id=ev_data["service_arrangement_id"],
-                    therapist_id=ev_data["therapist_id"],
-                    appointment_start=ev_data["appointment_start"],
-                    appointment_end=ev_data["appointment_end"],
-                    appointment_date=ev_data["appointment_date"],
-                    appointment_starttime=ev_data["appointment_starttime"],
-                    appointment_endtime=ev_data["appointment_endtime"],
-                    customer_name=ev_data["customer_name"],
-                    customer_phone=ev_data["customer_phone"],
+                    **ev_cancel,
                     cancellation_reason=reason or "",
+                    reason=reason or "",
+                    cancelled_by=source or "admin",
+                    change_by_user=str(changed_by or source or "admin"),
+                    change_by_user_data=change_by_user_data or {},
                     refund_issued=False,
-                    is_eligible_for_loyalty=bool(ev_data.get("is_eligible_for_loyalty")),
-                    loyalty_points=int(ev_data.get("loyalty_points") or 0),
-                    arrangement_loyalty_points=ev_data.get("arrangement_loyalty_points"),
+                    refund_amount=None,
                 )
             )
         elif new_status in (BookingStatus.NO_SHOW, "no_show"):
@@ -1171,13 +1277,18 @@ class BookingService:
                 )
             )
         else:
+            ev_update = dict(ev_data)
+            ev_update.pop("change_by_user", None)
+            ev_update.pop("change_by_user_data", None)
             await self._enqueue_event(
                 BookingStatusUpdatedEvent(
-                    **ev_data,
+                    **ev_update,
                     old_status=old_status_val,
                     new_status=new_status_val,
                     reason=reason,
                     source=source,
+                    change_by_user=str(changed_by or source or "admin"),
+                    change_by_user_data=change_by_user_data or {},
                 )
             )
 
@@ -1189,6 +1300,7 @@ class BookingService:
         *,
         source: str | None = None,
         changed_by: str | None = None,
+        change_by_user_data: dict | None = None,
         reason: str | None = None,
         correlation_id: str | None = None,
     ) -> None:
@@ -1197,11 +1309,122 @@ class BookingService:
             old_status=old_status.value if old_status else None,
             new_status=new_status.value,
             source=source,
-            changed_by=changed_by,
+            change_by_user=changed_by,
+            change_by_user_data=change_by_user_data,
             reason=reason,
             correlation_id=correlation_id,
         )
         await self._repo.save_status_history(history)
+
+    async def _sync_booking_payment_status(
+        self,
+        booking: Booking,
+        target_payment_status: str,
+        *,
+        source: str | None = None,
+        reason: str | None = None,
+        change_by_user: str | None = None,
+        change_by_user_data: dict | None = None,
+        correlation_id: str | None = None,
+    ) -> list[Any]:
+        """
+        Synchronize Payment records for a booking and record audit trail in payment_status_history.
+        """
+        from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+
+        target_status = str(target_payment_status).lower().strip()
+
+        # 1. Fetch payments linked to this booking
+        stmt = select(Payment).where(Payment.booking_id == booking.id)
+        result = await self._session.execute(stmt)
+        payments = list(result.scalars().all())
+
+        # 2. Check by payment_id from booking if not linked
+        if not payments:
+            cand_ids = []
+            if getattr(booking, "payment_id", None):
+                cand_ids.append(str(booking.payment_id))
+            if isinstance(getattr(booking, "payment_data", None), dict):
+                p_id = booking.payment_data.get("payment_id") or booking.payment_data.get("id")
+                if p_id:
+                    cand_ids.append(str(p_id))
+
+            for cid in cand_ids:
+                try:
+                    uuid_val = uuid.UUID(cid)
+                    stmt2 = select(Payment).where((Payment.id == uuid_val) | (Payment.payment_id == cid))
+                except (ValueError, TypeError):
+                    stmt2 = select(Payment).where(Payment.payment_id == cid)
+                res2 = await self._session.execute(stmt2)
+                for p in res2.scalars().all():
+                    if p not in payments:
+                        p.booking_id = booking.id
+                        payments.append(p)
+
+        # 3. For each payment, transition status and record history
+        for p in payments:
+            old_status = p.status
+            if old_status != target_status:
+                p.status = target_status
+                history = PaymentStatusHistory(
+                    payment_id=p.id,
+                    old_status=old_status,
+                    new_status=target_status,
+                    source=source or "booking_cancellation",
+                    reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                    change_by_user=str(change_by_user) if change_by_user else (source if source else None),
+                    change_by_user_data=change_by_user_data,
+                    correlation_id=correlation_id or (p.payment_id or str(p.id)),
+                )
+                self._session.add(history)
+
+        # 4. If no payment record exists in payments table, create one and record history
+        if not payments and getattr(booking, "total_amount", None) and getattr(booking, "customer_id", None):
+            try:
+                payment = Payment(
+                    booking_id=booking.id,
+                    customer_id=booking.customer_id,
+                    customer_data=booking.customer_data,
+                    service_id=booking.service_id,
+                    service_data=booking.service_data,
+                    branch_id=booking.branch_id,
+                    branch_data=booking.branch_data,
+                    service_arrangement_id=booking.service_arrangement_id,
+                    service_arrangement_data=booking.service_arrangement_data,
+                    total_amount=booking.total_amount,
+                    currency=booking.currency or "KWD",
+                    status=target_status,
+                    payment_for="branch_service",
+                    payment_provider=getattr(booking, "payment_provider", None) or "Other",
+                    payment_through=getattr(booking, "payment_through", None) or "ushspa",
+                    payment_gateway=getattr(booking, "payment_gateway", None) or "Other",
+                    payment_method=getattr(booking, "payment_method", None) or "card",
+                    payment_data=booking.payment_data,
+                    created_by_user=str(change_by_user) if change_by_user else (source if source else None),
+                    created_by_user_data=change_by_user_data,
+                )
+                self._session.add(payment)
+                await self._session.flush()
+
+                history = PaymentStatusHistory(
+                    payment_id=payment.id,
+                    old_status=None,
+                    new_status=target_status,
+                    source=source or "booking_cancellation",
+                    reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                    change_by_user=str(change_by_user) if change_by_user else (source if source else None),
+                    change_by_user_data=change_by_user_data,
+                    correlation_id=correlation_id or str(payment.id),
+                )
+                self._session.add(history)
+                payments.append(payment)
+            except Exception as exc:
+                logger.warning("create_fallback_payment_on_sync_failed", error=str(exc))
+
+        if payments:
+            await self._session.flush()
+
+        return payments
 
     async def _enqueue_event(self, event: object) -> None:
         """Publish event directly to AWS_SQS_NOTIFICATION_QUEUE_URL asynchronously."""

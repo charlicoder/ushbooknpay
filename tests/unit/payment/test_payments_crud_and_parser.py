@@ -202,8 +202,9 @@ def test_payment_through_enum_values():
 
     assert PaymentThrough.normalise("ushspa") == PaymentThrough.USHSPA
     assert PaymentThrough.normalise("app") == PaymentThrough.USHSPA
-    assert PaymentThrough.normalise("desk") == PaymentThrough.DESK
-    assert PaymentThrough.normalise("pos") == PaymentThrough.DESK
+    assert PaymentThrough.normalise("ushdesk") == PaymentThrough.USHDESK
+    assert PaymentThrough.normalise("desk") == PaymentThrough.USHDESK
+    assert PaymentThrough.normalise("pos") == PaymentThrough.USHDESK
 
 
 def test_payment_gateway_enum_values():

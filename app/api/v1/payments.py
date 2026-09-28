@@ -188,7 +188,7 @@ def _resolve_created_by(current_user: Any, body: Any) -> uuid.UUID | None:
 def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
     """Map ORM Payment model to PaymentDetailResponse."""
     history = None
-    raw_history = p.__dict__.get("status_history")
+    raw_history = getattr(p, "status_history", None) or p.__dict__.get("status_history")
     if raw_history:
         history = [
             PaymentStatusHistoryItem(
@@ -196,6 +196,10 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
                 old_status=h.old_status,
                 new_status=h.new_status,
                 source=h.source,
+                change_by_user=getattr(h, "change_by_user", None),
+                change_by_user_data=getattr(h, "change_by_user_data", None),
+                created_by_user=getattr(h, "change_by_user", None),
+                created_by_user_data=getattr(h, "change_by_user_data", None),
                 reason=h.reason,
                 provider_reference=h.provider_reference,
                 correlation_id=h.correlation_id,
@@ -472,6 +476,39 @@ async def create_payment(
         if raw_extra_price is not None:
             price_for_extra_time = Decimal(str(raw_extra_price))
 
+    # ── 12. Deduplication check: return existing payment for this booking ──
+    if booking_id:
+        existing_stmt = select(Payment).where(Payment.booking_id == booking_id)
+        existing_res = await session.execute(existing_stmt)
+        existing_payment = existing_res.scalars().first()
+        if existing_payment:
+            logger.info(
+                "payment_already_exists_for_booking",
+                booking_id=str(booking_id),
+                payment_id=str(existing_payment.id),
+            )
+            if payment_provider and not existing_payment.payment_provider:
+                existing_payment.payment_provider = payment_provider
+            if payment_through and not existing_payment.payment_through:
+                existing_payment.payment_through = payment_through
+            if payment_gateway and not existing_payment.payment_gateway:
+                existing_payment.payment_gateway = payment_gateway
+            if body.payment_method and not existing_payment.payment_method:
+                existing_payment.payment_method = body.payment_method
+            if status_str and existing_payment.status != "success":
+                existing_payment.status = status_str
+            if body.created_by_user and not existing_payment.created_by_user:
+                existing_payment.created_by_user = _safe_str(body.created_by_user)
+            if body.created_by_user_data and not existing_payment.created_by_user_data:
+                existing_payment.created_by_user_data = body.created_by_user_data
+            await session.flush()
+            await session.refresh(existing_payment)
+            response_data = _payment_to_detail(existing_payment)
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={"success": True, "data": response_data.model_dump(mode="json")},
+            )
+
     # ── 12. Create Payment record ─────────────────────────────────────
     payment = Payment(
         customer_id=body.customer_id,
@@ -535,6 +572,8 @@ async def create_payment(
         new_status=payment.status,
         source="gateway_webhook" if body.gateway_response else "manual",
         reason="Payment record created",
+        change_by_user=_safe_str(body.created_by_user or body.created_by),
+        change_by_user_data=body.created_by_user_data if isinstance(body.created_by_user_data, dict) else None,
         provider_reference=(payment.payment_data or {}).get("provider_reference"),
         correlation_id=payment.payment_id or str(payment.id),
         metadata_=None,
@@ -900,12 +939,22 @@ async def update_payment(
 
     # Record status change in audit trail
     if payment.status != old_status:
+        user_info = {
+            "id": current_user.sub,
+            "first_name": current_user.first_name or "",
+            "last_name": current_user.last_name or "",
+            "phone_number": current_user.phone_number or "",
+            "email": current_user.email or "",
+            "role": getattr(current_user, "role", None),
+        } if current_user else None
         history = PaymentStatusHistory(
             payment_id=payment.id,
             old_status=old_status,
             new_status=payment.status,
             source=body.source,
             reason=body.reason or "Payment updated",
+            change_by_user=_safe_str(body.created_by_user or body.created_by or getattr(current_user, "sub", None) or body.source),
+            change_by_user_data=body.created_by_user_data or user_info,
             provider_reference=(payment.payment_data or {}).get("provider_reference"),
             correlation_id=payment.payment_id or str(payment.id),
             metadata_=None,
@@ -1080,6 +1129,8 @@ async def initiate_payment(
         new_status=PaymentTransactionStatus.INITIATED.value,
         source="initiate_payment",
         reason="Payment session initiated",
+        change_by_user=_safe_str(customer_id),
+        change_by_user_data=booking.customer_data if isinstance(getattr(booking, "customer_data", None), dict) else None,
         correlation_id=str(gateway_payment_id) if gateway_payment_id else str(payment.id),
     )
     session.add(history)
@@ -1249,6 +1300,8 @@ async def myfatoorah_webhook(
                 new_status=payment.status,
                 source="webhook_myfatoorah",
                 reason="MyFatoorah webhook update",
+                change_by_user="webhook_myfatoorah",
+                change_by_user_data={"source": "webhook_myfatoorah"},
                 provider_reference=(payment.payment_data or {}).get("provider_reference"),
                 correlation_id=payment.payment_id or str(payment.id),
             )
@@ -1326,6 +1379,8 @@ async def tap_webhook(
                 new_status=payment.status,
                 source="webhook_tap",
                 reason="Tap webhook update",
+                change_by_user="webhook_tap",
+                change_by_user_data={"source": "webhook_tap"},
                 correlation_id=str(charge_id),
             )
             session.add(history)

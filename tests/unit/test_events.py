@@ -115,6 +115,10 @@ def test_booking_cancelled_event_payload():
     assert payload["appointment_starttime"] == "14:00"
     assert payload["appointment_endtime"] == "15:00"
     assert payload["cancellation_reason"] == "Customer request"
+    assert "customer_data" in payload
+    assert "payment_data" in payload
+    assert "branch_data" in payload
+    assert "pricing" in payload
 
 
 def test_booking_payment_pending_event_payload():

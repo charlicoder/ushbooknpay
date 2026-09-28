@@ -75,6 +75,7 @@ def _booking_to_list_item(b: object) -> BookingListItem:
     raw_app_date = getattr(b, "appointment_date", None) or getattr(b, "appointment_start", None)
     return BookingListItem(
         id=str(b.id),
+        booking_number=_safe_str(getattr(b, "booking_number", None)),
         customer_id=str(b.customer_id),
         customer_data=b.customer_data,
         branch_id=str(b.branch_id) if b.branch_id else None,
@@ -137,6 +138,8 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
                 old_status=h.old_status,
                 new_status=h.new_status,
                 source=h.source,
+                change_by_user=getattr(h, "change_by_user", None),
+                change_by_user_data=getattr(h, "change_by_user_data", None),
                 reason=h.reason,
                 created_at=h.created_at,
             )
@@ -161,6 +164,7 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
     raw_arr_data = b.service_arrangement_data if isinstance(getattr(b, "service_arrangement_data", None), dict) else None
     return BookingDetailResponse(
         id=str(b.id),
+        booking_number=_safe_str(getattr(b, "booking_number", None)),
         customer_id=str(b.customer_id),
         customer_data=b.customer_data if isinstance(getattr(b, "customer_data", None), dict) else {},
         branch_id=str(b.branch_id) if getattr(b, "branch_id", None) and isinstance(b.branch_id, (str, uuid.UUID)) else None,
@@ -237,12 +241,16 @@ async def create_booking(
     settings: AppSettings,
 ) -> CreateBookingResponse:
     """Create a new booking."""
-    # ── Always track who made the request ───────────────────────────────
-    created_by_user: str = str(body.created_by_user or body.created_by or current_user.sub)
-    created_by: str = created_by_user
-    created_by_user_data: dict[str, Any] | None = body.created_by_user_data
-    if created_by_user_data is None:
-        created_by_user_data = {
+    # ── Always track who made the request (ushdesk staff or ushspa customer) ─
+    req_user_id: str = str(
+        body.change_by_user
+        or body.created_by_user
+        or body.created_by
+        or current_user.sub
+    )
+    req_user_data = body.change_by_user_data or body.created_by_user_data
+    if req_user_data is None:
+        req_user_data = {
             "id": current_user.sub,
             "first_name": current_user.first_name or "",
             "last_name": current_user.last_name or "",
@@ -250,6 +258,22 @@ async def create_booking(
             "email": current_user.email or "",
             "role": getattr(current_user, "role", None),
         }
+    created_by_user: str = req_user_id
+    created_by: str = req_user_id
+    created_by_user_data: dict[str, Any] = req_user_data
+
+    # Resolve source: ushdesk, ushspa, or payment_through
+    request_source = (
+        body.payment_through
+        or request.headers.get("x-client-app")
+        or request.headers.get("x-app-source")
+    )
+    if not request_source:
+        user_role = str(getattr(current_user, "role", "") or "").lower()
+        if user_role in ("admin", "agent", "staff", "desk"):
+            request_source = "ushdesk"
+        else:
+            request_source = "ushspa"
 
     # ── Resolve customer_id and customer_data ────────────────────────────
     # If the caller supplies a customer_id in the body, fetch that customer's
@@ -805,6 +829,7 @@ async def create_booking(
             created_by_user=created_by_user,
             created_by_user_data=created_by_user_data,
             created_by=created_by,
+            source=request_source,
         )
     except DoubleBookingError as exc:
         raise HTTPException(
@@ -849,7 +874,7 @@ async def create_booking(
         success=True,
         data=CreateBookingDataResponse(
             booking_id=str(booking.id),
-            booking_number=getattr(booking, "booking_number", None) if isinstance(getattr(booking, "booking_number", None), str) else None,
+            booking_number=_safe_str(getattr(booking, "booking_number", None)),
             customer_id=str(booking.customer_id),
             final_amount=str(booking.total_amount),
             status=booking.status,
@@ -1070,7 +1095,15 @@ async def update_booking(
         internal_notes=body.internal_notes,
         reason=body.reason,
         source=body.source,
-        changed_by=str(user_id),
+        changed_by=str(body.change_by_user or body.created_by_user or body.created_by or user_id),
+        change_by_user_data=body.change_by_user_data or body.created_by_user_data or {
+            "id": current_user.sub,
+            "first_name": current_user.first_name or "",
+            "last_name": current_user.last_name or "",
+            "phone_number": current_user.phone_number or "",
+            "email": current_user.email or "",
+            "role": getattr(current_user, "role", None),
+        },
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
     )
@@ -1103,10 +1136,22 @@ async def cancel_booking(
             detail="Access denied.",
         )
 
+    user_id = str(body.change_by_user or current_user.sub)
+    user_info = body.change_by_user_data or {
+        "id": current_user.sub,
+        "first_name": current_user.first_name or "",
+        "last_name": current_user.last_name or "",
+        "phone_number": current_user.phone_number or "",
+        "email": current_user.email or "",
+        "role": getattr(current_user, "role", None),
+    }
+
     updated = await booking_service.cancel_booking(
         booking_id,
         reason=body.reason,
-        cancelled_by="customer",
+        cancelled_by=user_id,
+        change_by_user=user_id,
+        change_by_user_data=user_info,
         correlation_id=None,
     )
 
@@ -1140,11 +1185,24 @@ async def request_reschedule(
     duration = booking.duration_minutes
     new_end = body.new_start + timedelta(minutes=duration)
 
+    user_id = str(body.change_by_user or current_user.sub)
+    user_info = body.change_by_user_data or {
+        "id": current_user.sub,
+        "first_name": current_user.first_name or "",
+        "last_name": current_user.last_name or "",
+        "phone_number": current_user.phone_number or "",
+        "email": current_user.email or "",
+        "role": getattr(current_user, "role", None),
+    }
+
     updated = await booking_service.request_reschedule(
         booking_id,
         new_start=body.new_start,
         new_end=new_end,
         customer_id=customer_id,
+        change_by_user=user_id,
+        change_by_user_data=user_info,
+        source="customer",
     )
 
     return JSONResponse(
@@ -1179,6 +1237,7 @@ async def update_booking_status(
     _: RequireAppToken,
     booking_service: BookingServiceDep,
     ushauth: USHAuthDep,
+    request: Request = None,
 ) -> JSONResponse:
     """Update booking status and dispatch SQS event."""
     payment_status = None
@@ -1196,6 +1255,40 @@ async def update_booking_status(
     ):
         payment_status = PaymentStatus.SUCCESS
 
+    user_id = (
+        getattr(body, "change_by_user", None)
+        or getattr(body, "changed_by", None)
+        or getattr(body, "created_by_user", None)
+    )
+    user_data = (
+        getattr(body, "change_by_user_data", None)
+        or getattr(body, "created_by_user_data", None)
+    )
+    if not user_id and request is not None:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                from app.core.security import decode_token
+                from app.core.config import get_settings
+                settings = get_settings()
+                payload = decode_token(auth_header.split(" ")[1], settings)
+                user_id = payload.sub
+                if not user_data:
+                    user_data = {
+                        "id": payload.sub,
+                        "first_name": payload.first_name or "",
+                        "last_name": payload.last_name or "",
+                        "phone_number": payload.phone_number or "",
+                        "email": payload.email or "",
+                        "role": getattr(payload, "role", None),
+                    }
+            except Exception:
+                pass
+    if not user_id:
+        user_id = body.source or "system"
+    if not user_data:
+        user_data = {"source": body.source, "reason": body.reason} if body.source else None
+
     updated = await booking_service.update_status(
         booking_id=booking_id,
         new_status=body.status,
@@ -1210,6 +1303,8 @@ async def update_booking_status(
         payment_data=body.payment_data,
         reason=body.reason,
         source=body.source,
+        changed_by=user_id,
+        change_by_user_data=user_data,
         loyalty_data=body.loyalty_data,
         reward_id=body.reward_id,
         voucher_id=body.voucher_id,

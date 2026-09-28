@@ -8,7 +8,7 @@ on the bookings API, domain models, and schemas.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -450,3 +450,328 @@ async def test_update_booking_endpoint_passes_payment_and_user_fields():
     assert kwargs["payment_url"] == "https://pay.link/555"
     assert kwargs["created_by_user"] == "user-updater"
     assert kwargs["created_by_user_data"] == {"name": "Desk Worker"}
+
+
+def test_payment_status_history_model_and_schema_user_fields():
+    """Verify change_by_user and change_by_user_data on model and schema."""
+    from app.payment.infrastructure.models import PaymentStatusHistory
+    from app.payment.interfaces.schemas import PaymentStatusHistoryItem
+
+    hist = PaymentStatusHistory(
+        payment_id=uuid.uuid4(),
+        old_status="success",
+        new_status="refunded",
+        source="ushnotice",
+        reason="Booking cancelled",
+        change_by_user="user-123",
+        change_by_user_data={"first_name": "Mamunur"},
+    )
+    assert hist.change_by_user == "user-123"
+    assert hist.change_by == "user-123"
+    assert hist.created_by == "user-123"
+    assert hist.change_by_user_data == {"first_name": "Mamunur"}
+
+    schema_item = PaymentStatusHistoryItem(
+        id=str(uuid.uuid4()),
+        old_status="success",
+        new_status="refunded",
+        source="ushnotice",
+        change_by_user="user-123",
+        change_by_user_data={"first_name": "Mamunur"},
+        created_at=datetime.now(timezone.utc),
+    )
+    assert schema_item.change_by_user == "user-123"
+    assert schema_item.created_by_user == "user-123"
+    assert schema_item.change_by_user_data == {"first_name": "Mamunur"}
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_syncs_payment_status_and_records_history():
+    """Verify that cancelling a booking with paid payment updates Payment to refunded and creates PaymentStatusHistory."""
+    from app.booking.application.services import BookingService
+    from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+
+    booking_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    payment_id = uuid.uuid4()
+
+    mock_booking = MagicMock(spec=Booking)
+    mock_booking.id = booking_id
+    mock_booking.customer_id = customer_id
+    mock_booking.status = "confirmed"
+    mock_booking.payment_status = "success"
+    mock_booking.total_amount = Decimal("50.000")
+    mock_booking.currency = "KWD"
+    mock_booking.internal_notes = ""
+    mock_booking.appointment_start = datetime.now(timezone.utc)
+    mock_booking.appointment_end = datetime.now(timezone.utc)
+    mock_booking.duration_minutes = 60
+    mock_booking.extra_minutes = 0
+    mock_booking.booking_type = "branch_service"
+    mock_booking.payment_type = "service"
+    mock_booking.customer_data = {"phone_number": "+96512345678"}
+    mock_booking.branch_data = {}
+    mock_booking.service_data = {}
+    mock_booking.service_arrangement_data = {}
+    mock_booking.therapist_data = {}
+    mock_booking.payment_data = {}
+    mock_booking.addons = []
+    mock_booking.created_at = datetime.now(timezone.utc)
+    mock_booking.updated_at = datetime.now(timezone.utc)
+
+    mock_payment = MagicMock(spec=Payment)
+    mock_payment.id = payment_id
+    mock_payment.booking_id = booking_id
+    mock_payment.status = "success"
+    mock_payment.payment_id = "PAY-123"
+
+    mock_session = AsyncMock()
+    # When select(Payment) is executed
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = [mock_payment]
+    mock_res = MagicMock()
+    mock_res.scalars.return_value = mock_scalars
+    mock_session.execute = AsyncMock(return_value=mock_res)
+    mock_session.flush = AsyncMock()
+    added_objects = []
+    mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_id = AsyncMock(return_value=mock_booking)
+    mock_repo.update = AsyncMock()
+    mock_repo.delete_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock()
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    service._enqueue_event = AsyncMock()
+
+    updated = await service.cancel_booking(
+        booking_id,
+        reason="Customer requested cancellation",
+        cancelled_by=str(customer_id),
+        change_by_user=str(customer_id),
+        change_by_user_data={"id": str(customer_id), "name": "Jane"},
+    )
+
+    assert updated.status == "cancelled"
+    assert updated.payment_status == "refunded"
+    assert mock_payment.status == "refunded"
+
+    # Verify PaymentStatusHistory was added
+    history_records = [obj for obj in added_objects if isinstance(obj, PaymentStatusHistory)]
+    assert len(history_records) == 1
+    hist = history_records[0]
+    assert hist.payment_id == payment_id
+    assert hist.old_status == "success"
+    assert hist.new_status == "refunded"
+    assert hist.change_by_user == str(customer_id)
+    assert hist.change_by_user_data == {"id": str(customer_id), "name": "Jane"}
+
+
+@pytest.mark.asyncio
+async def test_create_booking_records_status_history_from_ushdesk():
+    """Verify that creating a booking via ushdesk records change_by_user and change_by_user_data in BookingStatusHistory."""
+    from app.common.utils import utcnow
+    from app.booking.application.services import BookingService, PricingBreakdown
+    from app.booking.domain.value_objects import BookingStatus
+    from app.booking.infrastructure.models import BookingStatusHistory, Booking
+
+    saved_histories = []
+    mock_session = AsyncMock()
+    mock_repo = AsyncMock()
+    mock_repo.generate_booking_number = AsyncMock(return_value="B260927001")
+    mock_repo.get_by_idempotency_key = AsyncMock(return_value=None)
+    mock_repo.check_therapist_overlap = AsyncMock(return_value=False)
+
+    async def mock_create(booking):
+        booking.id = uuid.uuid4()
+        return booking
+
+    mock_repo.create = AsyncMock(side_effect=mock_create)
+    mock_repo.create_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock(side_effect=lambda h: saved_histories.append(h))
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    service._enqueue_event = AsyncMock()
+
+    customer_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    service_id = uuid.uuid4()
+    therapist_id = uuid.uuid4()
+    desk_agent_id = str(uuid.uuid4())
+    desk_user_data = {
+        "id": desk_agent_id,
+        "first_name": "Desk",
+        "last_name": "Agent",
+        "role": "agent",
+    }
+
+    pricing = PricingBreakdown(
+        arrangement_price=Decimal("25.000"),
+        price_for_extra_minutes=Decimal("0.000"),
+        addon_price=Decimal("0.000"),
+        discount=Decimal("0.000"),
+        tax=Decimal("0.000"),
+        fees=Decimal("0.000"),
+        total=Decimal("25.000"),
+        currency="KWD",
+    )
+
+    booking = await service.create_booking(
+        customer_id=customer_id,
+        branch_id=branch_id,
+        service_id=service_id,
+        therapist_id=therapist_id,
+        appointment_start=utcnow() + timedelta(days=1),
+        appointment_end=utcnow() + timedelta(days=1, hours=1),
+        duration_minutes=60,
+        pricing=pricing,
+        source="ushdesk",
+        payment_through="ushdesk",
+        created_by_user=desk_agent_id,
+        created_by_user_data=desk_user_data,
+    )
+
+    assert booking is not None
+    assert len(saved_histories) == 1
+    hist = saved_histories[0]
+    assert isinstance(hist, BookingStatusHistory)
+    assert hist.booking_id == booking.id
+    assert hist.old_status is None
+    assert hist.new_status == BookingStatus.REQUESTED.value
+    assert hist.source == "ushdesk"
+    assert hist.change_by_user == desk_agent_id
+    assert hist.change_by_user_data == desk_user_data
+
+
+@pytest.mark.asyncio
+async def test_create_booking_records_status_history_from_ushspa():
+    """Verify that creating a booking via ushspa records customer change_by_user and change_by_user_data."""
+    from app.common.utils import utcnow
+    from app.booking.application.services import BookingService, PricingBreakdown
+    from app.booking.domain.value_objects import BookingStatus
+    from app.booking.infrastructure.models import BookingStatusHistory
+
+    saved_histories = []
+    mock_session = AsyncMock()
+    mock_repo = AsyncMock()
+    mock_repo.generate_booking_number = AsyncMock(return_value="B260927002")
+    mock_repo.get_by_idempotency_key = AsyncMock(return_value=None)
+    mock_repo.check_therapist_overlap = AsyncMock(return_value=False)
+
+    async def mock_create(booking):
+        booking.id = uuid.uuid4()
+        return booking
+
+    mock_repo.create = AsyncMock(side_effect=mock_create)
+    mock_repo.create_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock(side_effect=lambda h: saved_histories.append(h))
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    service._enqueue_event = AsyncMock()
+
+    customer_id = uuid.uuid4()
+    cust_data = {
+        "id": str(customer_id),
+        "first_name": "Sarah",
+        "last_name": "Smith",
+        "role": "customer",
+    }
+
+    pricing = PricingBreakdown(
+        arrangement_price=Decimal("30.000"),
+        price_for_extra_minutes=Decimal("0.000"),
+        addon_price=Decimal("0.000"),
+        discount=Decimal("0.000"),
+        tax=Decimal("0.000"),
+        fees=Decimal("0.000"),
+        total=Decimal("30.000"),
+        currency="KWD",
+    )
+
+    booking = await service.create_booking(
+        customer_id=customer_id,
+        customer_data=cust_data,
+        branch_id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        therapist_id=uuid.uuid4(),
+        appointment_start=utcnow() + timedelta(days=2),
+        appointment_end=utcnow() + timedelta(days=2, hours=1),
+        duration_minutes=60,
+        pricing=pricing,
+        payment_through="ushspa",
+        created_by_user=str(customer_id),
+        created_by_user_data=cust_data,
+    )
+
+    assert booking is not None
+    assert len(saved_histories) == 1
+    hist = saved_histories[0]
+    assert isinstance(hist, BookingStatusHistory)
+    assert hist.booking_id == booking.id
+    assert hist.old_status is None
+    assert hist.new_status == BookingStatus.REQUESTED.value
+    assert hist.source == "ushspa"
+    assert hist.change_by_user == str(customer_id)
+    assert hist.change_by_user_data == cust_data
+
+
+@pytest.mark.asyncio
+async def test_update_booking_status_records_change_by_user():
+    """Verify update_status records change_by_user and change_by_user_data in BookingStatusHistory."""
+    from app.common.utils import utcnow
+    from app.booking.application.services import BookingService
+    from app.booking.domain.value_objects import BookingStatus
+    from app.booking.infrastructure.models import BookingStatusHistory, Booking
+
+    saved_histories = []
+    mock_session = AsyncMock()
+    booking_id = uuid.uuid4()
+    mock_booking = Booking(
+        id=booking_id,
+        customer_id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        therapist_id=uuid.uuid4(),
+        appointment_start=utcnow() + timedelta(days=1),
+        appointment_end=utcnow() + timedelta(days=1, hours=1),
+        duration_minutes=60,
+        extra_minutes=0,
+        status="requested",
+        payment_status="pending",
+    )
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_id = AsyncMock(return_value=mock_booking)
+    mock_repo.update = AsyncMock()
+    mock_repo.delete_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock(side_effect=lambda h: saved_histories.append(h))
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    service._enqueue_event = AsyncMock()
+
+    desk_staff_id = str(uuid.uuid4())
+    desk_staff_data = {"id": desk_staff_id, "first_name": "Reception", "role": "staff"}
+
+    updated = await service.update_status(
+        booking_id=booking_id,
+        new_status=BookingStatus.CONFIRMED,
+        source="ushdesk",
+        changed_by=desk_staff_id,
+        change_by_user_data=desk_staff_data,
+        reason="Confirmed by receptionist",
+    )
+
+    assert updated.status == "confirmed"
+    assert len(saved_histories) == 1
+    hist = saved_histories[0]
+    assert hist.old_status == "requested"
+    assert hist.new_status == "confirmed"
+    assert hist.source == "ushdesk"
+    assert hist.change_by_user == desk_staff_id
+    assert hist.change_by_user_data == desk_staff_data
+    assert hist.reason == "Confirmed by receptionist"
+

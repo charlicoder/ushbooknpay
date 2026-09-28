@@ -54,6 +54,8 @@ class StatusHistoryItem(BaseModel):
     old_status: str | None
     new_status: str
     source: str | None
+    change_by_user: str | None = None
+    change_by_user_data: dict[str, Any] | None = None
     reason: str | None
     created_at: datetime
 
@@ -310,6 +312,16 @@ class CreateBookingRequest(BaseModel):
         alias="createdByUserData",
         description="Snapshot of user data (name, image, id, etc.) in json",
     )
+    change_by_user: str | None = Field(
+        default=None,
+        alias="changeByUser",
+        description="User UUID who initiated the creation/change",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="changeByUserData",
+        description="Snapshot of requesting user data in json",
+    )
 
     # Loyalty booking fields (only sent when booking_type='loyalty')
     loyalty_data: dict[str, Any] | None = Field(
@@ -362,10 +374,15 @@ class CreateBookingRequest(BaseModel):
 
     @model_validator(mode="after")
     def sync_created_by_fields(self) -> "CreateBookingRequest":
-        if not self.created_by_user and self.created_by:
-            self.created_by_user = self.created_by
-        elif self.created_by_user and not self.created_by:
-            self.created_by = self.created_by_user
+        user_val = self.change_by_user or self.created_by_user or self.created_by
+        if user_val:
+            self.change_by_user = user_val
+            self.created_by_user = user_val
+            self.created_by = user_val
+        data_val = self.change_by_user_data or self.created_by_user_data
+        if data_val:
+            self.change_by_user_data = data_val
+            self.created_by_user_data = data_val
         return self
 
     model_config = {
@@ -435,6 +452,16 @@ class UpdateBookingRequest(BaseModel):
         alias="createdByUserData",
         description="Snapshot of user data (name, image, id, etc.) in json",
     )
+    change_by_user: str | None = Field(
+        default=None,
+        alias="changeByUser",
+        description="User UUID who initiated the update",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="changeByUserData",
+        description="Snapshot of user data in json",
+    )
 
     therapist_id: uuid.UUID | None = Field(
         default=None,
@@ -503,10 +530,15 @@ class UpdateBookingRequest(BaseModel):
 
     @model_validator(mode="after")
     def sync_created_by_fields(self) -> "UpdateBookingRequest":
-        if not self.created_by_user and self.created_by:
-            self.created_by_user = self.created_by
-        elif self.created_by_user and not self.created_by:
-            self.created_by = self.created_by_user
+        user_val = self.change_by_user or self.created_by_user or self.created_by
+        if user_val:
+            self.change_by_user = user_val
+            self.created_by_user = user_val
+            self.created_by = user_val
+        data_val = self.change_by_user_data or self.created_by_user_data
+        if data_val:
+            self.change_by_user_data = data_val
+            self.created_by_user_data = data_val
         return self
 
     @field_validator("therapist_id", "voucher_id", mode="before")
@@ -533,6 +565,21 @@ class CancelBookingRequest(BaseModel):
     """POST /api/v1/bookings/{id}/cancel/"""
 
     reason: str = Field(default="", max_length=500)
+    change_by_user: str | None = Field(
+        default=None,
+        alias="changeByUser",
+        description="User UUID who cancelled the booking",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="changeByUserData",
+        description="Snapshot of user data who cancelled the booking",
+    )
+
+    model_config = {
+        "populate_by_name": True,
+        "extra": "allow",
+    }
 
 
 class UpdateBookingStatusRequest(BaseModel):
@@ -634,6 +681,21 @@ class UpdateBookingStatusRequest(BaseModel):
         alias="voucherData",
         description="Snapshot of the gift voucher at redemption time.",
     )
+    change_by_user: str | None = Field(
+        default=None,
+        alias="changeByUser",
+        description="User ID / sub who initiated the status change.",
+    )
+    changed_by: str | None = Field(
+        default=None,
+        alias="changedBy",
+        description="Backward-compatible alias for change_by_user.",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="changeByUserData",
+        description="User details snapshot for who initiated the status change.",
+    )
 
     model_config = {
         "populate_by_name": True,
@@ -659,6 +721,21 @@ class RescheduleRequest(BaseModel):
     """POST /api/v1/bookings/{id}/reschedule/"""
 
     new_start: datetime = Field(..., description="Requested new appointment start")
+    change_by_user: str | None = Field(
+        default=None,
+        alias="changeByUser",
+        description="User UUID who requested reschedule",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="changeByUserData",
+        description="Snapshot of user data who requested reschedule",
+    )
+
+    model_config = {
+        "populate_by_name": True,
+        "extra": "allow",
+    }
 
     @field_validator("new_start")
     @classmethod

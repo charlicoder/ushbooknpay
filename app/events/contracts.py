@@ -136,6 +136,10 @@ class BookingCreatedEvent(BaseEvent):
     total_amount: str = ""
     currency: str = "KWD"
     status: str = "requested"
+    created_by_user: str = ""
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    change_by_user: str = ""
+    change_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -203,6 +207,8 @@ class BookingStatusUpdatedEvent(BaseEvent):
     created_by: str = ""
     created_by_user: str = ""
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    change_by_user: str = ""
+    change_by_user_data: dict[str, Any] = field(default_factory=dict)
     payment_id: str = ""
     payment_provider: str = ""
     payment_gateway: str = ""
@@ -278,6 +284,8 @@ class BookingConfirmedEvent(BaseEvent):
     created_by: str = ""
     created_by_user: str = ""
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    change_by_user: str = ""
+    change_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -347,6 +355,8 @@ class BookingPaymentPendingEvent(BaseEvent):
     created_by: str = ""
     created_by_user: str = ""
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    change_by_user: str = ""
+    change_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -357,27 +367,72 @@ class BookingCancelledEvent(BaseEvent):
     event_type: str = field(default="booking.cancelled", init=False)
     booking_id: str = ""
     booking_number: str = ""
+    booking_reference: str = ""
     customer_id: str = ""
+    customer_name: str = ""
+    customer_phone: str = ""
+    customer_email: str = ""
+    customer_data: dict[str, Any] = field(default_factory=dict)
     branch_id: str = ""
+    branch_name: str = ""
+    branch_data: dict[str, Any] = field(default_factory=dict)
     service_id: str = ""
+    service_name: str = ""
+    service_data: dict[str, Any] = field(default_factory=dict)
     service_arrangement_id: str = ""
+    service_arrangement_name: str = ""
+    service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     therapist_id: str = ""
-    # Full ISO datetimes kept for backward compatibility
+    therapist_name: str = ""
+    therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""
     appointment_end: str = ""
-    # Extracted date/time components
     appointment_date: str = ""
     appointment_starttime: str = ""
     appointment_endtime: str = ""
-    customer_name: str = ""
-    customer_phone: str = ""
-    cancellation_reason: str = ""
-    refund_issued: bool = False
-    refund_amount: str | None = None
-    # Loyalty fields — used by ushnotice to reverse points on cancellation
+    appointment_time: str = ""
+    duration_minutes: int = 0
+    extra_minutes: int = 0
+    total_duration: int = 0
+    addons_duration: int = 0
+    booking_type: str = "branch_service"
+    payment_type: str = "service"
+    status: str = "cancelled"
+    payment_status: str = ""
+    payment_id: str = ""
+    payment_provider: str = ""
+    payment_gateway: str = ""
+    payment_through: str = ""
+    payment_method: str = ""
+    payment_url: str = ""
+    total_amount: str = ""
+    currency: str = "KWD"
+    pricing: dict[str, Any] = field(default_factory=dict)
+    addons: list[dict[str, Any]] = field(default_factory=list)
+    customer_notes: str | None = None
+    internal_notes: str | None = None
+    payment_data: dict[str, Any] = field(default_factory=dict)
     is_eligible_for_loyalty: bool = False
     loyalty_points: int = 0
     arrangement_loyalty_points: int | None = None
+    price_in_points: int = 0
+    arrangement_price_in_points: int | None = None
+    loyalty_data: dict[str, Any] = field(default_factory=dict)
+    reward_id: str = ""
+    voucher_id: str = ""
+    voucher_data: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    updated_at: str = ""
+    created_by: str = ""
+    created_by_user: str = ""
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    cancellation_reason: str = ""
+    reason: str | None = None
+    cancelled_by: str = ""
+    change_by_user: str = ""
+    change_by_user_data: dict[str, Any] = field(default_factory=dict)
+    refund_issued: bool = False
+    refund_amount: str | None = None
 
 
 
@@ -448,6 +503,8 @@ class BookingCompletedEvent(BaseEvent):
     created_by: str = ""
     created_by_user: str = ""
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    change_by_user: str = ""
+    change_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

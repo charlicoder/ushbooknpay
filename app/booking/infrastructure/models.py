@@ -306,7 +306,8 @@ class BookingStatusHistory(Base):
     source: Mapped[str | None] = mapped_column(
         String(100), nullable=True
     )  # e.g. "customer", "system", "ushnotice"
-    changed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    change_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    change_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     metadata_: Mapped[dict | None] = mapped_column(
