@@ -1,5 +1,5 @@
 services:
-  web:
+  ushbooknpay:
     build:
       context: .
       dockerfile: Dockerfile
