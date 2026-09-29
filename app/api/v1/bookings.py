@@ -286,6 +286,13 @@ async def create_booking(
             cust_profile = raw_customer.get("data", raw_customer)
             cust_user = cust_profile.get("user", {})
             customer_id = uuid.UUID(str(body.customer_id))
+            _cust_lang_raw = (
+                cust_profile.get("language_preference")
+                or cust_user.get("language_preference")
+                or cust_profile.get("language")
+                or cust_user.get("language")
+                or "en"
+            )
             customer_data = {
                 "id": str(customer_id),
                 "first_name": cust_profile.get("first_name") or cust_user.get("first_name") or "",
@@ -297,6 +304,7 @@ async def create_booking(
                     or ""
                 ),
                 "email": cust_profile.get("email") or cust_user.get("email") or "",
+                "language_preference": "ar" if str(_cust_lang_raw).strip().lower().startswith("ar") else "en",
             }
         except Exception as exc:
             logger.warning(
@@ -312,6 +320,7 @@ async def create_booking(
                 "last_name": current_user.last_name or "",
                 "phone_number": current_user.phone_number or "",
                 "email": current_user.email or "",
+                "language_preference": getattr(current_user, "language_preference", None) or "en",
             }
     else:
         # No customer_id supplied — book on behalf of the authenticated user
@@ -322,6 +331,7 @@ async def create_booking(
             "last_name": current_user.last_name or "",
             "phone_number": current_user.phone_number or "",
             "email": current_user.email or "",
+            "language_preference": getattr(current_user, "language_preference", None) or "en",
         }
 
     # ── 1. Resolve date, time, duration & therapist IDs ─────────────────

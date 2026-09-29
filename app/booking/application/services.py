@@ -91,6 +91,14 @@ def _extract_therapist_name(therapist_data: dict | None) -> str:
 def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     """Extract all booking fields into a comprehensive dictionary for SQS event contracts."""
     customer_dict = booking.customer_data or {}
+
+    # Extract language_preference from stored customer_data (set at booking creation time)
+    _raw_lang = (
+        customer_dict.get("language_preference")
+        or customer_dict.get("language")
+        or "en"
+    )
+    customer_language_preference: str = "ar" if str(_raw_lang).strip().lower().startswith("ar") else "en"
     branch_dict = booking.branch_data or {}
     arr_dict = booking.service_arrangement_data or {}
     therapist_dict = booking.therapist_data or {}
@@ -199,6 +207,8 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "customer_name": c_name,
         "customer_phone": c_phone,
         "customer_email": c_email,
+        "customer_language": customer_language_preference,
+        "language_preference": customer_language_preference,
         "customer_data": customer_dict,
         "branch_id": str(booking.branch_id) if booking.branch_id else "",
         "branch_name": branch_name,

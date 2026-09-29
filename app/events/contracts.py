@@ -98,6 +98,8 @@ class BookingRequestedEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     branch_id: str = ""
     branch_name: str = ""
     service_id: str = ""
@@ -124,6 +126,8 @@ class BookingCreatedEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     branch_id: str = ""
     branch_name: str = ""
     service_id: str = ""
@@ -155,6 +159,8 @@ class BookingStatusUpdatedEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     customer_data: dict[str, Any] = field(default_factory=dict)
     branch_id: str = ""
     branch_name: str = ""
@@ -230,6 +236,8 @@ class BookingConfirmedEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     customer_data: dict[str, Any] = field(default_factory=dict)
     branch_id: str = ""
     branch_name: str = ""
@@ -301,6 +309,8 @@ class BookingPaymentPendingEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     customer_data: dict[str, Any] = field(default_factory=dict)
     branch_id: str = ""
     branch_name: str = ""
@@ -372,6 +382,8 @@ class BookingCancelledEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     customer_data: dict[str, Any] = field(default_factory=dict)
     branch_id: str = ""
     branch_name: str = ""
@@ -449,6 +461,8 @@ class BookingCompletedEvent(BaseEvent):
     customer_name: str = ""
     customer_phone: str = ""
     customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     customer_data: dict[str, Any] = field(default_factory=dict)
     branch_id: str = ""
     branch_name: str = ""
@@ -675,11 +689,13 @@ class VoucherActiveEvent(BaseEvent):
     # ── Sender ────────────────────────────────────────────────────────
     sender_id: str = ""
     sender_data: dict[str, Any] = field(default_factory=dict)
+    sender_language: str = "en"
 
     # ── Recipient ─────────────────────────────────────────────────────
     recipient_phone: str | None = None
     recipient_id: str | None = None
     recipient_data: dict[str, Any] = field(default_factory=dict)
+    recipient_language: str = "en"
 
     # ── Payment & timestamps ──────────────────────────────────────────
     # payment_id is a gateway reference string (e.g. "100624710000000255"), not UUID
@@ -749,11 +765,13 @@ class VoucherPaymentPendingEvent(BaseEvent):
     # ── Sender ────────────────────────────────────────────────────────
     sender_id: str = ""
     sender_data: dict[str, Any] = field(default_factory=dict)
+    sender_language: str = "en"
 
     # ── Recipient ─────────────────────────────────────────────────────
     recipient_phone: str | None = None
     recipient_id: str | None = None
     recipient_data: dict[str, Any] = field(default_factory=dict)
+    recipient_language: str = "en"
 
     # ── Payment & timestamps ──────────────────────────────────────────
     # payment_id is a gateway reference string (e.g. "100624710000000255"), not UUID
@@ -824,11 +842,13 @@ class VoucherRedeemedEvent(BaseEvent):
     # ── Sender ────────────────────────────────────────────────────────
     sender_id: str = ""
     sender_data: dict[str, Any] = field(default_factory=dict)
+    sender_language: str = "en"
 
     # ── Recipient ─────────────────────────────────────────────────────
     recipient_phone: str | None = None
     recipient_id: str | None = None
     recipient_data: dict[str, Any] = field(default_factory=dict)
+    recipient_language: str = "en"
 
     # ── Redemption ────────────────────────────────────────────────────
     redeemed_booking_id: str | None = None
@@ -875,6 +895,8 @@ class ShopOrderCreatedEvent(BaseEvent):
     customer_id: str = ""
     customer_name: str = ""
     customer_phone: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
     # Snapshot dict for payment record: {id, name, phone, email}
     customer_data: dict = field(default_factory=dict)
 

@@ -103,6 +103,7 @@ class ShopOrderService:
         payment_invoice_id: str | None = None,
         payment_url: str | None = None,
         payment_data: dict[str, Any] | None = None,
+        customer_language_preference: str = "en",
     ) -> ShopOrder:
         """
         Validate products against ushauth, snapshot prices, persist the order,
@@ -599,7 +600,10 @@ class ShopOrderService:
                 "name": order.customer_name,
                 "phone": order.customer_phone,
                 "contact_number": order.contact_number or order.customer_phone,
+                "language_preference": customer_language_preference or "en",
             },
+            customer_language=customer_language_preference or "en",
+            language_preference=customer_language_preference or "en",
             # ── Requester user info ──────────────────────────────────
             order_requested_by_user=str(order.order_requested_by_user) if order.order_requested_by_user else None,
             order_requested_by_user_data=order.order_requested_by_user_data or {},

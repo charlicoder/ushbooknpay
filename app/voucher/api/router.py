@@ -319,6 +319,9 @@ async def create_gift_voucher(
         sender_data["name"] = full_name
     if not sender_data.get("phone_number") and current_user.phone_number:
         sender_data["phone_number"] = current_user.phone_number
+    # Always store sender's language_preference so ushnotice can use it for SMS/WhatsApp/Email
+    if not sender_data.get("language_preference"):
+        sender_data["language_preference"] = getattr(current_user, "language_preference", None) or "en"
 
     # ── Resolve recipient via ushauth get-or-create ──────────────────────
     # When recipient_phone is supplied, call ushauth to look up or create

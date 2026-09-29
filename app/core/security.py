@@ -44,6 +44,7 @@ class TokenPayload(BaseModel):
     avatar: str | None = None
     dob: str | None = None
     gender: str | None = None
+    language_preference: str | None = "en"
     permissions: list[str] | dict[str, Any] | None = None
     role: str | None = None
     is_staff: bool | None = None
@@ -176,6 +177,14 @@ async def validate_user_with_ushauth(
         or profile_dict.get("avatar_url")
     )
 
+    # Extract language_preference from profile (ushauth CustomerSerializer includes it)
+    raw_lang = (
+        profile_dict.get("language_preference")
+        or profile_dict.get("language")
+        or "en"
+    )
+    lang_pref = "ar" if str(raw_lang).strip().lower().startswith("ar") else "en"
+
     payload = TokenPayload(
         sub=sub,
         user_type=profile_dict.get("user_type", "customer"),
@@ -186,6 +195,7 @@ async def validate_user_with_ushauth(
         avatar=str(avatar) if avatar else None,
         dob=str(profile_dict.get("dob")) if profile_dict.get("dob") else None,
         gender=profile_dict.get("gender"),
+        language_preference=lang_pref,
         permissions=permissions,
         role=role,
         is_staff=is_staff,

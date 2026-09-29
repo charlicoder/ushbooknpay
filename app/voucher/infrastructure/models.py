@@ -308,9 +308,20 @@ class GiftVoucher(Base):
             "is_digital_gift_opened": bool(self.is_digital_gift_opened),
             "sender_id": str(self.sender_id),
             "sender_data": self.sender_data or {},
+            # Top-level language fields for ushnotice ChannelResolver lookup
+            "sender_language": str(
+                (self.sender_data or {}).get("language_preference")
+                or (self.sender_data or {}).get("language")
+                or "en"
+            ).lower(),
             "recipient_phone": self.recipient_phone,
             "recipient_id": str(self.recipient_id) if self.recipient_id else None,
             "recipient_data": self.recipient_data or {},
+            "recipient_language": str(
+                (self.recipient_data or {}).get("language_preference")
+                or (self.recipient_data or {}).get("language")
+                or "en"
+            ).lower(),
             "created_by": str(self.created_by) if self.created_by else None,
             "total_duration": self.total_duration,
             "total_amount": str(self.total_amount),

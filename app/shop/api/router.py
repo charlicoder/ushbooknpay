@@ -318,6 +318,7 @@ async def create_order(
             payment_invoice_id=body.payment_invoice_id,
             payment_url=body.payment_url,
             payment_data=body.payment_data,
+            customer_language_preference=getattr(current_user, "language_preference", None) or "en",
         )
     except ValidationError as exc:
         raise HTTPException(
