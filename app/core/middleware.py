@@ -5,13 +5,19 @@ Production-grade middleware stack:
 
 1. RequestIDMiddleware     — injects X-Request-ID into every request/response
 2. SecureHeadersMiddleware — HSTS, X-Content-Type-Options, etc.
-3. RateLimitMiddleware     — sliding-window Redis rate limiting per IP
+3. RateLimitMiddleware     — sliding-window Redis rate limiting per user/IP
+                             • Authenticated requests: keyed per user_id (JWT sub)
+                             • Anonymous requests: keyed per real client IP
+                             • Extracts real IP from X-Forwarded-For / X-Real-IP
+                             • Bypasses limiting for trusted private/internal subnets
 4. IdempotencyMiddleware   — deduplicates write requests via Idempotency-Key header
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import ipaddress
 import json
 import time
 import uuid
@@ -28,6 +34,76 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Private/internal RFC-1918 and Docker networks — bypass rate limiting for
+# service-to-service calls that share a Docker bridge IP.
+_PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),   # covers 172.16–172.31 (Docker default)
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+)
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Return True if *ip* belongs to a private / loopback network."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in _PRIVATE_NETWORKS)
+    except ValueError:
+        return False
+
+
+def _get_real_client_ip(request: Request) -> str:
+    """
+    Resolve the real originating client IP.
+
+    Priority:
+      1. X-Forwarded-For (leftmost non-private address — set by nginx/proxy)
+      2. X-Real-IP (set by some reverse proxies)
+      3. request.client.host (direct connection — may be Docker gateway IP)
+    """
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        # XFF may be "client, proxy1, proxy2" — take the leftmost public IP
+        for candidate in (ip.strip() for ip in xff.split(",")):
+            if candidate and not _is_private_ip(candidate):
+                return candidate
+        # All hops are private — use the leftmost anyway (internal-only deploy)
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+
+    x_real = request.headers.get("X-Real-IP", "").strip()
+    if x_real:
+        return x_real
+
+    return request.client.host if request.client else "unknown"
+
+
+def _extract_user_id_from_token(request: Request) -> str | None:
+    """
+    Extract user_id from the Bearer token *without* full validation.
+
+    We only need the subject claim for the rate-limit key; full JWT validation
+    happens inside the route handler. A malformed/missing token returns None.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    try:
+        token = auth.split(" ", 1)[1]
+        # JWT payload is the middle segment, base64url-encoded
+        payload_b64 = token.split(".")[1]
+        # Pad to a multiple-of-4 for standard base64 decoding
+        padding = 4 - len(payload_b64) % 4
+        payload_b64 += "=" * (padding % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        uid = payload.get("user_id") or payload.get("sub") or ""
+        return str(uid) if uid else None
+    except Exception:
+        return None
 
 # ── 1. Request ID ─────────────────────────────────────────────────────────────
 
@@ -95,8 +171,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Sliding-window rate limiting backed by Redis.
 
-    Key: rate:<client_ip>
-    Strategy: increment a counter with expiry set to the window size.
+    Rate-limit key strategy (in priority order):
+      1. ``rate:user:<user_id>``  — for authenticated requests (Bearer token present).
+         Each user gets their own independent bucket regardless of which IP they
+         connect from or whether they share a Docker bridge gateway with other users.
+      2. ``rate:ip:<real_client_ip>``  — for unauthenticated requests.
+         Real IP is extracted from X-Forwarded-For / X-Real-IP headers so that
+         traffic routed through an nginx proxy is not all bucketed under the
+         proxy's IP address.
+
+    Private-network bypass:
+      Requests arriving from RFC-1918 / loopback addresses (10.x, 172.16-31.x,
+      192.168.x, 127.x) with *no* public X-Forwarded-For are exempted from rate
+      limiting entirely. This covers inter-service calls inside a Docker network
+      where all containers share the same bridge gateway IP.
+
     Skips: /health, /ready endpoints.
     """
 
@@ -107,7 +196,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         app: ASGIApp,
         *,
         redis_client: Any,
-        limit: int = 100,
+        limit: int = 300,
         window_seconds: int = 60,
     ) -> None:
         super().__init__(app)
@@ -119,8 +208,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in self._SKIP_PATHS:
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
-        key = f"rate:{client_ip}"
+        real_ip = _get_real_client_ip(request)
+
+        # Bypass rate limiting for internal/Docker service-to-service calls.
+        if _is_private_ip(real_ip):
+            return await call_next(request)
+
+        # Prefer per-user keying for authenticated requests.
+        user_id = _extract_user_id_from_token(request)
+        if user_id:
+            key = f"rate:user:{user_id}"
+            key_label = f"user:{user_id}"
+        else:
+            key = f"rate:ip:{real_ip}"
+            key_label = f"ip:{real_ip}"
 
         try:
             pipe = self._redis.pipeline()
@@ -134,7 +235,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         if count > self._limit:
-            logger.warning("rate_limit_exceeded", client_ip=client_ip, count=count)
+            logger.warning(
+                "rate_limit_exceeded",
+                client_ip=real_ip,
+                rate_key=key_label,
+                count=count,
+                limit=self._limit,
+                method=request.method,
+                path=request.url.path,
+            )
             return JSONResponse(
                 status_code=429,
                 content={

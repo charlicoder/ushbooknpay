@@ -144,6 +144,44 @@ async def validate_user_with_ushauth(
             logger.warning("ushauth_token_rejected", status_code=response.status_code)
             raise AuthenticationError("Invalid or expired token.")
 
+        if response.status_code == 404 and url.endswith("/employees/me/"):
+            # The JWT identifies the bearer as an employee but no Employee record
+            # exists in ushauth's database (e.g. the user was created without the
+            # accompanying Employee row).  This is a data-integrity issue that ops
+            # should investigate.  We must NOT raise AuthenticationError here —
+            # doing so causes the frontend to retry in a tight loop, which is what
+            # triggers the rate-limit storm logged in the errors above.
+            #
+            # Instead, build a minimal payload from JWT claims with no RBAC codenames.
+            # The downstream RBAC check (has_permission) will then return False and
+            # the request will be rejected with 403 PERMISSION_DENIED — the correct
+            # signal without hammering ushauth.
+            #
+            # Cache this negative result briefly so the same user's concurrent /
+            # retried requests don't all fan out to ushauth.
+            logger.warning(
+                "employee_profile_not_found_in_ushauth",
+                user_id=_user_id_from_jwt,
+                url=url,
+                detail=(
+                    "User has employee JWT but no Employee row in ushauth DB. "
+                    "Run: python manage.py shell -c "
+                    "\"from apps.spacenter.employees.models import Employee; "
+                    "Employee.objects.filter(user_id='<user_id>').exists()\""
+                ),
+            )
+            _fallback = TokenPayload(
+                sub=_user_id_from_jwt,
+                user_type=_user_type_from_jwt or "employee",
+                codenames=[],  # no permissions → 403 at RBAC check, not a retry loop
+            )
+            try:
+                # Cache for 30 s to absorb concurrent retries without ushauth chatter.
+                await redis.setex(cache_key, 30, _fallback.model_dump_json())
+            except Exception:
+                pass
+            return _fallback
+
         response.raise_for_status()
         user_data = response.json()
 
@@ -153,6 +191,8 @@ async def validate_user_with_ushauth(
         logger.error(
             "ushauth_auth_http_error",
             status=exc.response.status_code,
+            user_id=_user_id_from_jwt,
+            url=url,
             detail=exc.response.text[:200],
         )
         raise AuthenticationError("Failed to validate user token with auth service.")
