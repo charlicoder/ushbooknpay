@@ -106,16 +106,18 @@ async def validate_user_with_ushauth(
     # 2. Interservice call to ushauth
     # Decode JWT payload (without verification) to determine user_type and route to the
     # correct ushauth profile endpoint.  The signature is already validated by ushauth.
-    _user_type_from_jwt = "customer"
+    _user_type_from_jwt = None
+    _user_id_from_jwt = ""
     try:
         import base64 as _base64
         _parts = token.split(".")
         if len(_parts) >= 2:
             _padded = _parts[1] + "=" * ((4 - len(_parts[1]) % 4) % 4)
             _claims = json.loads(_base64.urlsafe_b64decode(_padded.encode()).decode("utf-8"))
-            _user_type_from_jwt = _claims.get("user_type", "customer")
+            _user_type_from_jwt = _claims.get("user_type")
+            _user_id_from_jwt = str(_claims.get("user_id") or _claims.get("sub") or "")
     except Exception:
-        pass  # Fall through to customers/me/ on any decode error
+        pass
 
     if _user_type_from_jwt in ("employee", "admin"):
         url = f"{settings.ushauth_base_url.rstrip('/')}/api/v1/employees/me/"
@@ -170,34 +172,42 @@ async def validate_user_with_ushauth(
         elif isinstance(user_data.get("customer"), dict):
             profile = user_data["customer"]
 
-    sub = ""
-    if isinstance(profile, dict):
-        sub = str(
-            profile.get("id")
-            or profile.get("customer_id")
-            or profile.get("user_id")
-            or profile.get("sub")
-            or profile.get("uuid")
-            or profile.get("pk")
+    profile_dict = profile if isinstance(profile, dict) else {}
+
+    # If the user is an employee/admin (or resolved as one from /customers/me/),
+    # but permissions block is missing because /customers/me/ was called,
+    # fetch the full employee profile from /employees/me/ to load RBAC permissions.
+    if profile_dict.get("user_type") in ("employee", "admin") and url.endswith("/customers/me/"):
+        emp_url = f"{settings.ushauth_base_url.rstrip('/')}/api/v1/employees/me/"
+        try:
+            async with httpx.AsyncClient(timeout=settings.GATEWAY_TIMEOUT) as client:
+                emp_resp = await client.get(emp_url, headers=headers)
+            if emp_resp.is_success:
+                emp_json = emp_resp.json()
+                emp_profile = emp_json
+                if isinstance(emp_json, dict):
+                    if isinstance(emp_json.get("data"), dict):
+                        emp_profile = emp_json["data"]
+                    elif isinstance(emp_json.get("result"), dict):
+                        emp_profile = emp_json["result"]
+                if isinstance(emp_profile, dict):
+                    profile = emp_profile
+                    profile_dict = emp_profile
+        except Exception as _emp_err:
+            logger.warning("fallback_employee_profile_fetch_failed", error=str(_emp_err))
+
+    sub = (
+        _user_id_from_jwt
+        or str(
+            profile_dict.get("user_id")
+            or profile_dict.get("id")
+            or profile_dict.get("customer_id")
+            or profile_dict.get("sub")
+            or profile_dict.get("uuid")
+            or profile_dict.get("pk")
             or ""
         )
-
-    # Fallback: Extract user_id/sub from token payload directly if auth service verified token
-    if not sub:
-        try:
-            import base64
-            parts = token.split(".")
-            if len(parts) >= 2:
-                padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
-                jwt_claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
-                sub = str(
-                    jwt_claims.get("user_id")
-                    or jwt_claims.get("sub")
-                    or jwt_claims.get("id")
-                    or ""
-                )
-        except Exception:
-            pass
+    )
 
     if not sub:
         logger.error("invalid_user_profile_payload", raw_data=user_data)
