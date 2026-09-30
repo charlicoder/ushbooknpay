@@ -24,7 +24,13 @@ from app.booking.application.services import BookingService
 from app.common.redis_client import get_redis_dep
 from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
-from app.core.security import TokenPayload, require_app_token, require_authenticated_user
+from app.core.security import (
+    TokenPayload,
+    require_app_token,
+    require_authenticated_user,
+    require_employee_user,
+    require_permission,
+)
 from app.integrations.ushauth_client import USHAuthClient
 
 

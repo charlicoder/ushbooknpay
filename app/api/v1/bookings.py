@@ -913,15 +913,17 @@ async def create_booking(
 @router.get(
     "/",
     response_model=None,
-    summary="List all bookings (public with filters)",
+    summary="List all bookings (staff with filters)",
     description=(
-        "Public endpoint to retrieve and filter bookings by status, payment_status, date, "
-        "customer, branch, therapist, service, etc. Supports pagination."
+        "Staff endpoint to retrieve and filter bookings by status, payment_status, date, "
+        "customer, branch, therapist, service, etc. Supports pagination. "
+        "Requires 'bookings.list' permission for employee accounts."
     ),
 )
 async def list_bookings(
     booking_service: BookingServiceDep,
     request: Request,
+    current_user: CurrentUser,
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
     status: str | None = Query(default=None, description="Filter by booking status: requested, confirmed, cancelled, etc."),
@@ -936,7 +938,15 @@ async def list_bookings(
     service_arrangement_id: uuid.UUID | None = Query(default=None, description="Filter by service arrangement ID"),
     search: str | None = Query(default=None, description="Search across customer details, notes, etc."),
 ) -> JSONResponse:
-    """List bookings publicly with filtering and pagination."""
+    """List bookings with filtering and pagination. Requires bookings.list permission."""
+    # Enforce RBAC for employee/admin users; customers use list_my_bookings instead.
+    if current_user.user_type in ("employee", "admin"):
+        if not current_user.has_permission("bookings.list"):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "PERMISSION_DENIED", "message": "Permission 'bookings.list' is required."},
+            )
+
     from fastapi.params import Query as QueryParam
 
     def _val(v: Any, default: Any = None) -> Any:
