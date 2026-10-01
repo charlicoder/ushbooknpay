@@ -109,3 +109,39 @@ async def test_idempotency_middleware_fallback_on_corrupt_json():
     response = await middleware.dispatch(request, call_next)
     assert response.status_code == 200
     assert response.body == b"not-json"
+
+
+@pytest.mark.asyncio
+async def test_update_appointment_cache_status_by_booking_id(mock_settings):
+    """Verify update_appointment_cache_status_by_booking_id posts to ushauth."""
+    mock_http = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "success": True,
+        "booking_id": "b1234567-89ab-cdef-0123-456789abcdef",
+        "new_status": "cancelled",
+        "payment_status": "cancelled",
+        "records_updated": 1,
+    }
+    mock_http.post.return_value = mock_response
+
+    client = USHAuthClient(http_client=mock_http, redis_client=AsyncMock(), settings=mock_settings)
+    res = await client.update_appointment_cache_status_by_booking_id(
+        booking_id="b1234567-89ab-cdef-0123-456789abcdef",
+        new_status="cancelled",
+        payment_status="cancelled",
+    )
+
+    assert res["success"] is True
+    assert res["new_status"] == "cancelled"
+    assert res["payment_status"] == "cancelled"
+    mock_http.post.assert_awaited_once()
+    called_url = mock_http.post.call_args[0][0]
+    called_json = mock_http.post.call_args[1]["json"]
+    assert "/api/v1/update-appointment-cache-status-by-booking-id/" in called_url
+    assert called_json == {
+        "booking_id": "b1234567-89ab-cdef-0123-456789abcdef",
+        "new_status": "cancelled",
+        "payment_status": "cancelled",
+    }

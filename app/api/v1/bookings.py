@@ -1331,6 +1331,40 @@ async def update_booking_status(
         voucher_data=body.voucher_data,
     )
 
+    # ── Update appointment cache when booking is cancelled ───────────────
+    if body.status and str(body.status).lower() == "cancelled":
+        try:
+            raw_ps = (
+                payment_status.value
+                if payment_status
+                else (
+                    "refunded"
+                    if (
+                        updated.payment_status in ("refunded", "success", "paid")
+                        or (updated.payment_data and updated.payment_data.get("is_paid"))
+                    )
+                    else "cancelled"
+                )
+            )
+            cache_payment_status = "refunded" if raw_ps in ("refunded", "success", "paid") else "cancelled"
+            await ushauth.update_appointment_cache_status_by_booking_id(
+                booking_id=str(booking_id),
+                new_status="cancelled",
+                payment_status=cache_payment_status,
+            )
+            logger.info(
+                "appointment_cache_updated_on_booking_cancellation",
+                booking_id=str(booking_id),
+                new_status="cancelled",
+                payment_status=cache_payment_status,
+            )
+        except Exception as exc:
+            logger.warning(
+                "appointment_cache_update_on_cancellation_failed",
+                booking_id=str(booking_id),
+                error=str(exc),
+            )
+
     # ── Dispatch desk-payment success event ───────────────────────────────
     # When a booking is paid manually at the desk the app sends:
     #   payment_status=success, source="ushspa app", reason="Paid on desk"
@@ -1340,9 +1374,27 @@ async def update_booking_status(
     _source_str = (body.source or "").strip().lower()
     if (
         payment_status == PaymentStatus.SUCCESS
-        and _source_str == "ushspa app"
+        and _source_str in ("ushdesk", "desk", "ushspa app")
         and _reason_str == "paid on desk"
     ):
+        try:
+            await ushauth.update_appointment_cache_status_by_booking_id(
+                booking_id=str(booking_id),
+                new_status="confirmed",
+                payment_status="success",
+            )
+            logger.info(
+                "appointment_cache_updated_on_desk_payment_success",
+                booking_id=str(booking_id),
+                new_status="confirmed",
+                payment_status="success",
+            )
+        except Exception as exc:
+            logger.warning(
+                "appointment_cache_update_on_desk_payment_failed",
+                booking_id=str(booking_id),
+                error=str(exc),
+            )
         await booking_service._enqueue_event(
             BookingPaymentStatusSuccessEvent(
                 booking_id=str(booking_id),

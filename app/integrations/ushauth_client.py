@@ -510,6 +510,24 @@ class USHAuthClient:
         }
         return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
 
+    async def update_appointment_cache_status_by_booking_id(
+        self,
+        booking_id: str,
+        new_status: str,
+        payment_status: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Update appointment cache status (and optionally payment_status) by booking_id.
+        POST /api/v1/update-appointment-cache-status-by-booking-id/
+        """
+        payload: dict[str, Any] = {
+            "booking_id": str(booking_id),
+            "new_status": str(new_status),
+        }
+        if payment_status is not None:
+            payload["payment_status"] = str(payment_status)
+        return await self._post("/api/v1/update-appointment-cache-status-by-booking-id/", json_data=payload)
+
     # ── Shop: Product catalogue ───────────────────────────────────────────
 
     async def list_products(

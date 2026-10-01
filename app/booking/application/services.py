@@ -844,6 +844,24 @@ class BookingService:
                 changed_by=effective_changed_by,
                 change_by_user_data=effective_changed_user_data,
             )
+
+            # Sync appointment cache on cancellation
+            if status in (BookingStatus.CANCELLED, "cancelled"):
+                try:
+                    ushauth = self._get_ushauth_client()
+                    if ushauth is not None:
+                        cache_ps = (
+                            "refunded"
+                            if str(booking.payment_status).lower() in ("refunded", "success", "paid")
+                            else "cancelled"
+                        )
+                        await ushauth.update_appointment_cache_status_by_booking_id(
+                            booking_id=str(booking.id),
+                            new_status="cancelled",
+                            payment_status=cache_ps,
+                        )
+                except Exception as exc:
+                    logger.warning("sync_appointment_cache_on_status_cancel_failed", error=str(exc))
         else:
             await self._repo.update(booking)
             try:
@@ -1028,6 +1046,23 @@ class BookingService:
                 refund_amount=str(refund_amount) if refund_amount else None,
             )
         )
+
+        # Sync appointment cache on cancellation
+        try:
+            ushauth = self._get_ushauth_client()
+            if ushauth is not None:
+                cache_ps = (
+                    "refunded"
+                    if str(booking.payment_status).lower() in ("refunded", "success", "paid")
+                    else "cancelled"
+                )
+                await ushauth.update_appointment_cache_status_by_booking_id(
+                    booking_id=str(booking.id),
+                    new_status="cancelled",
+                    payment_status=cache_ps,
+                )
+        except Exception as exc:
+            logger.warning("sync_appointment_cache_on_cancel_booking_failed", error=str(exc))
 
         logger.info("booking_cancelled", booking_id=str(booking.id), reason=reason)
         return booking
@@ -1391,43 +1426,54 @@ class BookingService:
         # 4. If no payment record exists in payments table, create one and record history
         if not payments and getattr(booking, "total_amount", None) and getattr(booking, "customer_id", None):
             try:
-                payment = Payment(
-                    booking_id=booking.id,
-                    customer_id=booking.customer_id,
-                    customer_data=booking.customer_data,
-                    service_id=booking.service_id,
-                    service_data=booking.service_data,
-                    branch_id=booking.branch_id,
-                    branch_data=booking.branch_data,
-                    service_arrangement_id=booking.service_arrangement_id,
-                    service_arrangement_data=booking.service_arrangement_data,
-                    total_amount=booking.total_amount,
-                    currency=booking.currency or "KWD",
-                    status=target_status,
-                    payment_for="branch_service",
-                    payment_provider=getattr(booking, "payment_provider", None) or "Other",
-                    payment_through=getattr(booking, "payment_through", None) or "ushspa",
-                    payment_gateway=getattr(booking, "payment_gateway", None) or "Other",
-                    payment_method=getattr(booking, "payment_method", None) or "card",
-                    payment_data=booking.payment_data,
-                    created_by_user=str(change_by_user) if change_by_user else (source if source else None),
-                    created_by_user_data=change_by_user_data,
-                )
-                self._session.add(payment)
-                await self._session.flush()
+                async with self._session.begin_nested():
+                    computed_duration = (
+                        getattr(booking, "total_duration", None)
+                        or (
+                            booking.duration_minutes
+                            + (booking.extra_minutes or 0)
+                            + (getattr(booking, "addons_duration", None) or 0)
+                        )
+                        or 60
+                    )
+                    payment = Payment(
+                        booking_id=booking.id,
+                        customer_id=booking.customer_id,
+                        customer_data=booking.customer_data,
+                        service_id=booking.service_id,
+                        service_data=booking.service_data,
+                        branch_id=booking.branch_id,
+                        branch_data=booking.branch_data,
+                        service_arrangement_id=booking.service_arrangement_id,
+                        service_arrangement_data=booking.service_arrangement_data,
+                        total_amount=booking.total_amount,
+                        total_duration=int(computed_duration),
+                        currency=booking.currency or "KWD",
+                        status=target_status,
+                        payment_for="branch_service",
+                        payment_provider=getattr(booking, "payment_provider", None) or "Other",
+                        payment_through=getattr(booking, "payment_through", None) or "ushspa",
+                        payment_gateway=getattr(booking, "payment_gateway", None) or "Other",
+                        payment_method=getattr(booking, "payment_method", None) or "card",
+                        payment_data=booking.payment_data,
+                        created_by_user=str(change_by_user) if change_by_user else (source if source else None),
+                        created_by_user_data=change_by_user_data,
+                    )
+                    self._session.add(payment)
+                    await self._session.flush()
 
-                history = PaymentStatusHistory(
-                    payment_id=payment.id,
-                    old_status=None,
-                    new_status=target_status,
-                    source=source or "booking_cancellation",
-                    reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
-                    change_by_user=str(change_by_user) if change_by_user else (source if source else None),
-                    change_by_user_data=change_by_user_data,
-                    correlation_id=correlation_id or str(payment.id),
-                )
-                self._session.add(history)
-                payments.append(payment)
+                    history = PaymentStatusHistory(
+                        payment_id=payment.id,
+                        old_status=None,
+                        new_status=target_status,
+                        source=source or "booking_cancellation",
+                        reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                        change_by_user=str(change_by_user) if change_by_user else (source if source else None),
+                        change_by_user_data=change_by_user_data,
+                        correlation_id=correlation_id or str(payment.id),
+                    )
+                    self._session.add(history)
+                    payments.append(payment)
             except Exception as exc:
                 logger.warning("create_fallback_payment_on_sync_failed", error=str(exc))
 
