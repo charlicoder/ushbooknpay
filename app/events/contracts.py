@@ -567,6 +567,31 @@ class BookingPaymentStatusSuccessEvent(BaseEvent):
     reason: str = ""
 
 
+@dataclass
+class BookingUpdatedEvent(BaseEvent):
+    """Fired when a booking is updated/rescheduled via PATCH /bookings/{id}/.
+
+    Downstream consumers (ushnotice) use this to update the
+    appointment cache in ushauth via:
+      POST /api/v1/update-appointment-cache-by-booking-id/
+    """
+
+    event_name: str = field(default="Booking.Updated", init=False)
+    event_type: str = field(default="booking.updated", init=False)
+    booking_id: str = ""
+    customer_id: str = ""
+    appointment_date: str = ""
+    appointment_time: str = ""
+    duration: int = 0
+    therapist_id: str = ""
+    status: str = ""
+    payment_status: str = ""
+    branch_id: str = ""
+    service_arrangement_id: str = ""
+    source: str = ""
+    reason: str = ""
+
+
 # ── Payment Events ────────────────────────────────────────────────────────────
 
 

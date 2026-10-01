@@ -528,6 +528,60 @@ class USHAuthClient:
             payload["payment_status"] = str(payment_status)
         return await self._post("/api/v1/update-appointment-cache-status-by-booking-id/", json_data=payload)
 
+    async def update_appointment_cache_by_booking_id(
+        self,
+        booking_id: str,
+        *,
+        status: str | None = None,
+        payment_status: str | None = None,
+        appointment_date: str | None = None,
+        appointment_time: str | None = None,
+        appointment_start: str | None = None,
+        appointment_end: str | None = None,
+        duration: int | None = None,
+        therapist_id: str | None = None,
+        service_arrangement_id: str | None = None,
+        branch_id: str | None = None,
+        service_id: str | None = None,
+        customer_id: str | None = None,
+        booking_type: str | None = None,
+        **extra_fields: Any,
+    ) -> dict[str, Any]:
+        """
+        Comprehensive update for appointment cache record(s) matching booking_id in ushauth.
+        POST /api/v1/update-appointment-cache-by-booking-id/
+        """
+        payload: dict[str, Any] = {"booking_id": str(booking_id)}
+        if status is not None:
+            payload["status"] = str(status)
+        if payment_status is not None:
+            payload["payment_status"] = str(payment_status)
+        if appointment_date is not None:
+            payload["appointment_date"] = str(appointment_date)
+        if appointment_time is not None:
+            payload["appointment_time"] = str(appointment_time)
+        if appointment_start is not None:
+            payload["appointment_start"] = str(appointment_start)
+        if appointment_end is not None:
+            payload["appointment_end"] = str(appointment_end)
+        if duration is not None:
+            payload["duration"] = int(duration)
+        if therapist_id is not None:
+            payload["therapist_id"] = str(therapist_id)
+        if service_arrangement_id is not None:
+            payload["service_arrangement_id"] = str(service_arrangement_id)
+        if branch_id is not None:
+            payload["branch_id"] = str(branch_id)
+        if service_id is not None:
+            payload["service_id"] = str(service_id)
+        if customer_id is not None:
+            payload["customer_id"] = str(customer_id)
+        if booking_type is not None:
+            payload["booking_type"] = str(booking_type)
+        payload.update(extra_fields)
+
+        return await self._post("/api/v1/update-appointment-cache-by-booking-id/", json_data=payload)
+
     # ── Shop: Product catalogue ───────────────────────────────────────────
 
     async def list_products(

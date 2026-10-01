@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession, RequireAppToken, USHAuthDep
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
-from app.events.contracts import BookingPaymentStatusSuccessEvent
+from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
 from app.booking.interfaces.schemas import (
     AddonSchema,
     BookingDetailResponse,
@@ -1085,11 +1085,35 @@ async def update_booking(
             detail="Access denied. You can only update your own bookings.",
         )
 
-    therapist_data = None
-    if body.therapist_id:
+    therapist_data = body.therapist_data
+    if body.therapist_id and not therapist_data:
         try:
             t_raw = await ushauth.get_therapist(str(body.therapist_id))
             therapist_data = t_raw.get("data") if isinstance(t_raw.get("data"), dict) else t_raw
+        except Exception:
+            pass
+
+    branch_data = body.branch_data
+    if body.branch_id and not branch_data:
+        try:
+            b_raw = await ushauth.get_branch(str(body.branch_id))
+            branch_data = b_raw.get("data") if isinstance(b_raw.get("data"), dict) else b_raw
+        except Exception:
+            pass
+
+    service_arrangement_data = body.service_arrangement_data
+    if body.service_arrangement_id and not service_arrangement_data:
+        try:
+            a_raw = await ushauth.get_service_arrangement(str(body.service_arrangement_id))
+            service_arrangement_data = a_raw.get("data") if isinstance(a_raw.get("data"), dict) else a_raw
+        except Exception:
+            pass
+
+    target_start = body.appointment_start
+    if target_start is None and body.appointment_date and body.appointment_time:
+        try:
+            naive_dt = datetime.fromisoformat(f"{body.appointment_date}T{body.appointment_time}")
+            target_start = naive_dt.replace(tzinfo=timezone.utc)
         except Exception:
             pass
 
@@ -1109,7 +1133,11 @@ async def update_booking(
         created_by_user_data=body.created_by_user_data,
         therapist_id=body.therapist_id,
         therapist_data=therapist_data,
-        appointment_start=body.appointment_start,
+        branch_id=body.branch_id,
+        branch_data=branch_data,
+        service_arrangement_id=body.service_arrangement_id,
+        service_arrangement_data=service_arrangement_data,
+        appointment_start=target_start,
         extra_minutes=body.extra_minutes,
         customer_notes=body.customer_notes,
         internal_notes=body.internal_notes,
@@ -1127,6 +1155,54 @@ async def update_booking(
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
     )
+
+    # ── Dispatch booking.updated SQS event to ushnotice ───────────────────
+    appt_dt_str = updated.appointment_date.strftime("%Y-%m-%d") if updated.appointment_date else ""
+    appt_time_str = updated.appointment_start.strftime("%H:%M:%S") if updated.appointment_start else ""
+    duration_val = int(updated.duration_minutes + (updated.extra_minutes or 0))
+
+    await booking_service._enqueue_event(
+        BookingUpdatedEvent(
+            booking_id=str(booking_id),
+            customer_id=str(updated.customer_id),
+            appointment_date=appt_dt_str,
+            appointment_time=appt_time_str,
+            duration=duration_val,
+            therapist_id=str(updated.therapist_id) if updated.therapist_id else "",
+            status=str(updated.status) if updated.status else "",
+            payment_status=str(updated.payment_status) if updated.payment_status else "",
+            branch_id=str(updated.branch_id) if updated.branch_id else "",
+            service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else "",
+            source=body.source or "",
+            reason=body.reason or "",
+        )
+    )
+
+    # ── Sync appointment cache in ushauth directly ─────────────────────────
+    try:
+        await ushauth.update_appointment_cache_by_booking_id(
+            booking_id=str(booking_id),
+            appointment_date=appt_dt_str,
+            appointment_time=appt_time_str,
+            duration=duration_val,
+            therapist_id=str(updated.therapist_id) if updated.therapist_id else None,
+            status=str(updated.status) if updated.status else None,
+            payment_status=str(updated.payment_status) if updated.payment_status else None,
+            branch_id=str(updated.branch_id) if updated.branch_id else None,
+            service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else None,
+        )
+        logger.info(
+            "appointment_cache_updated_on_booking_update",
+            booking_id=str(booking_id),
+            appointment_date=appt_dt_str,
+            appointment_time=appt_time_str,
+        )
+    except Exception as exc:
+        logger.warning(
+            "appointment_cache_update_on_booking_update_failed",
+            booking_id=str(booking_id),
+            error=str(exc),
+        )
 
     return JSONResponse(
         content={

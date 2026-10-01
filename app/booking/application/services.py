@@ -671,6 +671,10 @@ class BookingService:
         created_by_user_data: dict | None = None,
         therapist_id: uuid.UUID | None = None,
         therapist_data: dict | None = None,
+        branch_id: uuid.UUID | None = None,
+        branch_data: dict | None = None,
+        service_arrangement_id: uuid.UUID | None = None,
+        service_arrangement_data: dict | None = None,
         appointment_start: datetime | None = None,
         extra_minutes: int | None = None,
         customer_notes: str | None = None,
@@ -723,6 +727,17 @@ class BookingService:
             booking.appointment_date = target_start.replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
+
+        # ── Update branch / arrangement if provided ──────────────────────
+        if branch_id is not None:
+            booking.branch_id = branch_id
+        if branch_data is not None:
+            booking.branch_data = branch_data
+
+        if service_arrangement_id is not None:
+            booking.service_arrangement_id = service_arrangement_id
+        if service_arrangement_data is not None:
+            booking.service_arrangement_data = service_arrangement_data
 
         # ── Notes ────────────────────────────────────────────────────────
         if customer_notes is not None:

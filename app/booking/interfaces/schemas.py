@@ -467,6 +467,45 @@ class UpdateBookingRequest(BaseModel):
         default=None,
         description="Reassign therapist (UUID)",
     )
+    therapist_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="therapistData",
+        description="Snapshot of therapist data",
+    )
+    branch_id: uuid.UUID | None = Field(
+        default=None,
+        alias="branchId",
+        description="Updated branch ID",
+    )
+    branch_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="branchData",
+        description="Snapshot of updated branch data",
+    )
+    service_arrangement_id: uuid.UUID | None = Field(
+        default=None,
+        alias="serviceArrangementId",
+        description="Updated room/arrangement ID",
+    )
+    service_arrangement_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="serviceArrangementData",
+        description="Snapshot of updated room/arrangement data",
+    )
+    appointment_date: str | None = Field(
+        default=None,
+        alias="appointmentDate",
+        description="Appointment date (YYYY-MM-DD)",
+    )
+    appointment_time: str | None = Field(
+        default=None,
+        alias="appointmentTime",
+        description="Appointment time (HH:MM or HH:MM:SS)",
+    )
+    duration: int | None = Field(
+        default=None,
+        description="Service duration in minutes",
+    )
     appointment_start: datetime | None = Field(
         default=None,
         description="New appointment start datetime",
@@ -541,18 +580,31 @@ class UpdateBookingRequest(BaseModel):
             self.created_by_user_data = data_val
         return self
 
-    @field_validator("therapist_id", "voucher_id", mode="before")
+    @field_validator("therapist_id", "voucher_id", "branch_id", "service_arrangement_id", mode="before")
     @classmethod
     def coerce_empty_uuid_to_none(cls, v: Any) -> Any:
         if v == "" or (isinstance(v, str) and not v.strip()):
             return None
         return v
 
+    @field_validator("appointment_start", mode="before")
+    @classmethod
+    def sanitize_appointment_start(cls, v: Any) -> Any:
+        if isinstance(v, str) and v.strip():
+            s = v.strip()
+            if " " in s and "T" not in s:
+                s = s.replace(" ", "T")
+            if not s.endswith("Z") and "+" not in s and "-" not in s[10:]:
+                s += "Z"
+            return s
+        return v
+
     @field_validator("appointment_start")
     @classmethod
     def validate_appointment_start_timezone(cls, v: datetime | None) -> datetime | None:
         if v is not None and v.tzinfo is None:
-            raise ValueError("appointment_start must include timezone information.")
+            from datetime import timezone
+            return v.replace(tzinfo=timezone.utc)
         return v
 
     model_config = {

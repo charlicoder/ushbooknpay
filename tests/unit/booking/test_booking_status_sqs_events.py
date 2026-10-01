@@ -201,3 +201,54 @@ async def test_update_booking_while_confirmed_dispatches_sqs_event():
     assert isinstance(event, BookingConfirmedEvent)
     assert event.event_type == "booking.confirmed"
     assert event.booking_id == str(booking.id)
+
+
+@pytest.mark.asyncio
+async def test_update_booking_endpoint_dispatches_booking_updated_sqs_event():
+    """Verify that update_booking API endpoint dispatches BookingUpdatedEvent to ushnotice."""
+    from app.api.v1.bookings import update_booking
+    from app.booking.interfaces.schemas import UpdateBookingRequest
+    from app.events.contracts import BookingUpdatedEvent
+
+    booking_id = uuid.uuid4()
+    booking = _create_dummy_booking(status="confirmed")
+    booking.id = booking_id
+
+    mock_service = AsyncMock()
+    mock_service.get_booking.return_value = booking
+    mock_service.update_booking.return_value = booking
+    mock_service._enqueue_event = AsyncMock()
+
+    mock_ushauth = AsyncMock()
+    mock_ushauth.update_appointment_cache_by_booking_id = AsyncMock()
+
+    current_user = MagicMock()
+    current_user.sub = str(booking.customer_id)
+    current_user.first_name = "Admin"
+    current_user.last_name = "User"
+    current_user.phone_number = "+96512345678"
+    current_user.email = "admin@example.com"
+    current_user.role = "admin"
+
+    body = UpdateBookingRequest(
+        appointmentDate="2026-10-15",
+        appointmentTime="16:00:00",
+        reason="Rescheduled by client",
+        source="ushdesk",
+    )
+
+    resp = await update_booking(
+        booking_id=booking_id,
+        body=body,
+        current_user=current_user,
+        booking_service=mock_service,
+        ushauth=mock_ushauth,
+    )
+
+    assert resp.status_code == 200
+    mock_service._enqueue_event.assert_called_once()
+    event = mock_service._enqueue_event.call_args[0][0]
+    assert isinstance(event, BookingUpdatedEvent)
+    assert event.event_type == "booking.updated"
+    assert event.booking_id == str(booking_id)
+    mock_ushauth.update_appointment_cache_by_booking_id.assert_awaited_once()
