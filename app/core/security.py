@@ -266,6 +266,14 @@ async def validate_user_with_ushauth(
         or profile_dict.get("avatar_url")
     )
 
+    # Resolve user_type with priority: profile_dict -> permissions block -> JWT claims -> "customer"
+    resolved_user_type = (
+        profile_dict.get("user_type")
+        or (permissions.get("user_type") if isinstance(permissions, dict) else None)
+        or _user_type_from_jwt
+        or "customer"
+    )
+
     # Extract RBAC codenames from the employee permissions block.
     # EmployeeMeSerializer returns:
     #   permissions: { ..., "codenames": ["invoices.list", ...] }
@@ -278,8 +286,26 @@ async def validate_user_with_ushauth(
         # Extract is_superuser from permissions block if not already set
         if is_superuser is None:
             is_superuser = permissions.get("is_superuser")
+        if is_staff is None:
+            is_staff = permissions.get("is_staff")
         if role is None:
             role = permissions.get("role_name")
+
+    # If role is Administrator or wildcard codename present, set is_superuser
+    if is_superuser is None:
+        if role and str(role).strip().lower() in ("administrator", "admin"):
+            is_superuser = True
+        elif codenames and codenames == ["*"]:
+            is_superuser = True
+        else:
+            is_superuser = False
+
+    # Mark is_staff true for employees, admins, or superusers
+    if is_staff is None:
+        is_staff = (
+            resolved_user_type in ("employee", "staff", "admin", "superuser")
+            or bool(is_superuser)
+        )
 
     # Extract language_preference from profile (ushauth CustomerSerializer includes it)
     raw_lang = (
@@ -291,7 +317,7 @@ async def validate_user_with_ushauth(
 
     payload = TokenPayload(
         sub=sub,
-        user_type=profile_dict.get("user_type", "customer"),
+        user_type=resolved_user_type,
         phone_number=profile_dict.get("phone_number"),
         email=profile_dict.get("email"),
         first_name=profile_dict.get("first_name"),
@@ -302,8 +328,8 @@ async def validate_user_with_ushauth(
         language_preference=lang_pref,
         permissions=permissions,
         role=role,
-        is_staff=is_staff,
-        is_superuser=is_superuser,
+        is_staff=bool(is_staff),
+        is_superuser=bool(is_superuser),
         codenames=codenames,
     )
 

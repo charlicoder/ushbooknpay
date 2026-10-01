@@ -86,9 +86,19 @@ def _service(
     return ShopOrderService(session=session, settings=settings, ushauth_client=ushauth)
 
 
+def _is_staff_user(user: TokenPayload) -> bool:
+    """Return True if user is staff, admin, superuser, or employee."""
+    u_type = (getattr(user, "user_type", None) or "").strip().lower()
+    return (
+        u_type in ("staff", "admin", "superuser", "employee")
+        or bool(getattr(user, "is_staff", False))
+        or bool(getattr(user, "is_superuser", False))
+    )
+
+
 def _require_staff(current_user: CurrentUser) -> TokenPayload:
     """Ensure the caller is staff (not a plain customer)."""
-    if current_user.user_type not in ("staff", "admin", "superuser"):
+    if not _is_staff_user(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Staff access required.",
@@ -156,7 +166,7 @@ async def get_order(
     except (NotFoundError, ShopOrderNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
-    is_staff = current_user.user_type in ("staff", "admin", "superuser")
+    is_staff = _is_staff_user(current_user)
     is_owner = str(order.customer_id) == str(current_user.sub)
 
     if not is_staff and not is_owner:
@@ -217,14 +227,15 @@ async def update_payment_status(
     current_user: CurrentUser,
     svc: Annotated[ShopOrderService, Depends(_service)],
 ) -> ShopOrderDetailResponse:
+    is_staff = _is_staff_user(current_user)
     changed_by = (
         f"staff:{current_user.sub}"
-        if current_user.user_type in ("staff", "admin", "superuser")
+        if is_staff
         else f"customer:{current_user.sub}"
     )
     payment_through = body.payment_through or body.payment_type
     if not payment_through:
-        if current_user.user_type in ("staff", "admin", "superuser"):
+        if is_staff:
             payment_through = ShopPaymentThrough.USHDESK.value
         else:
             payment_through = ShopPaymentThrough.USHSPA.value
