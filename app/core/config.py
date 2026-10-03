@@ -66,6 +66,25 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATABASE_URL must use the 'postgresql+asyncpg://' scheme for async support."
             )
+
+        import os
+        is_container = os.path.exists("/.dockerenv") or bool(os.environ.get("IN_DOCKER"))
+
+        if is_container:
+            if "@localhost:" in v or "@127.0.0.1:" in v:
+                try:
+                    import socket
+                    socket.gethostbyname("host.docker.internal")
+                    v = v.replace("@localhost:", "@host.docker.internal:").replace("@127.0.0.1:", "@host.docker.internal:")
+                except Exception:
+                    pass
+        else:
+            if "host.docker.internal" in v:
+                try:
+                    import socket
+                    socket.gethostbyname("host.docker.internal")
+                except Exception:
+                    v = v.replace("host.docker.internal", "localhost")
         return v
 
     # ── 4. Redis ─────────────────────────────────────────────────────────
