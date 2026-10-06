@@ -46,9 +46,9 @@ class ShopOrder(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    # Human-readable order number (ORD-YYMMDDNNN)
+    # Human-readable order number (ORD/YYYY/MM/[6 digit sequential number])
     order_number: Mapped[str] = mapped_column(
-        String(30), nullable=False, unique=True, index=True
+        String(32), nullable=False, unique=True, index=True
     )
 
     # ── Customer identity (snapshot from JWT at creation time) ────────────

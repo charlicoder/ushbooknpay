@@ -586,6 +586,7 @@ class ShopOrderService:
             or inner_data.get("UserDefinedField")
             or ""
         )
+        customer_language_preference = getattr(order, "customer_language_preference", None) or "en"
 
         event = ShopOrderCreatedEvent(
             # ── Identity ─────────────────────────────────────────────

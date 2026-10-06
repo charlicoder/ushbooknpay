@@ -364,11 +364,11 @@ class GiftVoucherRepository:
         """
         Generate the next sequential voucher number for *for_date*.
 
-        Format: V{YY}{MM}{DD}{NNN}
-        Example: V260921001  (first voucher on 2026-09-21)
+        Format: VOU/YYYY/MM/{NNNNNN}
+        Example: VOU/2026/10/000001  (first voucher in October 2026)
 
         The counter counts existing ``voucher_number`` values that share the
-        same date prefix (LIKE 'V260921%') and adds 1.  This gracefully
+        same month prefix (LIKE 'VOU/2026/10/%') and adds 1.  This gracefully
         handles gaps and concurrent creation without requiring a separate
         sequence table.
 
@@ -377,12 +377,12 @@ class GiftVoucherRepository:
                       Defaults to today (UTC).
 
         Returns:
-            A unique voucher_number string e.g. ``"V260921001"``.
+            A unique voucher_number string e.g. ``"VOU/2026/10/000001"``.
         """
         ref_date = for_date or datetime.now(tz=timezone.utc).date()
-        date_prefix = "V" + ref_date.strftime("%y%m%d")
+        date_prefix = f"VOU/{ref_date.strftime('%Y/%m')}/"
 
-        # Count existing voucher_number values with this date prefix.
+        # Count existing voucher_number values with this month prefix.
         count_result = await self._session.execute(
             select(func.count()).where(
                 GiftVoucher.voucher_number.like(f"{date_prefix}%")
@@ -396,7 +396,7 @@ class GiftVoucherRepository:
         except (TypeError, ValueError):
             existing_count = 0
         sequence = existing_count + 1
-        return f"{date_prefix}{sequence:03d}"
+        return f"{date_prefix}{sequence:06d}"
 
     # ── Write operations ──────────────────────────────────────────────────────
 

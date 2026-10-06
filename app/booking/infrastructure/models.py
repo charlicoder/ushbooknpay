@@ -62,12 +62,12 @@ class Booking(Base):
     )
 
     # ── Booking Number ────────────────────────────────────────────────────
-    # Human-readable unique reference. Format: B{YY}{MM}{DD}{NNN}
-    # e.g. B260921001 for the 1st booking on 2026-09-21.
+    # Human-readable unique reference. Format: BOK/YYYY/MM/[6 digit sequential number]
+    # e.g. BOK/2026/10/000001 for the 1st booking in October 2026.
     # Generated at creation time by the application layer; nullable for
     # backward-compatibility with rows created before this column existed.
     booking_number: Mapped[str | None] = mapped_column(
-        String(20), nullable=True, unique=True, default=None
+        String(32), nullable=True, unique=True, default=None
     )
 
     # ── Customer Reference & Snapshot ─────────────────────────────────────

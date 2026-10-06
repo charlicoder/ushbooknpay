@@ -86,9 +86,14 @@ async def test_public_list_bookings_endpoint():
     mock_request = MagicMock(spec=Request)
     mock_request.url = URL("http://testserver/api/v1/bookings/?status=confirmed&date=2026-08-26")
 
+    mock_user = MagicMock(spec=CurrentUser)
+    mock_user.user_type = "employee"
+    mock_user.has_permission = MagicMock(return_value=True)
+
     response = await list_bookings(
         booking_service=mock_service,
         request=mock_request,
+        current_user=mock_user,
         page=1,
         page_size=20,
         status="confirmed",

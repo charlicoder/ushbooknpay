@@ -2,8 +2,8 @@
 tests/unit/shop/test_shop_order_number.py
 ──────────────────────────────────────────
 Unit tests verifying the shop order_number generation:
-Structure: "ORD-" + "YY" + "MM" + "DD" + 3-digit auto increment from 001 to 999.
-Example: For date 2026/09/21, the first order_number will be ORD-260921001.
+Structure: "ORD" + "/" + YYYY + "/" + MM + "/" + [6 digit sequential number].
+Example: For date 2026/10/06, the first order_number will be ORD/2026/10/000001.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from app.shop.infrastructure.repository import ShopOrderRepository
 
 @pytest.mark.asyncio
 async def test_next_order_number_first_order_for_date():
-    """First order for a given date starts at sequence 001."""
+    """First order for a given date starts at sequence 000001."""
     session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar_one.return_value = 0
@@ -27,7 +27,7 @@ async def test_next_order_number_first_order_for_date():
     repo = ShopOrderRepository(session)
     order_num = await repo.next_order_number(for_date=date(2026, 9, 21))
 
-    assert order_num == "ORD-260921001"
+    assert order_num == "ORD/2026/09/000001"
 
 
 @pytest.mark.asyncio
@@ -41,12 +41,12 @@ async def test_next_order_number_increments_sequence():
     repo = ShopOrderRepository(session)
     order_num = await repo.next_order_number(for_date=date(2026, 9, 21))
 
-    assert order_num == "ORD-260921002"
+    assert order_num == "ORD/2026/09/000002"
 
 
 @pytest.mark.asyncio
 async def test_next_order_number_higher_sequence():
-    """Verify 3-digit zero padding with larger counts (e.g. 42 -> 043)."""
+    """Verify 6-digit zero padding with larger counts (e.g. 42 -> 000043)."""
     session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar_one.return_value = 42
@@ -55,7 +55,7 @@ async def test_next_order_number_higher_sequence():
     repo = ShopOrderRepository(session)
     order_num = await repo.next_order_number(for_date=date(2026, 12, 5))
 
-    assert order_num == "ORD-261205043"
+    assert order_num == "ORD/2026/12/000043"
 
 
 @pytest.mark.asyncio
@@ -69,8 +69,8 @@ async def test_next_order_number_defaults_to_today():
     repo = ShopOrderRepository(session)
     order_num = await repo.next_order_number()
 
-    today_str = date.today().strftime("%y%m%d")
-    assert order_num == f"ORD-{today_str}001"
+    today_str = date.today().strftime("%Y/%m")
+    assert order_num == f"ORD/{today_str}/000001"
 
 
 @pytest.mark.asyncio
@@ -85,12 +85,12 @@ async def test_next_order_number_handles_async_scalar_coroutine():
     repo = ShopOrderRepository(session)
     order_num = await repo.next_order_number(for_date=date(2026, 9, 21))
 
-    assert order_num == "ORD-260921006"
+    assert order_num == "ORD/2026/09/000006"
 
 
 @pytest.mark.asyncio
 async def test_next_order_number_handles_none_or_invalid_scalar():
-    """Safely falls back to sequence 001 if scalar_one returns None or non-integer."""
+    """Safely falls back to sequence 000001 if scalar_one returns None or non-integer."""
     session = AsyncMock()
     mock_result = MagicMock()
     mock_result.scalar_one.return_value = None
@@ -99,4 +99,4 @@ async def test_next_order_number_handles_none_or_invalid_scalar():
     repo = ShopOrderRepository(session)
     order_num = await repo.next_order_number(for_date=date(2026, 9, 21))
 
-    assert order_num == "ORD-260921001"
+    assert order_num == "ORD/2026/09/000001"

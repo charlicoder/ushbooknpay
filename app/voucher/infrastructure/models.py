@@ -98,10 +98,10 @@ class GiftVoucher(Base):
     )
 
     # ── Human-readable voucher reference (auto-generated) ─────────────────
-    # Format: V{YY}{MM}{DD}{NNN}  e.g. V260921001 for the first voucher on 2026-09-21.
+    # Format: VOU/YYYY/MM/[6 digit sequential number]  e.g. VOU/2026/10/000001 for the first voucher in October 2026.
     # Nullable so existing rows are unaffected; populated immediately after flush.
     voucher_number: Mapped[str | None] = mapped_column(
-        String(20), nullable=True, unique=True, default=None
+        String(32), nullable=True, unique=True, default=None
     )
 
     # ── Service & Branch snapshot (external refs — no FK) ─────────────────

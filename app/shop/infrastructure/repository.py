@@ -183,17 +183,16 @@ class ShopOrderRepository:
 
     async def next_order_number(self, for_date: date | None = None) -> str:
         """
-        Generate the next sequential order number in the format ORD-YYMMDDNNN.
+        Generate the next sequential order number in the format ORD/YYYY/MM/{NNNNNN}.
 
         Rules and structure:
-            "ORD-" + "YY" + "MM" + "DD" + 3-digit auto increment from 001 to 999
-            where YY is the last two digits of year, MM is the month, DD is the day.
-            Example: For date 2026/09/21, the first order_number will be ORD-260921001.
+            "ORD/" + YYYY + "/" + MM + "/" + 6-digit auto increment from 000001
+            Example: For date 2026/10/06, the first order_number will be ORD/2026/10/000001.
 
-        Uses a DB count query matched on date prefix (e.g. 'ORD-260921%').
+        Uses a DB count query matched on month prefix (e.g. 'ORD/2026/10/%').
         """
         target_date = for_date or date.today()
-        date_prefix = "ORD-" + target_date.strftime("%y%m%d")
+        date_prefix = f"ORD/{target_date.strftime('%Y/%m')}/"
 
         stmt = select(func.count(ShopOrder.id)).where(
             ShopOrder.order_number.like(f"{date_prefix}%")
@@ -208,4 +207,4 @@ class ShopOrderRepository:
             existing_count = 0
 
         sequence = existing_count + 1
-        return f"{date_prefix}{sequence:03d}"
+        return f"{date_prefix}{sequence:06d}"

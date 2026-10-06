@@ -558,7 +558,7 @@ class BookingService:
             created_by_user_data=created_by_user_data,
         )
 
-        # ── Generate booking number (e.g. B260921001) ─────────────────────
+        # ── Generate booking number (e.g. BOK/2026/10/000001) ─────────────
         booking_date = appointment_start.date() if hasattr(appointment_start, "date") else appointment_start
         booking.booking_number = await self._repo.generate_booking_number(for_date=booking_date)
 
