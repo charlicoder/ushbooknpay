@@ -903,6 +903,54 @@ class BookingService:
         logger.info("booking_updated", booking_id=str(booking.id))
         return booking
 
+    async def _ensure_booking_invoice(self, booking: Booking) -> str | None:
+        """Create or fetch invoice for booking from ushanr and link it to booking and payments."""
+        if booking.invoice_number:
+            try:
+                from app.payment.infrastructure.models import Payment
+                from sqlalchemy import update
+                await self._session.execute(
+                    update(Payment)
+                    .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                    .values(invoice_number=booking.invoice_number)
+                )
+            except Exception:
+                pass
+            return booking.invoice_number
+
+        try:
+            from app.integrations.ushanr_client import UshanrClient
+            ushanr_c = UshanrClient()
+            cust_data = booking.customer_data or {}
+            cust_name = (
+                f"{cust_data.get('first_name', '')} {cust_data.get('last_name', '')}".strip()
+                or cust_data.get("name", "")
+            )
+            inv_name = await ushanr_c.create_or_get_booking_invoice(
+                booking=booking,
+                customer_name=cust_name,
+                customer_phone=cust_data.get("phone_number") or cust_data.get("mobile") or "",
+                customer_email=cust_data.get("email") or "",
+            )
+            await ushanr_c.aclose()
+            if inv_name:
+                booking.invoice_number = inv_name
+                await self._repo.update(booking)
+                try:
+                    from app.payment.infrastructure.models import Payment
+                    from sqlalchemy import update
+                    await self._session.execute(
+                        update(Payment)
+                        .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                        .values(invoice_number=inv_name)
+                    )
+                except Exception:
+                    pass
+                return inv_name
+        except Exception as inv_err:
+            logger.warning("ensure_booking_invoice_failed", booking_id=str(booking.id), error=str(inv_err))
+        return None
+
     # ── Use Case 3: Confirm Booking (after payment success) ────────────────
 
     async def confirm_booking(
@@ -938,6 +986,7 @@ class BookingService:
                 booking.payment_data = {**(booking.payment_data or {}), **payment_data}
                 booking.payment_status = PaymentStatus.SUCCESS.value
                 await self._repo.update(booking)
+            await self._ensure_booking_invoice(booking)
             logger.info(
                 "booking_already_confirmed_payment_data_merged",
                 booking_id=str(booking.id),
@@ -968,6 +1017,7 @@ class BookingService:
         )
 
         await self._ensure_booking_loyalty_details(booking)
+        await self._ensure_booking_invoice(booking)
         ev_data = _build_booking_event_data(booking)
         await self._enqueue_event(BookingConfirmedEvent(**ev_data))
 

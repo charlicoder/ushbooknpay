@@ -363,6 +363,8 @@ class PaymentListItem(BaseModel):
     recipient_phone: str | None = None
 
     booking_id: str | None = None
+    booking_number: str | None = None
+    booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
     product_order_id: str | None = None
 
@@ -507,6 +509,7 @@ class PaymentSessionResponse(BaseModel):
     payment_number: str | None = None
     invoice_number: str | None = None
     booking_id: str | None = None
+    booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
     payment_for: str = PaymentFor.BRANCH_SERVICE.value
     provider: str
@@ -523,6 +526,7 @@ class PaymentStatusResponse(BaseModel):
     payment_number: str | None = None
     invoice_number: str | None = None
     booking_id: str | None = None
+    booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
     payment_for: str = PaymentFor.BRANCH_SERVICE.value
     payment_provider: str

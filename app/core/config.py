@@ -147,19 +147,19 @@ class Settings(BaseSettings):
         description="Base URL of the ushanr microservice (e.g. http://host.docker.internal:8007 or http://localhost:8004).",
     )
     USHANR_INTERNAL_API_KEY: str = Field(
-        default="",
+        default="ushanr-internal-secret-change-in-prod",
         description="Internal API key for ushanr service-to-service calls.",
     )
     USHANR_COMPANY_ID: str = Field(
-        default="",
+        default="20bf55dd-7db8-40d1-a2f8-f9da6bb61b68",
         description="Default company UUID in ushanr.",
     )
     USHANR_AR_JOURNAL_ID: str = Field(
-        default="",
+        default="b9647bd3-f913-43c6-8d7c-d247144a307c",
         description="Default AR journal UUID in ushanr.",
     )
     USHANR_REVENUE_ACCOUNT_ID: str = Field(
-        default="",
+        default="8ac2132f-ca98-4354-864d-ab4244ff73b6",
         description="Default revenue account UUID in ushanr.",
     )
     USHANR_ADDON_ACCOUNT_ID: str = Field(

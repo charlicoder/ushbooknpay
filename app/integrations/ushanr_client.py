@@ -155,6 +155,14 @@ class UshanrClient:
         if service_name:
             notes += f" — {service_name}"
 
+        p_status = str(getattr(booking, "payment_status", "") or "").lower()
+        b_status = str(getattr(booking, "status", "") or "").lower()
+        is_paid = (
+            p_status in ("paid", "success", "rewarded", "completed")
+            or b_status in ("confirmed", "completed")
+            or bool(getattr(booking, "payment_id", None))
+        )
+
         body = {
             "company_id": company_id,
             "partner_id": partner_id,
@@ -166,6 +174,10 @@ class UshanrClient:
             "currency_code": getattr(booking, "currency", "KWD") or "KWD",
             "notes": notes,
             "lines": lines,
+            "is_paid": is_paid,
+            "payment_status": p_status or "paid",
+            "amount_paid": float(total_amount) if is_paid else 0.0,
+            "payment_id": str(getattr(booking, "payment_id", None) or ""),
         }
 
         try:
@@ -177,6 +189,36 @@ class UshanrClient:
         except Exception as exc:
             logger.warning("ushanr_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))
             return None
+
+    async def mark_invoice_paid(
+        self,
+        *,
+        invoice_id: str | None = None,
+        invoice_name: str | None = None,
+        source_document_type: str | None = None,
+        source_document_id: str | None = None,
+        amount_paid: float | Decimal | None = None,
+        payment_id: str | None = None,
+    ) -> bool:
+        """Mark an invoice as paid in ushanr."""
+        body: dict[str, Any] = {}
+        if invoice_id:
+            body["invoice_id"] = str(invoice_id)
+        if invoice_name:
+            body["invoice_name"] = str(invoice_name)
+        if source_document_type and source_document_id:
+            body["source_document_type"] = str(source_document_type)
+            body["source_document_id"] = str(source_document_id)
+        if amount_paid is not None:
+            body["amount_paid"] = float(amount_paid)
+        if payment_id:
+            body["payment_id"] = str(payment_id)
+        try:
+            resp = await self._client.post("/api/v1/internal/invoices/mark-paid/", json=body)
+            return resp.status_code in (200, 201)
+        except Exception as exc:
+            logger.debug("ushanr_mark_invoice_paid_failed", error=str(exc))
+            return False
 
     async def aclose(self) -> None:
         try:

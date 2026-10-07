@@ -96,6 +96,7 @@ def _build_booking_snapshot(booking: Booking) -> dict[str, Any]:
     """Extract a rich audit snapshot from a Booking entity."""
     return {
         "booking_id": str(booking.id),
+        "booking_number": getattr(booking, "booking_number", None),
         "service_id": str(booking.service_id) if booking.service_id else None,
         "service_name": (booking.service_data or {}).get("name", ""),
         "service_category": (booking.service_data or {}).get("category", ""),
@@ -212,6 +213,12 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
             for h in sorted(raw_history, key=lambda x: x.created_at)
         ]
 
+    b_data = dict(p.booking_data) if isinstance(p.booking_data, dict) else None
+    if b_data is not None and "booking_number" not in b_data:
+        booking_obj = getattr(p, "booking", None)
+        if booking_obj and getattr(booking_obj, "booking_number", None):
+            b_data["booking_number"] = booking_obj.booking_number
+
     return PaymentDetailResponse(
         id=str(p.id),
         payment_number=getattr(p, "payment_number", None) or "",
@@ -240,7 +247,8 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
         recipient_phone=p.recipient_phone,
         recipient_data=p.recipient_data,
         booking_id=str(p.booking_id) if p.booking_id else None,
-        booking_data=p.booking_data,
+        booking_number=(b_data.get("booking_number") if isinstance(b_data, dict) else None) or getattr(p, "booking_number", None),
+        booking_data=b_data,
         voucher_id=str(p.voucher_id) if p.voucher_id else None,
         voucher_data=p.voucher_data,
         product_order_id=str(p.product_order_id) if p.product_order_id else None,
@@ -271,6 +279,12 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
 
 def _payment_to_list_item(p: Payment) -> PaymentListItem:
     """Map ORM Payment model to PaymentListItem."""
+    b_data = dict(p.booking_data) if isinstance(p.booking_data, dict) else None
+    if b_data is not None and "booking_number" not in b_data:
+        booking_obj = getattr(p, "booking", None)
+        if booking_obj and getattr(booking_obj, "booking_number", None):
+            b_data["booking_number"] = booking_obj.booking_number
+
     return PaymentListItem(
         id=str(p.id),
         payment_number=getattr(p, "payment_number", None) or "",
@@ -292,6 +306,8 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         recipient_id=str(p.recipient_id) if p.recipient_id else None,
         recipient_phone=p.recipient_phone,
         booking_id=str(p.booking_id) if p.booking_id else None,
+        booking_number=(b_data.get("booking_number") if isinstance(b_data, dict) else None) or getattr(p, "booking_number", None),
+        booking_data=b_data,
         voucher_id=str(p.voucher_id) if p.voucher_id else None,
         product_order_id=str(p.product_order_id) if p.product_order_id else None,
         invoice_id=p.invoice_id,
@@ -405,6 +421,8 @@ async def create_payment(
     booking_data = dict(body.booking_data or {})
     if booking and not booking_data:
         booking_data = _build_booking_snapshot(booking)
+    elif booking and "booking_number" not in booking_data and getattr(booking, "booking_number", None):
+        booking_data["booking_number"] = booking.booking_number
 
     # ── 7. Financial fields ───────────────────────────────────────────
     total_amount_val = body.total_amount or parsed_gateway.get("total_amount") or (
@@ -508,6 +526,10 @@ async def create_payment(
                 existing_payment.created_by_user = _safe_str(body.created_by_user)
             if body.created_by_user_data and not existing_payment.created_by_user_data:
                 existing_payment.created_by_user_data = body.created_by_user_data
+            if booking_data:
+                existing_b_data = dict(existing_payment.booking_data or {})
+                if not existing_b_data or "booking_number" not in existing_b_data:
+                    existing_payment.booking_data = {**existing_b_data, **booking_data}
             await session.flush()
             await session.refresh(existing_payment)
             response_data = _payment_to_detail(existing_payment)
@@ -609,12 +631,14 @@ async def create_payment(
         if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.booking_id:
             try:
                 booking_service = BookingService(session=session, settings=settings)
-                await booking_service.confirm_booking(
+                confirmed_b = await booking_service.confirm_booking(
                     payment.booking_id,
                     payment_id=str(payment.id),
                     payment_data=payment_meta_snapshot,
                     correlation_id=payment.payment_id or str(payment.id),
                 )
+                if confirmed_b and confirmed_b.invoice_number and not payment.invoice_number:
+                    payment.invoice_number = confirmed_b.invoice_number
             except Exception as exc:
                 logger.warning("payment_auto_confirm_booking_notice", error=str(exc))
 
@@ -909,6 +933,11 @@ async def update_payment(
         payment.booking_id = body.booking_id
     if body.booking_data is not None:
         payment.booking_data = {**(payment.booking_data or {}), **body.booking_data}
+    if payment.booking_id and payment.booking_data and "booking_number" not in payment.booking_data:
+        bk_res = await session.execute(select(Booking.booking_number).where(Booking.id == payment.booking_id))
+        bk_num = bk_res.scalar_one_or_none()
+        if bk_num:
+            payment.booking_data["booking_number"] = bk_num
     if body.voucher_id is not None:
         payment.voucher_id = body.voucher_id
     if body.voucher_data is not None:
@@ -999,14 +1028,32 @@ async def update_payment(
             }
             try:
                 booking_service = BookingService(session=session, settings=settings)
-                await booking_service.confirm_booking(
+                confirmed_b = await booking_service.confirm_booking(
                     payment.booking_id,
                     payment_id=str(payment.id),
                     payment_data=payment_meta_snapshot,
                     correlation_id=payment.payment_id or str(payment.id),
                 )
+                if confirmed_b and confirmed_b.invoice_number and not payment.invoice_number:
+                    payment.invoice_number = confirmed_b.invoice_number
             except Exception as exc:
                 logger.warning("payment_update_auto_confirm_notice", error=str(exc))
+
+        # Notify ushanr that invoice is paid if payment is successful
+        if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.invoice_number:
+            try:
+                import asyncio
+                from app.integrations.ushanr_client import UshanrClient
+                u_client = UshanrClient()
+                asyncio.create_task(
+                    u_client.mark_invoice_paid(
+                        invoice_name=payment.invoice_number,
+                        amount_paid=payment.total_amount,
+                        payment_id=payment.id,
+                    )
+                )
+            except Exception as u_exc:
+                logger.debug("mark_ushanr_invoice_paid_warning", error=str(u_exc))
 
     await session.flush()
     await session.refresh(payment)
@@ -1218,6 +1265,7 @@ async def initiate_payment(
                 "payment_id": str(payment.id),
                 "payment_number": payment.payment_number,
                 "booking_id": str(booking_id),
+                "booking_data": payment.booking_data,
                 "payment_for": payment.payment_for,
                 "payment_provider": payment.payment_provider,
                 "payment_url": payment_url,
@@ -1254,6 +1302,13 @@ async def get_payment_status(
             detail=f"No payment found for booking {booking_id}.",
         )
 
+    b_data = dict(payment.booking_data) if isinstance(payment.booking_data, dict) else None
+    if b_data is not None and "booking_number" not in b_data and payment.booking_id:
+        bk_res = await session.execute(select(Booking.booking_number).where(Booking.id == payment.booking_id))
+        bk_num = bk_res.scalar_one_or_none()
+        if bk_num:
+            b_data["booking_number"] = bk_num
+
     return JSONResponse(
         content={
             "success": True,
@@ -1262,6 +1317,7 @@ async def get_payment_status(
                 "payment_number": getattr(payment, "payment_number", None) or "",
                 "invoice_number": getattr(payment, "invoice_number", None),
                 "booking_id": str(payment.booking_id) if payment.booking_id else None,
+                "booking_data": b_data,
                 "voucher_id": str(payment.voucher_id) if payment.voucher_id else None,
                 "payment_for": payment.payment_for,
                 "payment_provider": payment.payment_provider,
@@ -1398,14 +1454,32 @@ async def myfatoorah_webhook(
                 "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
             }
             booking_service = BookingService(session=session, settings=settings)
-            await booking_service.confirm_booking(
+            confirmed_b = await booking_service.confirm_booking(
                 payment.booking_id,
                 payment_id=str(payment.id),
                 payment_data=payment_meta_snapshot,
                 correlation_id=payment.payment_id or str(payment.id),
             )
+            if confirmed_b and confirmed_b.invoice_number and not payment.invoice_number:
+                payment.invoice_number = confirmed_b.invoice_number
         except Exception as exc:
             logger.warning("webhook_auto_confirm_notice", error=str(exc))
+
+    # Notify ushanr that invoice is paid if payment is successful
+    if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.invoice_number:
+        try:
+            import asyncio
+            from app.integrations.ushanr_client import UshanrClient
+            u_client = UshanrClient()
+            asyncio.create_task(
+                u_client.mark_invoice_paid(
+                    invoice_name=payment.invoice_number,
+                    amount_paid=payment.total_amount,
+                    payment_id=payment.id,
+                )
+            )
+        except Exception as u_exc:
+            logger.debug("mark_ushanr_invoice_paid_webhook_warning", error=str(u_exc))
 
     await session.flush()
     logger.info("myfatoorah_webhook_processed", payment_id=str(payment.id), status=payment.status)
@@ -1463,6 +1537,45 @@ async def tap_webhook(
                 correlation_id=str(charge_id),
             )
             session.add(history)
+
+        # Auto-confirm booking if success
+        if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.booking_id:
+            try:
+                payment_meta_snapshot = {
+                    "payment_id": payment.payment_id or str(payment.id),
+                    "transaction_id": payment.transaction_id,
+                    "status": payment.status,
+                    "payment_gateway": payment.payment_gateway,
+                    "payment_provider": payment.payment_provider,
+                    "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+                }
+                booking_service = BookingService(session=session, settings=settings)
+                confirmed_b = await booking_service.confirm_booking(
+                    payment.booking_id,
+                    payment_id=str(payment.id),
+                    payment_data=payment_meta_snapshot,
+                    correlation_id=payment.payment_id or str(payment.id),
+                )
+                if confirmed_b and confirmed_b.invoice_number and not payment.invoice_number:
+                    payment.invoice_number = confirmed_b.invoice_number
+            except Exception as exc:
+                logger.warning("tap_webhook_auto_confirm_notice", error=str(exc))
+
+        # Notify ushanr that invoice is paid if payment is successful
+        if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.invoice_number:
+            try:
+                import asyncio
+                from app.integrations.ushanr_client import UshanrClient
+                u_client = UshanrClient()
+                asyncio.create_task(
+                    u_client.mark_invoice_paid(
+                        invoice_name=payment.invoice_number,
+                        amount_paid=payment.total_amount,
+                        payment_id=payment.id,
+                    )
+                )
+            except Exception as u_exc:
+                logger.debug("mark_ushanr_invoice_paid_tap_warning", error=str(u_exc))
 
         await session.flush()
         logger.info("tap_webhook_processed", payment_id=str(payment.id), status=payment.status)
