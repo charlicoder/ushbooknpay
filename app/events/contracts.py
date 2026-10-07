@@ -112,6 +112,7 @@ class BookingRequestedEvent(BaseEvent):
     total_amount: str = ""
     currency: str = "KWD"
     status: str = "requested"
+    invoice_number: str = ""
 
 
 @dataclass
@@ -140,6 +141,7 @@ class BookingCreatedEvent(BaseEvent):
     total_amount: str = ""
     currency: str = "KWD"
     status: str = "requested"
+    invoice_number: str = ""
     created_by_user: str = ""
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
     change_by_user: str = ""
@@ -221,6 +223,7 @@ class BookingStatusUpdatedEvent(BaseEvent):
     payment_through: str = ""
     payment_method: str = ""
     payment_url: str = ""
+    invoice_number: str = ""
 
 
 @dataclass
@@ -287,6 +290,7 @@ class BookingConfirmedEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    invoice_number: str = ""
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
@@ -360,6 +364,7 @@ class BookingPaymentPendingEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    invoice_number: str = ""
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
@@ -433,6 +438,7 @@ class BookingCancelledEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    invoice_number: str = ""
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""
@@ -512,6 +518,7 @@ class BookingCompletedEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    invoice_number: str = ""
     created_at: str = ""
     updated_at: str = ""
     created_by: str = ""

@@ -270,7 +270,6 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "price_in_points": int(_raw_service_dict.get("price_in_points") or 0),
         "arrangement_price_in_points": arr_dict.get("price_in_points"),  # None = use service level
         "created_at": booking.created_at.isoformat() if getattr(booking, "created_at", None) else "",
-
         "updated_at": booking.updated_at.isoformat() if getattr(booking, "updated_at", None) else "",
         "created_by": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
         "created_by_user": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
@@ -282,7 +281,9 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "reward_id": str(booking.reward_id) if getattr(booking, "reward_id", None) else "",
         "voucher_id": str(booking.voucher_id) if getattr(booking, "voucher_id", None) else "",
         "voucher_data": booking.voucher_data or {},
+        "invoice_number": str(getattr(booking, "invoice_number", None) or ""),
     }
+
 
 
 def _extract_therapist_name(therapist_data: dict | None) -> str:
@@ -474,6 +475,7 @@ class BookingService:
         reward_id: uuid.UUID | None = None,
         voucher_id: uuid.UUID | None = None,
         voucher_data: dict | None = None,
+        invoice_number: str | None = None,
         created_by_user: str | None = None,
         created_by_user_data: dict | None = None,
         created_by: str | None = None,
@@ -554,6 +556,7 @@ class BookingService:
             reward_id=reward_id,
             voucher_id=voucher_id,
             voucher_data=voucher_data,
+            invoice_number=invoice_number,
             created_by_user=created_by_user or created_by,
             created_by_user_data=created_by_user_data,
         )
@@ -688,6 +691,7 @@ class BookingService:
         reward_id: uuid.UUID | None = None,
         voucher_id: uuid.UUID | None = None,
         voucher_data: dict | None = None,
+        invoice_number: str | None = None,
     ) -> Booking:
         """
         Update booking fields (status, payment_status, payment_data, timing, therapist, notes).
@@ -799,6 +803,8 @@ class BookingService:
             booking.created_by_user = created_by_user
         if created_by_user_data is not None:
             booking.created_by_user_data = created_by_user_data
+        if invoice_number is not None:
+            booking.invoice_number = invoice_number
 
         # ── Loyalty fields ────────────────────────────────────────────
         if loyalty_data is not None:
@@ -1183,6 +1189,7 @@ class BookingService:
         reward_id: uuid.UUID | None = None,
         voucher_id: uuid.UUID | None = None,
         voucher_data: dict | None = None,
+        invoice_number: str | None = None,
     ) -> Booking:
         """
         Update booking status (e.g. from admin panel or inter-service sync).
@@ -1211,7 +1218,9 @@ class BookingService:
             reward_id=reward_id,
             voucher_id=voucher_id,
             voucher_data=voucher_data,
+            invoice_number=invoice_number,
         )
+
 
     # ── Use Case 7: Retrieval ──────────────────────────────────────────────
 
@@ -1391,6 +1400,7 @@ class BookingService:
         Synchronize Payment records for a booking and record audit trail in payment_status_history.
         """
         from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+        from app.payment.infrastructure.repository import generate_payment_number
 
         target_status = str(target_payment_status).lower().strip()
 
@@ -1451,7 +1461,9 @@ class BookingService:
                         )
                         or 60
                     )
+                    pmt_number = await generate_payment_number(self._session)
                     payment = Payment(
+                        payment_number=pmt_number,
                         booking_id=booking.id,
                         customer_id=booking.customer_id,
                         customer_data=booking.customer_data,

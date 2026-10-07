@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, DBSession, RequireAppToken
+from app.common.utils import local_wallclock_now
 from app.core.logging import get_logger
 from app.loyalty.application.services import LoyaltyService
 from app.loyalty.interfaces.schemas import (
@@ -115,8 +116,8 @@ async def get_my_account(
             total_redeemed=0,
             points_expire_at=None,
             is_expired=False,
-            created_at=datetime.now(tz=timezone.utc),
-            updated_at=datetime.now(tz=timezone.utc),
+            created_at=local_wallclock_now(),
+            updated_at=local_wallclock_now(),
         )
     return _account_to_response(account)
 

@@ -34,6 +34,7 @@ from app.booking.domain.value_objects import BookingStatus, PaymentStatus
 from app.booking.infrastructure.models import Booking
 from app.booking.infrastructure.repository import BookingRepository
 from app.common.pagination import make_paginated_response
+from app.common.utils import local_wallclock_now
 from app.core.exceptions import BookingNotFoundError, PaymentProviderError
 from app.core.logging import get_logger
 from app.core.security import require_app_token
@@ -49,6 +50,7 @@ from app.payment.domain.value_objects import (
     PaymentTransactionStatus,
 )
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+from app.payment.infrastructure.repository import generate_payment_number
 from app.payment.infrastructure.providers.myfatoorah_provider import MyFatoorahProvider
 from app.payment.infrastructure.providers.tap_provider import TapProvider
 from app.payment.interfaces.schemas import (
@@ -62,6 +64,7 @@ from app.payment.interfaces.schemas import (
     PaymentStatusHistoryItem,
     PaymentStatusResponse,
     UpdatePaymentRequestSchema,
+    LinkInvoiceRequest,
 )
 
 logger = get_logger(__name__)
@@ -211,6 +214,8 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
 
     return PaymentDetailResponse(
         id=str(p.id),
+        payment_number=getattr(p, "payment_number", None) or "",
+        invoice_number=getattr(p, "invoice_number", None),
         customer_id=str(p.customer_id),
         customer_data=p.customer_data,
         sender_id=str(p.sender_id) if p.sender_id else None,
@@ -259,7 +264,7 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
         created_by_user=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
         created_by_user_data=getattr(p, "created_by_user_data", None) if isinstance(getattr(p, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
-        created_at=getattr(p, "created_at", None) or datetime.now(timezone.utc),
+        created_at=getattr(p, "created_at", None) or local_wallclock_now(),
         status_history=history,
     )
 
@@ -268,6 +273,8 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
     """Map ORM Payment model to PaymentListItem."""
     return PaymentListItem(
         id=str(p.id),
+        payment_number=getattr(p, "payment_number", None) or "",
+        invoice_number=getattr(p, "invoice_number", None),
         customer_id=str(p.customer_id),
         customer_data=p.customer_data,
         sender_id=str(p.sender_id) if p.sender_id else None,
@@ -304,7 +311,7 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         created_by_user=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
         created_by_user_data=getattr(p, "created_by_user_data", None) if isinstance(getattr(p, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(p, "created_by_user", None) or getattr(p, "created_by", None)),
-        created_at=getattr(p, "created_at", None) or datetime.now(timezone.utc),
+        created_at=getattr(p, "created_at", None) or local_wallclock_now(),
     )
 
 
@@ -510,7 +517,10 @@ async def create_payment(
             )
 
     # ── 12. Create Payment record ─────────────────────────────────────
+    payment_number = body.payment_number or await generate_payment_number(session)
     payment = Payment(
+        payment_number=payment_number,
+        invoice_number=body.invoice_number,
         customer_id=body.customer_id,
         customer_data=customer_data or None,
         sender_id=body.sender_id,
@@ -643,6 +653,8 @@ async def list_payments(
     payment_through_filter: str | None = Query(default=None, alias="payment_through"),
     payment_gateway_filter: str | None = Query(default=None, alias="payment_gateway"),
     payment_id_filter: str | None = Query(default=None, alias="payment_id"),
+    payment_number_filter: str | None = Query(default=None, alias="payment_number"),
+    invoice_number_filter: str | None = Query(default=None, alias="invoice_number"),
     transaction_id_filter: str | None = Query(default=None, alias="transaction_id"),
     invoice_id_filter: str | None = Query(default=None, alias="invoice_id"),
     created_by_user_filter: str | None = Query(default=None, alias="created_by_user"),
@@ -651,7 +663,7 @@ async def list_payments(
     to_date: datetime | None = Query(default=None),
     search: str | None = Query(
         default=None,
-        description="Search by payment_id, transaction_id, invoice_id, reference_id, track_id, recipient_phone.",
+        description="Search by payment_number, payment_id, transaction_id, invoice_id, reference_id, track_id, recipient_phone.",
     ),
 ) -> JSONResponse:
     """List payments with filtering and financial analytics summary."""
@@ -685,6 +697,10 @@ async def list_payments(
         conditions.append(Payment.payment_gateway == PaymentGateway.normalise(payment_gateway_filter).value)
     if payment_id_filter and isinstance(payment_id_filter, str):
         conditions.append(Payment.payment_id == payment_id_filter)
+    if payment_number_filter and isinstance(payment_number_filter, str):
+        conditions.append(Payment.payment_number == payment_number_filter.strip())
+    if invoice_number_filter and isinstance(invoice_number_filter, str):
+        conditions.append(Payment.invoice_number == invoice_number_filter.strip())
     if transaction_id_filter and isinstance(transaction_id_filter, str):
         conditions.append(Payment.transaction_id == transaction_id_filter)
     if invoice_id_filter and isinstance(invoice_id_filter, str):
@@ -703,6 +719,8 @@ async def list_payments(
         search_pattern = f"%{search.strip()}%"
         conditions.append(
             or_(
+                Payment.payment_number.ilike(search_pattern),
+                Payment.invoice_number.ilike(search_pattern),
                 Payment.payment_id.ilike(search_pattern),
                 Payment.transaction_id.ilike(search_pattern),
                 Payment.invoice_id.ilike(search_pattern),
@@ -901,6 +919,10 @@ async def update_payment(
         payment.product_order_items = body.product_order_items
     if body.invoice_id is not None:
         payment.invoice_id = body.invoice_id
+    if body.payment_number is not None:
+        payment.payment_number = body.payment_number
+    if body.invoice_number is not None:
+        payment.invoice_number = body.invoice_number
     if body.invoice_value is not None:
         payment.invoice_value = Decimal(str(body.invoice_value))
     if body.payment_url is not None:
@@ -1031,6 +1053,56 @@ async def delete_payment(
 
 
 @router.post(
+    "/link-invoice/",
+    summary="Link an invoice number to the payments of a source document",
+)
+async def link_invoice_to_payments(
+    body: LinkInvoiceRequest,
+    _: RequireAppToken,
+    session: DBSession,
+) -> JSONResponse:
+    """Called by ushnotice after ushanr creates the invoice for a source document."""
+    column_by_source = {
+        "booking": Payment.booking_id,
+        "shop_order": Payment.product_order_id,
+        "gift_voucher": Payment.voucher_id,
+        "gift_voucher_purchase": Payment.voucher_id,
+    }
+    column = column_by_source.get(body.source_type)
+    if column is None:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": f"Unsupported source_type: {body.source_type}"},
+        )
+    try:
+        source_uuid = uuid.UUID(str(body.source_id))
+    except ValueError:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": "source_id must be a UUID"},
+        )
+    result = await session.execute(
+        select(Payment).where(column == source_uuid, Payment.invoice_number.is_(None))
+    )
+    payments = result.scalars().all()
+    for p in payments:
+        p.invoice_number = body.invoice_number
+
+    # Also update the Booking record when source_type == "booking"
+    if body.source_type == "booking":
+        b_res = await session.execute(
+            select(Booking).where(Booking.id == source_uuid)
+        )
+        b_record = b_res.scalar_one_or_none()
+        if b_record:
+            b_record.invoice_number = body.invoice_number
+
+    await session.commit()
+    return JSONResponse(content={"updated": len(payments), "invoice_number": body.invoice_number})
+
+
+
+@router.post(
     "/initiate/",
     summary="Initiate payment for a booking",
     status_code=status.HTTP_201_CREATED,
@@ -1102,7 +1174,9 @@ async def initiate_payment(
     gateway_payment_id = session_response.get("payment_id") or session_response.get("InvoiceId", "")
 
     # Create a pending payment record
+    payment_number = await generate_payment_number(session)
     payment = Payment(
+        payment_number=payment_number,
         customer_id=customer_id,
         booking_id=booking_id,
         booking_data=_build_booking_snapshot(booking),
@@ -1142,6 +1216,7 @@ async def initiate_payment(
             "success": True,
             "data": {
                 "payment_id": str(payment.id),
+                "payment_number": payment.payment_number,
                 "booking_id": str(booking_id),
                 "payment_for": payment.payment_for,
                 "payment_provider": payment.payment_provider,
@@ -1184,6 +1259,8 @@ async def get_payment_status(
             "success": True,
             "data": {
                 "payment_id": str(payment.id),
+                "payment_number": getattr(payment, "payment_number", None) or "",
+                "invoice_number": getattr(payment, "invoice_number", None),
                 "booking_id": str(payment.booking_id) if payment.booking_id else None,
                 "voucher_id": str(payment.voucher_id) if payment.voucher_id else None,
                 "payment_for": payment.payment_for,
@@ -1243,7 +1320,9 @@ async def myfatoorah_webhook(
             except (ValueError, TypeError):
                 pass
 
+        payment_number = await generate_payment_number(session)
         payment = Payment(
+            payment_number=payment_number,
             customer_id=booking.customer_id if booking else uuid.uuid4(),
             customer_data=parsed.get("customer_data"),
             booking_id=booking_id,

@@ -7,7 +7,7 @@ Shared utility functions.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 
@@ -43,3 +43,21 @@ def to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
     return dt.astimezone(ZoneInfo("UTC"))
+
+
+DEFAULT_TIMEZONE = ZoneInfo("Asia/Kuwait")
+
+
+def to_local_tz(dt: datetime | None, tz: ZoneInfo = DEFAULT_TIMEZONE) -> datetime | None:
+    """Normalise to the platform convention (Kuwait wall-clock labelled UTC). Stored values already follow it; naive values are labelled UTC."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+
+def local_wallclock_now(tz: ZoneInfo = DEFAULT_TIMEZONE) -> datetime:
+    """Current Asia/Kuwait wall-clock time labelled UTC (platform-wide convention)."""
+    return datetime.now(tz).replace(tzinfo=timezone.utc)

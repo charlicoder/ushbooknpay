@@ -16,8 +16,17 @@ PostgreSQL-specific features used:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+
 
 from sqlalchemy import (
     Boolean,
@@ -68,6 +77,12 @@ class Booking(Base):
     # backward-compatibility with rows created before this column existed.
     booking_number: Mapped[str | None] = mapped_column(
         String(32), nullable=True, unique=True, default=None
+    )
+
+    # ── Invoice Number ────────────────────────────────────────────────────
+    # Invoice number from the ushanr invoice record for this booking (e.g. INV/2026/10/00001)
+    invoice_number: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True, default=None
     )
 
     # ── Customer Reference & Snapshot ─────────────────────────────────────
@@ -222,14 +237,16 @@ class Booking(Base):
     created_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     created_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
+        default=_now_kuwait,
+        onupdate=_now_kuwait,
         nullable=False,
     )
+
 
     @property
     def created_by(self) -> str | None:
@@ -266,6 +283,8 @@ class Booking(Base):
         Index("ix_bookings_payment_id", "payment_id"),
         # Fast lookup by created_by_user
         Index("ix_bookings_created_by_user", "created_by_user"),
+        # Fast lookup by invoice_number
+        Index("ix_bookings_invoice_number", "invoice_number"),
         # Idempotency key uniqueness
         UniqueConstraint("idempotency_key", name="uq_bookings_idempotency_key"),
         # Enforce valid booking_type values
@@ -314,7 +333,7 @@ class BookingStatusHistory(Base):
         "metadata", JSONB, nullable=True, default=dict
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
 
     booking: Mapped["Booking"] = relationship(
@@ -360,7 +379,7 @@ class TemporaryHold(Base):
         DateTime(timezone=True), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
 
     __table_args__ = (

@@ -4,6 +4,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text,
@@ -20,6 +21,14 @@ from app.gifts.domain.value_objects import (
     GiftType,
 )
 
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+
+
 def _default_expire_date() -> datetime:
     try:
         from app.core.config import get_settings
@@ -27,6 +36,7 @@ def _default_expire_date() -> datetime:
     except Exception:
         days = 60
     return datetime.now(tz=timezone.utc) + timedelta(days=days)
+
 
 def _generate_public_token() -> str:
     return secrets.token_urlsafe(32)
@@ -37,8 +47,8 @@ class GiftVoucherCart(Base):
     customer_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
     gift_type: Mapped[str] = mapped_column(String(20), nullable=False, default=GiftType.DIGITAL.value, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=GiftCartStatus.ACTIVE.value, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, onupdate=_now_kuwait, nullable=False)
     items: Mapped[list[GiftVoucherCartItem]] = relationship("GiftVoucherCartItem", back_populates="cart", cascade="all, delete-orphan")
     __table_args__ = (Index("ix_gift_carts_customer_status", "customer_id", "status"),)
 
@@ -65,8 +75,8 @@ class GiftVoucherCartItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(precision=10, scale=3), nullable=True)
     subtotal: Mapped[Decimal | None] = mapped_column(Numeric(precision=10, scale=3), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, onupdate=_now_kuwait, nullable=False)
     cart: Mapped[GiftVoucherCart] = relationship("GiftVoucherCart", back_populates="items")
     __table_args__ = (Index("ix_gift_cart_items_cart", "cart_id"),)
 
@@ -99,8 +109,8 @@ class GiftVoucherPurchase(Base):
     redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     redeemed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, onupdate=_now_kuwait, nullable=False)
     items: Mapped[list[GiftVoucherPurchaseItem]] = relationship("GiftVoucherPurchaseItem", back_populates="purchase", cascade="all, delete-orphan")
     recipient_record: Mapped[GiftVoucherRecipient | None] = relationship("GiftVoucherRecipient", back_populates="purchase", uselist=False)
     delivery: Mapped[GiftVoucherDelivery | None] = relationship("GiftVoucherDelivery", back_populates="purchase", uselist=False)
@@ -139,7 +149,7 @@ class GiftVoucherPurchaseItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     unit_price: Mapped[Decimal | None] = mapped_column(Numeric(precision=10, scale=3), nullable=True)
     subtotal: Mapped[Decimal | None] = mapped_column(Numeric(precision=10, scale=3), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
     purchase: Mapped[GiftVoucherPurchase] = relationship("GiftVoucherPurchase", back_populates="items")
 
 class GiftVoucherRecipient(Base):
@@ -150,8 +160,8 @@ class GiftVoucherRecipient(Base):
     phone_number: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str] = mapped_column(String(10), nullable=False, default="ar")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, onupdate=_now_kuwait, nullable=False)
     purchase: Mapped[GiftVoucherPurchase] = relationship("GiftVoucherPurchase", back_populates="recipient_record")
 
 class GiftVoucherDelivery(Base):
@@ -163,8 +173,8 @@ class GiftVoucherDelivery(Base):
     tracking_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, onupdate=_now_kuwait, nullable=False)
     purchase: Mapped[GiftVoucherPurchase] = relationship("GiftVoucherPurchase", back_populates="delivery")
 
 class GiftVoucherVerification(Base):
@@ -174,8 +184,8 @@ class GiftVoucherVerification(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, onupdate=_now_kuwait, nullable=False)
     purchase: Mapped[GiftVoucherPurchase] = relationship("GiftVoucherPurchase", back_populates="verification")
 
 class GiftVoucherRedemption(Base):
@@ -186,7 +196,7 @@ class GiftVoucherRedemption(Base):
     booking_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     booking_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False)
     purchase: Mapped[GiftVoucherPurchase] = relationship("GiftVoucherPurchase", back_populates="redemptions")
     __table_args__ = (UniqueConstraint("purchase_id", name="uq_gift_redemptions_purchase"),)
 
@@ -198,5 +208,5 @@ class GiftVoucherStatusHistory(Base):
     to_status: Mapped[str] = mapped_column(String(30), nullable=False)
     changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False, index=True)
     purchase: Mapped[GiftVoucherPurchase] = relationship("GiftVoucherPurchase", back_populates="status_history")

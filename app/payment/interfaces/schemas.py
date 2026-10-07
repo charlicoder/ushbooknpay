@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+
 from app.payment.domain.value_objects import (
     PaymentFor,
     PaymentGateway,
@@ -125,6 +126,14 @@ class CreatePaymentRequestSchema(BaseModel):
     )
 
     # ── Raw Gateway Data ──────────────────────────────────────────────────
+    payment_number: str | None = Field(
+        default=None,
+        description="Unique sequential reference: PMT/YYYY/MM/NNNNNN (auto-generated if omitted).",
+    )
+    invoice_number: str | None = Field(
+        default=None,
+        description="Invoice number from the ushanr invoice record for this payment (e.g. INV/2026/10/00001).",
+    )
     payment_id: str | None = Field(default=None, description="Gateway payment ID.")
     payment_data: dict[str, Any] | None = Field(default=None, description="Full gateway payload / extra data (JSONB).")
 
@@ -153,7 +162,7 @@ class CreatePaymentRequestSchema(BaseModel):
         "recipient_phone", "transaction_date", "transaction_status", "receipt_image",
         "country", "invoice_id", "payment_url", "transaction_id", "track_id", "reference_id",
         "payment_method", "payment_through", "payment_provider", "payment_gateway",
-        "payment_for", "payment_id", "status", "created_by", "created_by_user",
+        "payment_for", "payment_id", "payment_number", "invoice_number", "status", "created_by", "created_by_user",
         mode="before",
     )
     @classmethod
@@ -173,6 +182,14 @@ class CreatePaymentRequestSchema(BaseModel):
         return data
 
     model_config = {"populate_by_name": True, "extra": "allow"}
+
+
+class LinkInvoiceRequest(BaseModel):
+    """Push an invoice number onto the payments of a source document."""
+
+    source_type: str
+    source_id: str
+    invoice_number: str
 
 
 class UpdatePaymentRequestSchema(BaseModel):
@@ -239,6 +256,8 @@ class UpdatePaymentRequestSchema(BaseModel):
     payment_for: str | None = None
 
     # Payment data
+    payment_number: str | None = None
+    invoice_number: str | None = None
     payment_id: str | None = None
     payment_data: dict[str, Any] | None = None
 
@@ -300,6 +319,8 @@ class PaymentStatusHistoryItem(BaseModel):
     metadata: dict[str, Any] | None = None
     created_at: datetime
 
+
+
     @model_validator(mode="after")
     def sync_user_fields(self) -> "PaymentStatusHistoryItem":
         if not self.created_by_user and self.change_by_user:
@@ -317,6 +338,8 @@ class PaymentListItem(BaseModel):
     """Payment record summary for lists and dashboards."""
 
     id: str
+    payment_number: str | None = None
+    invoice_number: str | None = None
     customer_id: str
     customer_data: dict[str, Any] | None = None
     sender_id: str | None = None
@@ -364,6 +387,8 @@ class PaymentListItem(BaseModel):
     created_by: str | None = None
     created_at: datetime
 
+
+
     @model_validator(mode="before")
     @classmethod
     def sync_creator_fields(cls, data: Any) -> Any:
@@ -381,6 +406,8 @@ class PaymentDetailResponse(BaseModel):
     """Full detail of a payment record for finance dashboards and audits."""
 
     id: str
+    payment_number: str | None = None
+    invoice_number: str | None = None
     customer_id: str
     customer_data: dict[str, Any] | None = None
     sender_id: str | None = None
@@ -440,6 +467,8 @@ class PaymentDetailResponse(BaseModel):
     created_by: str | None = None
     created_at: datetime
 
+
+
     @model_validator(mode="before")
     @classmethod
     def sync_creator_fields(cls, data: Any) -> Any:
@@ -475,6 +504,8 @@ class PaymentSessionResponse(BaseModel):
     """Returned when a payment session is created."""
 
     payment_id: str
+    payment_number: str | None = None
+    invoice_number: str | None = None
     booking_id: str | None = None
     voucher_id: str | None = None
     payment_for: str = PaymentFor.BRANCH_SERVICE.value
@@ -489,6 +520,8 @@ class PaymentStatusResponse(BaseModel):
     """Payment status for a booking or voucher."""
 
     payment_id: str
+    payment_number: str | None = None
+    invoice_number: str | None = None
     booking_id: str | None = None
     voucher_id: str | None = None
     payment_for: str = PaymentFor.BRANCH_SERVICE.value
@@ -499,6 +532,8 @@ class PaymentStatusResponse(BaseModel):
     payment_method: str | None = None
     reference_id: str | None = None
     created_at: datetime
+
+
 
 
 class WebhookVerifyRequest(BaseModel):

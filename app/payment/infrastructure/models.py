@@ -10,9 +10,18 @@ Use provider tokenisation and store only provider references.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+
 
 from sqlalchemy import (
     DateTime,
@@ -49,6 +58,16 @@ class Payment(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # ── Identifiers ────────────────────────────────────────────────────────
+    # Human-readable payment number (PMT/YYYY/MM/[6 digit sequential number])
+    payment_number: Mapped[str] = mapped_column(
+        String(32), nullable=False, unique=True, index=True
+    )
+    # Invoice number from the ushanr invoice record for this payment (e.g. INV/2026/10/00001)
+    invoice_number: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
     )
 
     # ── Participants ───────────────────────────────────────────────────────
@@ -139,7 +158,7 @@ class Payment(Base):
 
     # ── Audit ─────────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
     created_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     created_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -188,8 +207,8 @@ class Payment(Base):
 
     def __repr__(self) -> str:
         return (
-            f"<Payment id={self.id} status={self.status} "
-            f"total={self.total_amount} {self.currency} "
+            f"<Payment id={self.id} payment_number={getattr(self, 'payment_number', None)} "
+            f"status={self.status} total={self.total_amount} {self.currency} "
             f"for={self.payment_for} booking={self.booking_id}>"
         )
 
@@ -217,7 +236,7 @@ class PaymentStatusHistory(Base):
     change_by_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
     change_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
 
     payment: Mapped["Payment"] = relationship("Payment", back_populates="status_history")

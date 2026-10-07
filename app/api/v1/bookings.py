@@ -21,10 +21,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import select, update
 
 from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession, RequireAppToken, USHAuthDep
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
+from app.payment.infrastructure.models import Payment
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
 from app.booking.interfaces.schemas import (
     AddonSchema,
@@ -116,7 +118,9 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         created_by_user=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
+        invoice_number=_safe_str(getattr(b, "invoice_number", None)),
     )
+
 
 
 def _booking_to_detail(booking: object) -> BookingDetailResponse:
@@ -219,7 +223,9 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         created_by_user=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
+        invoice_number=_safe_str(getattr(b, "invoice_number", None)),
     )
+
 
 
 @router.post(
@@ -797,6 +803,21 @@ async def create_booking(
 
     idempotency_key = body.idempotency_key or request.headers.get("Idempotency-Key")
 
+    # ── Resolve invoice_number ──────────────────────────────────────────
+    resolved_invoice_number: str | None = body.invoice_number
+    if not resolved_invoice_number and body.payment_id:
+        try:
+            p_stmt = select(Payment.invoice_number).where(
+                (Payment.id == uuid.UUID(str(body.payment_id)))
+                | (Payment.payment_id == str(body.payment_id))
+            )
+            p_res = await booking_service._session.execute(p_stmt)
+            p_inv = p_res.scalars().first()
+            if p_inv:
+                resolved_invoice_number = p_inv
+        except Exception:
+            pass
+
     # ── 7. Create booking record ────────────────────────────────────────
     try:
         booking = await booking_service.create_booking(
@@ -836,11 +857,13 @@ async def create_booking(
             reward_id=body.reward_id,
             voucher_id=body.voucher_id,
             voucher_data=body.voucher_data,
+            invoice_number=resolved_invoice_number,
             created_by_user=created_by_user,
             created_by_user_data=created_by_user_data,
             created_by=created_by,
             source=request_source,
         )
+
     except DoubleBookingError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -879,6 +902,39 @@ async def create_booking(
                     detail=str(exc),
                 )
 
+    # ── Auto-create or fetch invoice from ushanr if booking is confirmed / paid ─
+    if not booking.invoice_number and (
+        booking.status == BookingStatus.CONFIRMED.value
+        or booking.payment_status == PaymentStatus.SUCCESS.value
+    ):
+        from app.integrations.ushanr_client import UshanrClient
+        ushanr_c = UshanrClient()
+        try:
+            cust_name = f"{customer_data.get('first_name', '')} {customer_data.get('last_name', '')}".strip()
+            inv_name = await ushanr_c.create_or_get_booking_invoice(
+                booking=booking,
+                customer_name=cust_name,
+                customer_phone=customer_data.get("phone_number", ""),
+                customer_email=customer_data.get("email", ""),
+            )
+            if inv_name:
+                booking.invoice_number = inv_name
+                await booking_service._session.commit()
+                # Also link to any payments for this booking
+                try:
+                    await booking_service._session.execute(
+                        update(Payment)
+                        .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                        .values(invoice_number=inv_name)
+                    )
+                    await booking_service._session.commit()
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("auto_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))
+        finally:
+            await ushanr_c.aclose()
+
     # ── 8. Return success response ──────────────────────────────────────
     return CreateBookingResponse(
         success=True,
@@ -905,8 +961,10 @@ async def create_booking(
             created_by_user=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
             created_by_user_data=getattr(booking, "created_by_user_data", None) if isinstance(getattr(booking, "created_by_user_data", None), dict) else None,
             created_by=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
+            invoice_number=_safe_str(getattr(booking, "invoice_number", None)),
         ),
     )
+
 
 
 
@@ -1154,7 +1212,9 @@ async def update_booking(
         },
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
+        invoice_number=body.invoice_number,
     )
+
 
     # ── Dispatch booking.updated SQS event to ushnotice ───────────────────
     appt_dt_str = updated.appointment_date.strftime("%Y-%m-%d") if updated.appointment_date else ""
@@ -1370,8 +1430,11 @@ async def update_booking_status(
                 payload = decode_token(auth_header.split(" ")[1], settings)
                 user_id = payload.sub
                 if not user_data:
+                    full_name = f"{payload.first_name or ''} {payload.last_name or ''}".strip()
                     user_data = {
                         "id": payload.sub,
+                        "name": full_name or getattr(payload, "name", None) or payload.sub,
+                        "full_name": full_name or getattr(payload, "name", None) or payload.sub,
                         "first_name": payload.first_name or "",
                         "last_name": payload.last_name or "",
                         "phone_number": payload.phone_number or "",
@@ -1381,7 +1444,11 @@ async def update_booking_status(
             except Exception:
                 pass
     if not user_id:
-        user_id = body.source or "system"
+        user_id = (
+            (user_data.get("full_name") or user_data.get("name"))
+            if isinstance(user_data, dict)
+            else None
+        ) or body.source or "system"
     if not user_data:
         user_data = {"source": body.source, "reason": body.reason} if body.source else None
 
@@ -1405,7 +1472,9 @@ async def update_booking_status(
         reward_id=body.reward_id,
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
+        invoice_number=body.invoice_number,
     )
+
 
     # ── Update appointment cache when booking is cancelled ───────────────
     if body.status and str(body.status).lower() == "cancelled":
@@ -1487,3 +1556,46 @@ async def update_booking_status(
             "data": _booking_to_detail(updated).model_dump(mode="json"),
         }
     )
+
+
+class LinkBookingInvoiceRequest(BaseModel):
+    invoice_number: str
+
+
+@router.post(
+    "/{booking_id}/invoice/",
+    summary="Link or update invoice number on a booking",
+    response_class=JSONResponse,
+)
+async def link_booking_invoice(
+    booking_id: uuid.UUID,
+    body: LinkBookingInvoiceRequest,
+    _: RequireAppToken,
+    session: DBSession,
+) -> JSONResponse:
+    """Set or update invoice_number on a booking and link it to any unlinked payments."""
+    from app.booking.infrastructure.models import Booking
+
+    b_res = await session.execute(select(Booking).where(Booking.id == booking_id))
+    booking = b_res.scalar_one_or_none()
+    if not booking:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Booking {booking_id} not found",
+        )
+    booking.invoice_number = body.invoice_number
+    # Also update any payments for this booking that don't have an invoice_number
+    await session.execute(
+        update(Payment)
+        .where(Payment.booking_id == booking_id, Payment.invoice_number.is_(None))
+        .values(invoice_number=body.invoice_number)
+    )
+    await session.commit()
+    return JSONResponse(
+        content={
+            "success": True,
+            "booking_id": str(booking_id),
+            "invoice_number": body.invoice_number,
+        }
+    )
+

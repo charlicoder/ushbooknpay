@@ -14,13 +14,21 @@ the service crashes between the state change and the SQS publish.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import DateTime, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
 
 
 class OutboxEvent(Base):
@@ -62,10 +70,10 @@ class OutboxEvent(Base):
 
     # ── Timing ────────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
     scheduled_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )  # Allows delayed publishing / exponential backoff
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

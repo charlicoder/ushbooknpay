@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.loyalty.domain.models import LoyaltyAccountDomain, LoyaltyTransactionDomain, TransactionType
+from app.common.utils import local_wallclock_now
 from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction
 
 logger = structlog.get_logger(__name__)
@@ -97,7 +98,7 @@ class LoyaltyRepository:
         account.balance_points += points
         account.total_earned += points
         account.points_expire_at = expiry
-        account.updated_at = datetime.utcnow()
+        account.updated_at = local_wallclock_now()
 
         txn = LoyaltyTransaction(
             account_id=account.id,
@@ -148,7 +149,7 @@ class LoyaltyRepository:
 
         account.balance_points -= points
         account.total_redeemed += points
-        account.updated_at = datetime.utcnow()
+        account.updated_at = local_wallclock_now()
 
         txn = LoyaltyTransaction(
             account_id=account.id,
@@ -214,7 +215,7 @@ class LoyaltyRepository:
 
         if deduct > 0:
             account.balance_points -= deduct
-            account.updated_at = datetime.utcnow()
+            account.updated_at = local_wallclock_now()
 
         txn = LoyaltyTransaction(
             account_id=account.id,
@@ -263,7 +264,7 @@ class LoyaltyRepository:
         if account.balance_points > 0:
             expired_points = account.balance_points
             account.balance_points = 0
-            account.updated_at = datetime.utcnow()
+            account.updated_at = local_wallclock_now()
 
             txn = LoyaltyTransaction(
                 account_id=account.id,
@@ -309,7 +310,7 @@ class LoyaltyRepository:
             delta = -deduct  # record actual deduction
             txn_type = TransactionType.ADJUST.value
 
-        account.updated_at = datetime.utcnow()
+        account.updated_at = local_wallclock_now()
 
         txn = LoyaltyTransaction(
             account_id=account.id,

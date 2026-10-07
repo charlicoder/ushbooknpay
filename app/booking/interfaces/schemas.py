@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+
 from app.booking.domain.value_objects import (
     BookingPaymentGateway,
     BookingPaymentProvider,
@@ -58,6 +59,7 @@ class StatusHistoryItem(BaseModel):
     change_by_user_data: dict[str, Any] | None = None
     reason: str | None
     created_at: datetime
+
 
 
 # ── Request Schemas ───────────────────────────────────────────────────────────
@@ -347,9 +349,17 @@ class CreateBookingRequest(BaseModel):
         description="Snapshot of the gift voucher at redemption time.",
     )
 
+    # Invoice number from ushanr invoice record
+    invoice_number: str | None = Field(
+        default=None,
+        alias="invoiceNumber",
+        description="Invoice number from ushanr invoice record for this booking (e.g. INV/2026/10/00001).",
+    )
+
     idempotency_key: str | None = Field(
         default=None, max_length=255, alias="Idempotency-Key"
     )
+
 
     @field_validator("payment_provider", mode="before")
     @classmethod
@@ -545,6 +555,12 @@ class UpdateBookingRequest(BaseModel):
         alias="voucherData",
         description="Snapshot of the gift voucher at redemption time.",
     )
+    invoice_number: str | None = Field(
+        default=None,
+        alias="invoiceNumber",
+        description="Invoice number from ushanr invoice record for this booking.",
+    )
+
 
     @field_validator("payment_provider", mode="before")
     @classmethod
@@ -681,6 +697,12 @@ class UpdateBookingStatusRequest(BaseModel):
     )
     payment_method: str | None = Field(default=None, alias="paymentMethod")
     payment_url: str | None = Field(default=None, alias="paymentUrl")
+    invoice_number: str | None = Field(
+        default=None,
+        alias="invoiceNumber",
+        description="Invoice number from ushanr invoice record for this booking.",
+    )
+
 
     @field_validator("payment_provider", mode="before")
     @classmethod
@@ -849,6 +871,8 @@ class BookingListItem(BaseModel):
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
+    invoice_number: str | None = None
+
 
     @model_validator(mode="after")
     def sync_created_by(self) -> "BookingListItem":
@@ -918,6 +942,8 @@ class BookingDetailResponse(BaseModel):
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
+    invoice_number: str | None = None
+
 
     @model_validator(mode="after")
     def sync_created_by(self) -> "BookingDetailResponse":
@@ -962,6 +988,7 @@ class CreateBookingDataResponse(BaseModel):
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
+    invoice_number: str | None = None
 
     @model_validator(mode="after")
     def sync_created_by(self) -> "CreateBookingDataResponse":

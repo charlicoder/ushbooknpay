@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "ushbooknpay"
     APP_VERSION: str = "1.0.0"
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    TIMEZONE: str = "Asia/Kuwait"
 
     # ── 2. Server ────────────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
@@ -140,7 +141,34 @@ class Settings(BaseSettings):
             return self.USHAUTH_DIRECT_URL.rstrip("/")
         return f"{self.API_GATEWAY_BASE_URL.rstrip('/')}{self.USHAUTH_BASE_PATH}"
 
+    # Direct inter-service URL for ushanr (invoicing/accounting).
+    USHANR_BASE_URL: str = Field(
+        default="http://host.docker.internal:8007",
+        description="Base URL of the ushanr microservice (e.g. http://host.docker.internal:8007 or http://localhost:8004).",
+    )
+    USHANR_INTERNAL_API_KEY: str = Field(
+        default="",
+        description="Internal API key for ushanr service-to-service calls.",
+    )
+    USHANR_COMPANY_ID: str = Field(
+        default="",
+        description="Default company UUID in ushanr.",
+    )
+    USHANR_AR_JOURNAL_ID: str = Field(
+        default="",
+        description="Default AR journal UUID in ushanr.",
+    )
+    USHANR_REVENUE_ACCOUNT_ID: str = Field(
+        default="",
+        description="Default revenue account UUID in ushanr.",
+    )
+    USHANR_ADDON_ACCOUNT_ID: str = Field(
+        default="",
+        description="Default add-on revenue account UUID in ushanr.",
+    )
+
     # ── 7. AWS ───────────────────────────────────────────────────────────
+
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""  # never log
     AWS_REGION: str = "ap-south-1"

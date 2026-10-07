@@ -24,6 +24,15 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+
 
 from sqlalchemy import (
     Boolean,
@@ -245,14 +254,16 @@ class GiftVoucher(Base):
 
     # ── Audit timestamps ──────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
+        default=_now_kuwait,
+        onupdate=_now_kuwait,
         nullable=False,
     )
+
 
     __table_args__ = (
         UniqueConstraint("public_token", name="uq_gift_vouchers_public_token"),

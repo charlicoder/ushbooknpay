@@ -12,8 +12,10 @@ Tables:
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     DateTime,
@@ -31,6 +33,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.shop.domain.value_objects import DeliveryStatus, OrderPaymentStatus
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
 
 
 class ShopOrder(Base):
@@ -150,14 +159,16 @@ class ShopOrder(Base):
 
     # ── Timestamps ───────────────────────────────────────────────────────
     created_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now(), default=_now_kuwait
     )
     updated_at: Mapped[Any] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
-        onupdate=func.now(),
+        default=_now_kuwait,
+        onupdate=_now_kuwait,
     )
+
 
     # ── Relationships ─────────────────────────────────────────────────────
     items: Mapped[list["ShopOrderItem"]] = relationship(
@@ -216,7 +227,7 @@ class ShopOrderItem(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KWD")
 
     created_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now(), default=_now_kuwait
     )
 
     order: Mapped["ShopOrder"] = relationship("ShopOrder", back_populates="items")
@@ -251,7 +262,7 @@ class ShopOrderStatusHistory(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[Any] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), nullable=False, server_default=func.now(), default=_now_kuwait
     )
 
     order: Mapped["ShopOrder"] = relationship(
