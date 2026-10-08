@@ -339,8 +339,10 @@ async def create_gift_voucher(
             customer = await ushauth_client.get_or_create_customer(
                 phone_number=body.recipient_phone,
                 full_name=full_name_hint,
+                without_password=True,
                 settings=settings,
             )
+            created_flag = bool(customer.get("created", False))
             # Override recipient_id with the authoritative ushauth UUID
             if customer.get("id"):
                 recipient_id = uuid.UUID(str(customer["id"]))
@@ -352,6 +354,8 @@ async def create_gift_voucher(
                 "phone_number": customer.get("phone_number", body.recipient_phone),
                 "email": customer.get("email") or recipient_data.get("email", ""),
                 "avatar": customer.get("avatar"),
+                "is_new_user": created_flag,
+                "created": created_flag,
             }
             if customer.get("password"):
                 merged["password"] = customer["password"]
@@ -359,7 +363,7 @@ async def create_gift_voucher(
             logger.info(
                 "recipient_resolved_via_ushauth",
                 recipient_id=str(recipient_id),
-                created=customer.get("created", False),
+                created=created_flag,
             )
         except Exception as exc:
             # Non-fatal: log and continue with whatever the caller supplied
@@ -1308,8 +1312,10 @@ async def update_gift_voucher(
             customer = await ushauth_client.get_or_create_customer(
                 phone_number=updates["recipient_phone"],
                 full_name=full_name_hint,
+                without_password=True,
                 settings=settings,
             )
+            created_flag = bool(customer.get("created", False))
             if customer.get("id"):
                 updates["recipient_id"] = uuid.UUID(str(customer["id"]))
             if isinstance(rec_data, dict):
@@ -1319,6 +1325,8 @@ async def update_gift_voucher(
                     "phone_number": customer.get("phone_number", updates["recipient_phone"]),
                     "email": customer.get("email") or rec_data.get("email", ""),
                     "avatar": customer.get("avatar"),
+                    "is_new_user": created_flag,
+                    "created": created_flag,
                 }
                 if customer.get("password"):
                     merged["password"] = customer["password"]

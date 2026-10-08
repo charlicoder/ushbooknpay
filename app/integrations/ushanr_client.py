@@ -6,6 +6,12 @@ Client for the ushanr accounting/invoicing service.
 Used by ushbooknpay to fetch or auto-create invoices in ushanr.
 Calls internal endpoints directly using a shared X-Internal-Key header.
 All calls are non-blocking on error — returning None or empty rather than crashing.
+
+Accounting note:
+  Invoices in ushanr transition through draft → posted → paid.
+  When an invoice is paid, its linked general ledger JournalEntry remains 'posted'
+  because in standard double-entry bookkeeping, journal entries are immutable
+  audit records and do not possess a 'paid' state.
 """
 from __future__ import annotations
 

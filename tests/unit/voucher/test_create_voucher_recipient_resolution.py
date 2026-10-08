@@ -111,7 +111,7 @@ async def test_recipient_resolved_from_ushauth():
         captured.update(kwargs)
         return _make_mock_voucher()
 
-    async def mock_get_or_create(phone_number, full_name="", settings=None):
+    async def mock_get_or_create(phone_number, full_name="", settings=None, **kwargs):
         return USHAUTH_PROFILE
 
     mock_svc = MagicMock()
@@ -239,7 +239,7 @@ async def test_recipient_password_preserved_when_created():
         "password": "123456",
     }
 
-    async def mock_get_or_create(phone_number, full_name="", settings=None):
+    async def mock_get_or_create(phone_number, full_name="", settings=None, **kwargs):
         return profile_with_password
 
     async def mock_create_voucher(**kwargs):
@@ -267,3 +267,53 @@ async def test_recipient_password_preserved_when_created():
 
     assert captured_recipient_data is not None
     assert captured_recipient_data.get("password") == "123456"
+    assert captured_recipient_data.get("is_new_user") is True
+
+
+@pytest.mark.asyncio
+async def test_recipient_created_without_password_marked_as_new_user():
+    """When ushauth creates new customer without password, recipient_data has is_new_user=True and no password."""
+    captured_recipient_data = None
+    captured_kwargs: dict[str, Any] = {}
+
+    profile_without_password = {
+        "id": RECIPIENT_ID,
+        "name": "New Recipient Without Pass",
+        "phone_number": "+96541028983",
+        "email": "newnopass@example.com",
+        "avatar": None,
+        "created": True,
+        "password": None,
+    }
+
+    async def mock_get_or_create(phone_number, full_name="", without_password=True, settings=None):
+        captured_kwargs["without_password"] = without_password
+        return profile_without_password
+
+    async def mock_create_voucher(**kwargs):
+        nonlocal captured_recipient_data
+        captured_recipient_data = kwargs.get("recipient_data")
+        return _make_mock_voucher()
+
+    mock_svc = MagicMock()
+    mock_svc.create_voucher = mock_create_voucher
+    session = AsyncMock()
+
+    with (
+        patch("app.voucher.api.router.ushauth_client.get_or_create_customer", new=mock_get_or_create),
+        patch("app.voucher.api.router.GiftVoucherService", return_value=mock_svc),
+        patch("app.voucher.api.router.get_settings", return_value=MagicMock(
+            USHSPA_TOKEN="test-token", GATEWAY_TIMEOUT=5,
+            ushauth_base_url="http://ushauth.local",
+        )),
+    ):
+        await create_gift_voucher(
+            body=VALID_REQUEST,
+            current_user=MOCK_USER,
+            session=session,
+        )
+
+    assert captured_kwargs.get("without_password") is True
+    assert captured_recipient_data is not None
+    assert captured_recipient_data.get("is_new_user") is True
+    assert "password" not in captured_recipient_data or captured_recipient_data.get("password") is None

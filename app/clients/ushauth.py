@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 async def get_or_create_customer(
     phone_number: str,
     full_name: str = "",
+    without_password: bool = True,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """
@@ -31,9 +32,10 @@ async def get_or_create_customer(
     customer profile dict.
 
     Args:
-        phone_number: E.164 phone number of the recipient.
-        full_name:    Optional display name to pass when creating a new customer.
-        settings:     Optional Settings instance (uses get_settings() if omitted).
+        phone_number:     E.164 phone number of the recipient.
+        full_name:        Optional display name to pass when creating a new customer.
+        without_password: Create customer without password (defaults to True).
+        settings:         Optional Settings instance (uses get_settings() if omitted).
 
     Returns:
         Customer profile dict with keys: id, name, phone_number, email, avatar, created.
@@ -45,7 +47,10 @@ async def get_or_create_customer(
         settings = get_settings()
 
     url = f"{settings.ushauth_base_url.rstrip('/')}/api/v1/customers/get-or-create/"
-    payload: dict[str, Any] = {"phone_number": phone_number}
+    payload: dict[str, Any] = {
+        "phone_number": phone_number,
+        "without_password": without_password,
+    }
     if full_name:
         payload["full_name"] = full_name
 
