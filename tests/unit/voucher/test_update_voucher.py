@@ -1029,8 +1029,7 @@ def test_mark_public_digital_gift_opened_endpoint():
             assert data["success"] is True
             assert data["data"]["is_digital_gift_opened"] is True
             assert data["data"]["digital_product_data"] == {"download": "https://example.com/item"}
-            # Secret code should NOT be in public response
-            assert "secret_code" not in data["data"]
+            assert data["data"]["secret_code"] == mock_voucher.secret_code
             mock_mark.assert_awaited_once_with("pub-test-token")
     finally:
         app.dependency_overrides.pop(get_db_session, None)

@@ -567,7 +567,7 @@ async def test_public_voucher_page_includes_voucher_number():
         assert data["success"] is True
         assert data["data"]["voucher_number"] == "V260921001"
         assert data["data"]["public_token"] == "pub-test-token"
-        assert "secret_code" not in data["data"]
+        assert data["data"]["secret_code"] == v.secret_code
         mock_get.assert_awaited_once_with("pub-test-token")
 
 

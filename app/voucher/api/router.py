@@ -175,7 +175,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
 
 
 def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
-    """Map ORM GiftVoucher → public (no secret_code) response."""
+    """Map ORM GiftVoucher → public response."""
     # Only expose sender's name on the public page, not phone number
     sender_public: dict[str, Any] = {"name": (v.sender_data or {}).get("name", "")}
     delivery_status = _extract_delivery_status(v)
@@ -209,6 +209,7 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
         gift_from=_extract_gift_from(v),
         gift_template=v.gift_template,
         public_token=v.public_token,
+        secret_code=getattr(v, "secret_code", None),
         created_at=v.created_at,
     )
 
@@ -726,7 +727,7 @@ async def admin_list_vouchers(
     summary="Public gift card page",
     description=(
         "Return public-facing gift voucher details for the shareable gift card URL. "
-        "No authentication required. Secret code is NOT included in the response."
+        "No authentication required."
     ),
 )
 @router.get(
@@ -738,10 +739,7 @@ async def public_voucher_page(
     session: DBSession,
 ) -> JSONResponse:
     """
-    Public gift card page endpoint — no auth required, no secret_code in response.
-
-    The secret_code is delivered to the recipient via ushnotice (SMS/Email/WhatsApp)
-    when the voucher becomes active, not through this public URL.
+    Public gift card page endpoint — no auth required.
     """
     svc = GiftVoucherService(session)
     try:

@@ -929,7 +929,7 @@ class GiftVoucherPublicResponse(BaseModel):
     gift_from: str | None = None
     gift_template: str | None = None
     public_token: str
-    # secret_code is OMITTED from the public response
+    secret_code: str | None = None
     # payment_id / payment_data are OMITTED from the public response
     created_at: datetime
 
