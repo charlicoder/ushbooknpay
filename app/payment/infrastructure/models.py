@@ -19,8 +19,8 @@ _KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
 
 
 def _now_kuwait() -> datetime:
-    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
-    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+    """Current UTC timestamp for audit columns (avoids 3h double-offset when read as TIMESTAMPTZ)."""
+    return datetime.now(timezone.utc)
 
 
 from sqlalchemy import (
@@ -40,6 +40,9 @@ from app.core.database import Base
 from app.payment.domain.value_objects import (
     PaymentFor,
     PaymentTransactionStatus,
+    RefundMethod,
+    RefundStatus,
+    RefundType,
 )
 
 
@@ -101,6 +104,12 @@ class Payment(Base):
     total_amount: Mapped[Decimal] = mapped_column(
         Numeric(precision=10, scale=3), nullable=False
     )
+    amount_refunded: Mapped[Decimal] = mapped_column(
+        Numeric(precision=10, scale=3),
+        nullable=False,
+        default=Decimal("0.000"),
+        server_default="0.000",
+    )
     total_duration: Mapped[int] = mapped_column(Integer, nullable=False)        # total duration in minutes
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KWD")
     country: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -123,6 +132,9 @@ class Payment(Base):
     booking_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     voucher_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    voucher_number: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True
+    )
     voucher_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     product_order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
@@ -175,6 +187,12 @@ class Payment(Base):
     # ── Relationships ─────────────────────────────────────────────────────
     status_history: Mapped[list["PaymentStatusHistory"]] = relationship(
         "PaymentStatusHistory",
+        back_populates="payment",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    refunds: Mapped[list["Refund"]] = relationship(
+        "Refund",
         back_populates="payment",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -261,3 +279,140 @@ class PaymentStatusHistory(Base):
         Index("ix_payment_status_history_payment_id", "payment_id"),
         Index("ix_payment_status_history_change_by_user", "change_by_user"),
     )
+
+
+class Refund(Base):
+    """
+    Refund transaction record supporting both Automated (Payment Gateway) and Manual (Desk / Branch) refunds.
+
+    Preserves full financial auditability without mutating or deleting historical payments or invoices.
+    For manual refunds: payment_gateway and gateway_refund_id may be NULL, but an internal refund_number
+    is always generated (e.g. REF/2026/10/000001).
+    """
+
+    __tablename__ = "refunds"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+
+    # ── Identifiers ────────────────────────────────────────────────────────
+    refund_number: Mapped[str] = mapped_column(
+        String(32), nullable=False, unique=True, index=True
+    )
+    booking_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    booking_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    invoice_number: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
+    credit_note_number: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
+
+    # ── Participants & Location ───────────────────────────────────────────
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    customer_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    branch_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # ── Refund Classification & Lifecycle ─────────────────────────────────
+    refund_type: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=RefundType.MANUAL.value,
+        index=True,
+    )
+    refund_method: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=RefundMethod.CASH.value,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=RefundStatus.COMPLETED.value,
+        index=True,
+    )
+
+    # ── Financial Amounts ─────────────────────────────────────────────────
+    requested_amount: Mapped[Decimal] = mapped_column(
+        Numeric(precision=10, scale=3), nullable=False
+    )
+    cancellation_fee: Mapped[Decimal] = mapped_column(
+        Numeric(precision=10, scale=3),
+        nullable=False,
+        default=Decimal("0.000"),
+        server_default="0.000",
+    )
+    refunded_amount: Mapped[Decimal] = mapped_column(
+        Numeric(precision=10, scale=3), nullable=False
+    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KWD")
+
+    # ── Context & Notes ───────────────────────────────────────────────────
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    customer_confirmation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # ── Gateway Integration Details (Automated refunds) ───────────────────
+    payment_gateway: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    gateway_transaction_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gateway_refund_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gateway_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # ── Staff Audit ───────────────────────────────────────────────────────
+    processed_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    processed_by_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=_now_kuwait
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        default=_now_kuwait,
+        onupdate=_now_kuwait,
+        nullable=False,
+    )
+
+    # ── Relationships ─────────────────────────────────────────────────────
+    payment: Mapped["Payment | None"] = relationship("Payment", back_populates="refunds")
+
+    __table_args__ = (
+        Index("ix_refunds_refund_number", "refund_number"),
+        Index("ix_refunds_booking_id", "booking_id"),
+        Index("ix_refunds_payment_id", "payment_id"),
+        Index("ix_refunds_customer_id", "customer_id"),
+        Index("ix_refunds_branch_id", "branch_id"),
+        Index("ix_refunds_refund_type", "refund_type"),
+        Index("ix_refunds_refund_method", "refund_method"),
+        Index("ix_refunds_status", "status"),
+        Index("ix_refunds_created_at", "created_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Refund id={self.id} refund_number={self.refund_number} "
+            f"type={self.refund_type} method={self.refund_method} "
+            f"amount={self.refunded_amount} {self.currency} status={self.status}>"
+        )
+

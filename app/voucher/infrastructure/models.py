@@ -30,8 +30,8 @@ _KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
 
 
 def _now_kuwait() -> datetime:
-    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
-    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+    """Current UTC timestamp for audit columns (avoids 3h double-offset when read as TIMESTAMPTZ)."""
+    return datetime.now(timezone.utc)
 
 
 from sqlalchemy import (

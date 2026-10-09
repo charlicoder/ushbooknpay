@@ -313,16 +313,20 @@ async def create_gift_voucher(
 
     # Build sender_data from both body-supplied data and JWT profile
     sender_data: dict[str, Any] = body.sender_data.model_dump()
-    if not sender_data.get("name"):
-        full_name = " ".join(
-            filter(None, [current_user.first_name, current_user.last_name])
-        )
-        sender_data["name"] = full_name
-    if not sender_data.get("phone_number") and current_user.phone_number:
-        sender_data["phone_number"] = current_user.phone_number
-    # Always store sender's language_preference so ushnotice can use it for SMS/WhatsApp/Email
-    if not sender_data.get("language_preference"):
-        sender_data["language_preference"] = getattr(current_user, "language_preference", None) or "en"
+    if sender_id == created_by:
+        if not sender_data.get("name"):
+            full_name = " ".join(
+                filter(None, [current_user.first_name, current_user.last_name])
+            )
+            sender_data["name"] = full_name
+        if not sender_data.get("phone_number") and current_user.phone_number:
+            sender_data["phone_number"] = current_user.phone_number
+        # Always store sender's language_preference so ushnotice can use it for SMS/WhatsApp/Email
+        if not sender_data.get("language_preference"):
+            sender_data["language_preference"] = getattr(current_user, "language_preference", None) or "en"
+    else:
+        if not sender_data.get("language_preference"):
+            sender_data["language_preference"] = "en"
 
     # ── Resolve recipient via ushauth get-or-create ──────────────────────
     # When recipient_phone is supplied, call ushauth to look up or create

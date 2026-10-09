@@ -28,7 +28,7 @@ _KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
 
 def _now_kuwait() -> datetime:
     """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention)."""
-    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc)
 
 
 class OutboxEvent(Base):

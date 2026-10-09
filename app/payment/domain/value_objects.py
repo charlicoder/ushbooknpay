@@ -135,3 +135,66 @@ class PaymentMethod(str, Enum):
     GOOGLE_PAY = "google_pay"
     CASH = "cash"
     UNKNOWN = "unknown"
+
+
+class RefundType(str, Enum):
+    """Refund workflow classification."""
+
+    AUTOMATED = "automated"
+    MANUAL = "manual"
+
+    @classmethod
+    def normalise(cls, value: str) -> "RefundType":
+        if not value:
+            return cls.MANUAL
+        v = value.strip().lower()
+        if "auto" in v or "gateway" in v:
+            return cls.AUTOMATED
+        return cls.MANUAL
+
+
+class RefundMethod(str, Enum):
+    """Payment method/channel used to return funds to customer."""
+
+    PAYMENT_GATEWAY = "payment_gateway"
+    PAYMENT_LINK = "payment_link"
+    CASH = "cash"
+    CARD = "card"
+    BANK_TRANSFER = "bank_transfer"
+    OTHER = "other"
+
+    @classmethod
+    def normalise(cls, value: str) -> "RefundMethod":
+        if not value:
+            return cls.OTHER
+        v = value.strip().lower().replace("-", "_").replace(" ", "_")
+        mapping = {
+            "payment_gateway": cls.PAYMENT_GATEWAY,
+            "gateway": cls.PAYMENT_GATEWAY,
+            "tap": cls.PAYMENT_GATEWAY,
+            "myfatoorah": cls.PAYMENT_GATEWAY,
+            "knet": cls.PAYMENT_GATEWAY,
+            "payment_link": cls.PAYMENT_LINK,
+            "link": cls.PAYMENT_LINK,
+            "cash": cls.CASH,
+            "card": cls.CARD,
+            "pos": cls.CARD,
+            "credit_card": cls.CARD,
+            "debit_card": cls.CARD,
+            "bank_transfer": cls.BANK_TRANSFER,
+            "bank": cls.BANK_TRANSFER,
+            "transfer": cls.BANK_TRANSFER,
+            "other": cls.OTHER,
+        }
+        return mapping.get(v, cls.OTHER)
+
+
+class RefundStatus(str, Enum):
+    """Refund transaction lifecycle states."""
+
+    REQUESTED = "requested"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+

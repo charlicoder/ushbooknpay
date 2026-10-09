@@ -91,6 +91,7 @@ class CreatePaymentRequestSchema(BaseModel):
     booking_id: uuid.UUID | None = Field(default=None, description="Associated booking UUID.")
     booking_data: dict[str, Any] | None = Field(default=None, description="Booking snapshot (JSONB).")
     voucher_id: uuid.UUID | None = Field(default=None, description="Associated gift voucher UUID.")
+    voucher_number: str | None = Field(default=None, description="Gift voucher number.")
     voucher_data: dict[str, Any] | None = Field(default=None, description="Voucher snapshot (JSONB).")
     product_order_id: uuid.UUID | None = Field(default=None, description="Associated product order UUID.")
     product_order_items: list[Any] | dict[str, Any] | None = Field(default=None, description="Product order items (JSONB).")
@@ -162,7 +163,7 @@ class CreatePaymentRequestSchema(BaseModel):
         "recipient_phone", "transaction_date", "transaction_status", "receipt_image",
         "country", "invoice_id", "payment_url", "transaction_id", "track_id", "reference_id",
         "payment_method", "payment_through", "payment_provider", "payment_gateway",
-        "payment_for", "payment_id", "payment_number", "invoice_number", "status", "created_by", "created_by_user",
+        "payment_for", "payment_id", "payment_number", "invoice_number", "voucher_number", "status", "created_by", "created_by_user",
         mode="before",
     )
     @classmethod
@@ -233,6 +234,7 @@ class UpdatePaymentRequestSchema(BaseModel):
     booking_id: uuid.UUID | None = None
     booking_data: dict[str, Any] | None = None
     voucher_id: uuid.UUID | None = None
+    voucher_number: str | None = None
     voucher_data: dict[str, Any] | None = None
     product_order_id: uuid.UUID | None = None
     product_order_items: list[Any] | dict[str, Any] | None = None
@@ -291,6 +293,7 @@ class InitiatePaymentRequest(BaseModel):
 
     booking_id: str | None = Field(default=None, description="Booking ID if paying for a booking.")
     voucher_id: str | None = Field(default=None, description="Voucher ID if paying for a voucher.")
+    voucher_number: str | None = Field(default=None, description="Voucher number if paying for a voucher.")
     payment_for: str = Field(
         default=PaymentFor.BRANCH_SERVICE.value,
         description="Purpose: branch_service, home_service, gift_voucher, product_items",
@@ -366,6 +369,7 @@ class PaymentListItem(BaseModel):
     booking_number: str | None = None
     booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     product_order_id: str | None = None
 
     invoice_id: str | None = None
@@ -440,8 +444,10 @@ class PaymentDetailResponse(BaseModel):
     recipient_data: dict[str, Any] | None = None
 
     booking_id: str | None = None
+    booking_number: str | None = None
     booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     voucher_data: dict[str, Any] | None = None
     product_order_id: str | None = None
     product_order_items: Any | None = None
@@ -511,6 +517,7 @@ class PaymentSessionResponse(BaseModel):
     booking_id: str | None = None
     booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     payment_for: str = PaymentFor.BRANCH_SERVICE.value
     provider: str
     payment_url: str
@@ -528,6 +535,7 @@ class PaymentStatusResponse(BaseModel):
     booking_id: str | None = None
     booking_data: dict[str, Any] | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     payment_for: str = PaymentFor.BRANCH_SERVICE.value
     payment_provider: str
     status: str | None = None
@@ -546,3 +554,133 @@ class WebhookVerifyRequest(BaseModel):
     provider: str
     provider_payment_id: str
     raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Refund Schemas ────────────────────────────────────────────────────────────
+
+
+class CreateManualRefundRequest(BaseModel):
+    """Request payload for staff recording a manual refund in ushdesk."""
+
+    refund_amount: Decimal = Field(
+        ...,
+        gt=0,
+        description="Amount refunded to the customer.",
+    )
+    cancellation_fee: Decimal = Field(
+        default=Decimal("0.000"),
+        ge=0,
+        description="Optional cancellation fee withheld by USH Spa.",
+    )
+    refund_method: str = Field(
+        default="cash",
+        description="Refund method: cash, card, bank_transfer, payment_link, other.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Reason for the refund / cancellation.",
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Internal staff notes regarding the refund.",
+    )
+    customer_confirmation: str | None = Field(
+        default=None,
+        description="Customer confirmation identifier, signature reference, or slip code.",
+    )
+    reference_number: str | None = Field(
+        default=None,
+        description="Optional external or branch reference number (e.g. manual receipt / POS voucher).",
+    )
+    change_by_user: str | None = Field(
+        default=None,
+        description="User ID of the staff/agent processing the refund.",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Snapshot of staff/agent user data.",
+    )
+
+    model_config = {"extra": "allow"}
+
+
+class ProcessGatewayRefundRequest(BaseModel):
+    """Request payload for triggering an automated payment gateway refund."""
+
+    refund_amount: Decimal | None = Field(
+        default=None,
+        gt=0,
+        description="Amount to refund. If omitted, refunds the full remaining payment amount.",
+    )
+    cancellation_fee: Decimal = Field(
+        default=Decimal("0.000"),
+        ge=0,
+        description="Optional cancellation fee withheld.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Reason for refund.",
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Internal notes.",
+    )
+    change_by_user: str | None = Field(
+        default=None,
+        description="User ID processing the refund.",
+    )
+    change_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        description="User snapshot.",
+    )
+
+    model_config = {"extra": "allow"}
+
+
+class RefundResponse(BaseModel):
+    """Standard refund representation returned by API."""
+
+    id: str
+    refund_number: str
+    booking_id: str | None = None
+    booking_data: dict[str, Any] | None = None
+    payment_id: str | None = None
+    invoice_number: str | None = None
+    credit_note_number: str | None = None
+    customer_id: str | None = None
+    customer_data: dict[str, Any] | None = None
+    branch_id: str | None = None
+    branch_data: dict[str, Any] | None = None
+    refund_type: str
+    refund_method: str
+    status: str
+    requested_amount: Decimal
+    cancellation_fee: Decimal
+    refunded_amount: Decimal
+    currency: str = "KWD"
+    payment_gateway: str | None = None
+    gateway_refund_id: str | None = None
+    gateway_transaction_id: str | None = None
+    reason: str | None = None
+    notes: str | None = None
+    customer_confirmation: str | None = None
+    reference_number: str | None = None
+    processed_by: str | None = None
+    processed_by_data: dict[str, Any] | None = None
+    processed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True, "extra": "allow"}
+
+
+class RefundListResponse(BaseModel):
+    """Paginated list of refunds response."""
+
+    success: bool = True
+    data: list[RefundResponse]
+    meta: dict[str, Any]
+    analytics: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+

@@ -283,16 +283,19 @@ def test_schemas_with_voucher_and_optional_booking():
 
     cust_id = str(uuid.uuid4())
     vouch_id = str(uuid.uuid4())
-    vouch_data = {"code": "PROMO2026", "discount": "20%"}
+    vouch_num = "VOU/2026/10/000001"
+    vouch_data = {"code": "PROMO2026", "discount": "20%", "voucher_number": vouch_num}
 
     # 1. InitiatePaymentRequest without booking_id
     init_req = InitiatePaymentRequest(
         booking_id=None,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         payment_for=PaymentFor.GIFT_VOUCHER.value,
     )
     assert init_req.booking_id is None
     assert init_req.voucher_id == vouch_id
+    assert init_req.voucher_number == vouch_num
     assert init_req.payment_for == "gift_voucher"
 
     # 2. CreatePaymentRequestSchema — now requires total_amount, total_duration, currency
@@ -303,11 +306,13 @@ def test_schemas_with_voucher_and_optional_booking():
         currency="KWD",
         booking_id=None,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         voucher_data=vouch_data,
         payment_for="gift_voucher",
     )
     assert create_req.booking_id is None
     assert str(create_req.voucher_id) == vouch_id
+    assert create_req.voucher_number == vouch_num
     assert create_req.payment_for == "gift_voucher"
     assert Decimal(str(create_req.total_amount)) == Decimal("50.000")
     assert create_req.total_duration == 60
@@ -316,10 +321,12 @@ def test_schemas_with_voucher_and_optional_booking():
     update_req = UpdatePaymentRequestSchema(
         booking_id=None,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         voucher_data=vouch_data,
         payment_for="gift_voucher",
     )
     assert str(update_req.voucher_id) == vouch_id
+    assert update_req.voucher_number == vouch_num
     assert update_req.payment_for == "gift_voucher"
 
     # 4. PaymentDetailResponse & PaymentListItem
@@ -330,6 +337,7 @@ def test_schemas_with_voucher_and_optional_booking():
         booking_id=None,
         customer_id=cust_id,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         voucher_data=vouch_data,
         payment_for="gift_voucher",
         total_amount="50.000",
@@ -340,6 +348,7 @@ def test_schemas_with_voucher_and_optional_booking():
     )
     assert detail.booking_id is None
     assert detail.voucher_id == vouch_id
+    assert detail.voucher_number == vouch_num
     assert detail.payment_for == "gift_voucher"
 
     list_item = PaymentListItem(
@@ -347,6 +356,7 @@ def test_schemas_with_voucher_and_optional_booking():
         booking_id=None,
         customer_id=cust_id,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         payment_for="gift_voucher",
         total_amount="50.000",
         total_duration=60,
@@ -356,6 +366,7 @@ def test_schemas_with_voucher_and_optional_booking():
     )
     assert list_item.booking_id is None
     assert list_item.voucher_id == vouch_id
+    assert list_item.voucher_number == vouch_num
     assert list_item.payment_for == "gift_voucher"
 
     # 5. PaymentSessionResponse & PaymentStatusResponse
@@ -363,6 +374,7 @@ def test_schemas_with_voucher_and_optional_booking():
         payment_id="pay-123",
         booking_id=None,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         payment_for="gift_voucher",
         provider="MyFatoorah",
         payment_url="https://pay.example.com",
@@ -371,11 +383,13 @@ def test_schemas_with_voucher_and_optional_booking():
     )
     assert session_resp.booking_id is None
     assert session_resp.voucher_id == vouch_id
+    assert session_resp.voucher_number == vouch_num
 
     status_resp = PaymentStatusResponse(
         payment_id="pay-123",
         booking_id=None,
         voucher_id=vouch_id,
+        voucher_number=vouch_num,
         payment_for="gift_voucher",
         payment_provider="MyFatoorah",
         status="success",
@@ -387,6 +401,36 @@ def test_schemas_with_voucher_and_optional_booking():
     )
     assert status_resp.booking_id is None
     assert status_resp.voucher_id == vouch_id
+    assert status_resp.voucher_number == vouch_num
+
+
+def test_payment_model_voucher_number_and_serializers():
+    """Verify Payment model stores voucher_number and serializers map it correctly."""
+    import uuid
+    from app.payment.infrastructure.models import Payment
+    from app.api.v1.payments import _payment_to_detail, _payment_to_list_item
+
+    vouch_id = uuid.uuid4()
+    p = Payment(
+        payment_number="PMT/2026/10/000001",
+        customer_id=uuid.uuid4(),
+        total_amount=Decimal("30.000"),
+        total_duration=45,
+        currency="KWD",
+        voucher_id=vouch_id,
+        voucher_number="VOU/2026/10/000005",
+        voucher_data={"voucher_number": "VOU/2026/10/000005", "notes": "Gift"},
+    )
+    assert p.voucher_number == "VOU/2026/10/000005"
+    assert p.voucher_id == vouch_id
+
+    detail = _payment_to_detail(p)
+    assert detail.voucher_number == "VOU/2026/10/000005"
+    assert detail.voucher_id == str(vouch_id)
+
+    item = _payment_to_list_item(p)
+    assert item.voucher_number == "VOU/2026/10/000005"
+    assert item.voucher_id == str(vouch_id)
 
 
 def test_payment_to_detail_and_list_item_mappers():

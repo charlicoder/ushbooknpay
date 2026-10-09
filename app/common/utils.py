@@ -60,4 +60,4 @@ def to_local_tz(dt: datetime | None, tz: ZoneInfo = DEFAULT_TIMEZONE) -> datetim
 
 def local_wallclock_now(tz: ZoneInfo = DEFAULT_TIMEZONE) -> datetime:
     """Current Asia/Kuwait wall-clock time labelled UTC (platform-wide convention)."""
-    return datetime.now(tz).replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc)

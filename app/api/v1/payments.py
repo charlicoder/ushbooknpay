@@ -219,6 +219,15 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
         if booking_obj and getattr(booking_obj, "booking_number", None):
             b_data["booking_number"] = booking_obj.booking_number
 
+    v_data = dict(p.voucher_data) if isinstance(p.voucher_data, dict) else None
+    resolved_voucher_number = getattr(p, "voucher_number", None) or (v_data.get("voucher_number") if isinstance(v_data, dict) else None)
+    if not resolved_voucher_number:
+        voucher_obj = getattr(p, "voucher", None)
+        if voucher_obj and getattr(voucher_obj, "voucher_number", None):
+            resolved_voucher_number = voucher_obj.voucher_number
+    if v_data is not None and resolved_voucher_number and "voucher_number" not in v_data:
+        v_data["voucher_number"] = resolved_voucher_number
+
     return PaymentDetailResponse(
         id=str(p.id),
         payment_number=getattr(p, "payment_number", None) or "",
@@ -250,7 +259,8 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
         booking_number=(b_data.get("booking_number") if isinstance(b_data, dict) else None) or getattr(p, "booking_number", None),
         booking_data=b_data,
         voucher_id=str(p.voucher_id) if p.voucher_id else None,
-        voucher_data=p.voucher_data,
+        voucher_number=resolved_voucher_number,
+        voucher_data=v_data if v_data is not None else p.voucher_data,
         product_order_id=str(p.product_order_id) if p.product_order_id else None,
         product_order_items=p.product_order_items,
         invoice_id=p.invoice_id,
@@ -285,6 +295,13 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         if booking_obj and getattr(booking_obj, "booking_number", None):
             b_data["booking_number"] = booking_obj.booking_number
 
+    v_data = dict(p.voucher_data) if isinstance(p.voucher_data, dict) else None
+    resolved_voucher_number = getattr(p, "voucher_number", None) or (v_data.get("voucher_number") if isinstance(v_data, dict) else None)
+    if not resolved_voucher_number:
+        voucher_obj = getattr(p, "voucher", None)
+        if voucher_obj and getattr(voucher_obj, "voucher_number", None):
+            resolved_voucher_number = voucher_obj.voucher_number
+
     return PaymentListItem(
         id=str(p.id),
         payment_number=getattr(p, "payment_number", None) or "",
@@ -309,6 +326,7 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         booking_number=(b_data.get("booking_number") if isinstance(b_data, dict) else None) or getattr(p, "booking_number", None),
         booking_data=b_data,
         voucher_id=str(p.voucher_id) if p.voucher_id else None,
+        voucher_number=resolved_voucher_number,
         product_order_id=str(p.product_order_id) if p.product_order_id else None,
         invoice_id=p.invoice_id,
         invoice_value=str(p.invoice_value) if p.invoice_value is not None else None,
@@ -370,19 +388,37 @@ async def create_payment(
         except (ValueError, TypeError):
             pass
 
-    # ── 2. Resolve voucher_id ─────────────────────────────────────────
+    # ── 2. Resolve voucher_id & voucher_number ──────────────────────────
     voucher_id: uuid.UUID | None = None
+    voucher_number: str | None = body.voucher_number or None
     if body.voucher_id:
         try:
             voucher_id = uuid.UUID(str(body.voucher_id))
         except (ValueError, TypeError):
             pass
 
+    if voucher_id and not voucher_number:
+        try:
+            from app.voucher.infrastructure.models import GiftVoucher
+            v_stmt = select(GiftVoucher.voucher_number).where(GiftVoucher.id == voucher_id)
+            v_res = await session.execute(v_stmt)
+            voucher_number = v_res.scalar_one_or_none()
+        except Exception:
+            pass
+    elif voucher_number and not voucher_id:
+        try:
+            from app.voucher.infrastructure.models import GiftVoucher
+            v_stmt = select(GiftVoucher.id).where(GiftVoucher.voucher_number == voucher_number)
+            v_res = await session.execute(v_stmt)
+            voucher_id = v_res.scalar_one_or_none()
+        except Exception:
+            pass
+
     # ── 3. Resolve payment_for ────────────────────────────────────────
     payment_for_raw = body.payment_for or None
     if payment_for_raw:
         payment_for = PaymentFor.normalise(payment_for_raw).value
-    elif voucher_id:
+    elif voucher_id or voucher_number:
         payment_for = PaymentFor.GIFT_VOUCHER.value
     elif booking and getattr(booking, "booking_type", None) in ("home_service", "home"):
         payment_for = PaymentFor.HOME_SERVICE.value
@@ -569,7 +605,12 @@ async def create_payment(
         booking_id=booking_id,
         booking_data=booking_data or None,
         voucher_id=voucher_id,
-        voucher_data=dict(body.voucher_data or {}) or None,
+        voucher_number=voucher_number,
+        voucher_data=(
+            {**dict(body.voucher_data or {}), **({"voucher_number": voucher_number} if voucher_number and "voucher_number" not in dict(body.voucher_data or {}) else {})}
+            if (body.voucher_data or voucher_number)
+            else None
+        ),
         product_order_id=body.product_order_id,
         product_order_items=body.product_order_items,
         invoice_id=invoice_id,
@@ -679,6 +720,7 @@ async def list_payments(
     payment_id_filter: str | None = Query(default=None, alias="payment_id"),
     payment_number_filter: str | None = Query(default=None, alias="payment_number"),
     invoice_number_filter: str | None = Query(default=None, alias="invoice_number"),
+    voucher_number_filter: str | None = Query(default=None, alias="voucher_number"),
     transaction_id_filter: str | None = Query(default=None, alias="transaction_id"),
     invoice_id_filter: str | None = Query(default=None, alias="invoice_id"),
     created_by_user_filter: str | None = Query(default=None, alias="created_by_user"),
@@ -687,7 +729,7 @@ async def list_payments(
     to_date: datetime | None = Query(default=None),
     search: str | None = Query(
         default=None,
-        description="Search by payment_number, payment_id, transaction_id, invoice_id, reference_id, track_id, recipient_phone.",
+        description="Search by payment_number, payment_id, transaction_id, invoice_id, reference_id, track_id, voucher_number, recipient_phone.",
     ),
 ) -> JSONResponse:
     """List payments with filtering and financial analytics summary."""
@@ -725,6 +767,8 @@ async def list_payments(
         conditions.append(Payment.payment_number == payment_number_filter.strip())
     if invoice_number_filter and isinstance(invoice_number_filter, str):
         conditions.append(Payment.invoice_number == invoice_number_filter.strip())
+    if voucher_number_filter and isinstance(voucher_number_filter, str):
+        conditions.append(Payment.voucher_number == voucher_number_filter.strip())
     if transaction_id_filter and isinstance(transaction_id_filter, str):
         conditions.append(Payment.transaction_id == transaction_id_filter)
     if invoice_id_filter and isinstance(invoice_id_filter, str):
@@ -745,6 +789,7 @@ async def list_payments(
             or_(
                 Payment.payment_number.ilike(search_pattern),
                 Payment.invoice_number.ilike(search_pattern),
+                Payment.voucher_number.ilike(search_pattern),
                 Payment.payment_id.ilike(search_pattern),
                 Payment.transaction_id.ilike(search_pattern),
                 Payment.invoice_id.ilike(search_pattern),
@@ -940,8 +985,24 @@ async def update_payment(
             payment.booking_data["booking_number"] = bk_num
     if body.voucher_id is not None:
         payment.voucher_id = body.voucher_id
+    if body.voucher_number is not None:
+        payment.voucher_number = body.voucher_number
     if body.voucher_data is not None:
         payment.voucher_data = {**(payment.voucher_data or {}), **body.voucher_data}
+    if payment.voucher_id and not payment.voucher_number:
+        from app.voucher.infrastructure.models import GiftVoucher
+        v_res = await session.execute(select(GiftVoucher.voucher_number).where(GiftVoucher.id == payment.voucher_id))
+        v_num = v_res.scalar_one_or_none()
+        if v_num:
+            payment.voucher_number = v_num
+            if payment.voucher_data is not None and "voucher_number" not in payment.voucher_data:
+                payment.voucher_data["voucher_number"] = v_num
+    elif payment.voucher_number and not payment.voucher_id:
+        from app.voucher.infrastructure.models import GiftVoucher
+        v_res = await session.execute(select(GiftVoucher.id).where(GiftVoucher.voucher_number == payment.voucher_number))
+        v_id = v_res.scalar_one_or_none()
+        if v_id:
+            payment.voucher_id = v_id
     if body.product_order_id is not None:
         payment.product_order_id = body.product_order_id
     if body.product_order_items is not None:
@@ -1134,6 +1195,14 @@ async def link_invoice_to_payments(
     payments = result.scalars().all()
     for p in payments:
         p.invoice_number = body.invoice_number
+        if not p.voucher_number and body.source_type in ("gift_voucher", "gift_voucher_purchase"):
+            from app.voucher.infrastructure.models import GiftVoucher
+            v_res = await session.execute(
+                select(GiftVoucher.voucher_number).where(GiftVoucher.id == source_uuid)
+            )
+            v_num = v_res.scalar_one_or_none()
+            if v_num:
+                p.voucher_number = v_num
 
     # Also update the Booking record when source_type == "booking"
     if body.source_type == "booking":
@@ -1220,6 +1289,28 @@ async def initiate_payment(
     payment_url = session_response.get("payment_url") or session_response.get("PaymentURL", "")
     gateway_payment_id = session_response.get("payment_id") or session_response.get("InvoiceId", "")
 
+    voucher_id: uuid.UUID | None = None
+    voucher_number: str | None = body.voucher_number or None
+    if body.voucher_id:
+        try:
+            voucher_id = uuid.UUID(str(body.voucher_id))
+        except (ValueError, TypeError):
+            pass
+    if voucher_id and not voucher_number:
+        try:
+            from app.voucher.infrastructure.models import GiftVoucher
+            v_res = await session.execute(select(GiftVoucher.voucher_number).where(GiftVoucher.id == voucher_id))
+            voucher_number = v_res.scalar_one_or_none()
+        except Exception:
+            pass
+    elif voucher_number and not voucher_id:
+        try:
+            from app.voucher.infrastructure.models import GiftVoucher
+            v_res = await session.execute(select(GiftVoucher.id).where(GiftVoucher.voucher_number == voucher_number))
+            voucher_id = v_res.scalar_one_or_none()
+        except Exception:
+            pass
+
     # Create a pending payment record
     payment_number = await generate_payment_number(session)
     payment = Payment(
@@ -1228,6 +1319,8 @@ async def initiate_payment(
         booking_id=booking_id,
         booking_data=_build_booking_snapshot(booking),
         customer_data=booking.customer_data,
+        voucher_id=voucher_id,
+        voucher_number=voucher_number,
         total_amount=total_amount,
         total_duration=getattr(booking, "duration_minutes", 0) or 0,
         currency=currency,
@@ -1264,8 +1357,11 @@ async def initiate_payment(
             "data": {
                 "payment_id": str(payment.id),
                 "payment_number": payment.payment_number,
+                "invoice_number": payment.invoice_number,
                 "booking_id": str(booking_id),
                 "booking_data": payment.booking_data,
+                "voucher_id": str(voucher_id) if voucher_id else None,
+                "voucher_number": voucher_number,
                 "payment_for": payment.payment_for,
                 "payment_provider": payment.payment_provider,
                 "payment_url": payment_url,
@@ -1309,6 +1405,12 @@ async def get_payment_status(
         if bk_num:
             b_data["booking_number"] = bk_num
 
+    v_num = getattr(payment, "voucher_number", None)
+    if not v_num and payment.voucher_id:
+        from app.voucher.infrastructure.models import GiftVoucher
+        v_res = await session.execute(select(GiftVoucher.voucher_number).where(GiftVoucher.id == payment.voucher_id))
+        v_num = v_res.scalar_one_or_none()
+
     return JSONResponse(
         content={
             "success": True,
@@ -1319,6 +1421,7 @@ async def get_payment_status(
                 "booking_id": str(payment.booking_id) if payment.booking_id else None,
                 "booking_data": b_data,
                 "voucher_id": str(payment.voucher_id) if payment.voucher_id else None,
+                "voucher_number": v_num,
                 "payment_for": payment.payment_for,
                 "payment_provider": payment.payment_provider,
                 "status": payment.status,

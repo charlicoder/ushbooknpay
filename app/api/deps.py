@@ -96,3 +96,19 @@ async def get_booking_service(
 
 
 BookingServiceDep = Annotated[BookingService, Depends(get_booking_service)]
+
+
+# ── Refund service dependency ───────────────────────────────────────────────
+
+async def get_refund_service(
+    session: DBSession,
+    settings: AppSettings,
+) -> Any:
+    """Provide a RefundService per request."""
+    from app.payment.application.refund_service import RefundService
+
+    return RefundService(session=session, settings=settings, http_client=get_http_client())
+
+
+RefundServiceDep = Annotated[Any, Depends(get_refund_service)]
+

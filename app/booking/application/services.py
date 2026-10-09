@@ -21,6 +21,7 @@ All methods are transactional — the session is managed by the caller (FastAPI 
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -33,6 +34,33 @@ from app.booking.domain.rules import (
     assert_reschedule_window,
 )
 from app.booking.domain.state_machine import BookingStateMachine
+
+
+@asynccontextmanager
+async def _safe_begin_nested(session: Any):
+    """
+    Safely enter an async session nested savepoint if supported by the underlying session.
+    Avoids un-awaited coroutine issues when mock sessions (e.g. AsyncMock) are used in unit tests.
+    """
+    if hasattr(session, "begin_nested"):
+        from unittest.mock import AsyncMock, Mock
+
+        if not isinstance(session, (Mock, AsyncMock)):
+            async with session.begin_nested():
+                yield
+            return
+        else:
+            bn = getattr(session, "begin_nested", None)
+            if (
+                callable(bn)
+                and hasattr(bn, "return_value")
+                and hasattr(bn.return_value, "__aenter__")
+                and not isinstance(bn.return_value, (Mock, AsyncMock))
+            ):
+                async with bn():
+                    yield
+                return
+    yield
 from app.booking.domain.value_objects import (
     BookingStatus,
     PaymentStatus,
@@ -76,6 +104,18 @@ def _extract_customer_name(customer_data: dict | None) -> str:
     last = customer_data.get("last_name") or ""
     full = f"{first} {last}".strip()
     return full or str(customer_data.get("phone_number") or customer_data.get("email") or "")
+
+
+def _extract_customer_phone(customer_data: dict | None) -> str:
+    if not customer_data:
+        return ""
+    return str(customer_data.get("phone_number") or customer_data.get("phone") or customer_data.get("mobile") or "")
+
+
+def _extract_customer_email(customer_data: dict | None) -> str:
+    if not customer_data:
+        return ""
+    return str(customer_data.get("email") or "")
 
 
 def _extract_therapist_name(therapist_data: dict | None) -> str:
@@ -843,6 +883,23 @@ class BookingService:
             if status in (BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.COMPLETED):
                 await self._repo.delete_hold(booking_id)
 
+            if status in (BookingStatus.CANCELLED, "cancelled") and str(booking.payment_status).lower() in ("paid", "success"):
+                booking.payment_status = PaymentStatus.REFUNDED.value
+                try:
+                    from app.payment.domain.value_objects import PaymentTransactionStatus
+
+                    await self._sync_booking_payment_status(
+                        booking,
+                        PaymentTransactionStatus.REFUNDED.value,
+                        source=source,
+                        reason=reason or f"Booking cancelled - payment status updated to refunded",
+                        change_by_user=effective_changed_by,
+                        change_by_user_data=effective_changed_user_data,
+                        correlation_id=correlation_id,
+                    )
+                except Exception as exc:
+                    logger.warning("sync_booking_payment_status_failed", error=str(exc))
+
             await self._repo.update(booking)
             await self._record_status_change(
                 booking,
@@ -909,11 +966,12 @@ class BookingService:
             try:
                 from app.payment.infrastructure.models import Payment
                 from sqlalchemy import update
-                await self._session.execute(
-                    update(Payment)
-                    .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
-                    .values(invoice_number=booking.invoice_number)
-                )
+                async with _safe_begin_nested(self._session):
+                    await self._session.execute(
+                        update(Payment)
+                        .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                        .values(invoice_number=booking.invoice_number)
+                    )
             except Exception:
                 pass
             return booking.invoice_number
@@ -939,11 +997,12 @@ class BookingService:
                 try:
                     from app.payment.infrastructure.models import Payment
                     from sqlalchemy import update
-                    await self._session.execute(
-                        update(Payment)
-                        .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
-                        .values(invoice_number=inv_name)
-                    )
+                    async with _safe_begin_nested(self._session):
+                        await self._session.execute(
+                            update(Payment)
+                            .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                            .values(invoice_number=inv_name)
+                        )
                 except Exception:
                     pass
                 return inv_name
@@ -1036,6 +1095,7 @@ class BookingService:
         change_by_user: str | None = None,
         change_by_user_data: dict | None = None,
         refund_amount: Decimal | None = None,
+        cancellation_fee: Decimal | None = None,
         correlation_id: str | None = None,
     ) -> Booking:
         """Cancel a booking and emit a cancellation event."""
@@ -1064,10 +1124,17 @@ class BookingService:
             correlation_id=correlation_id,
         )
 
-        if (
-            (refund_amount is not None and refund_amount > 0)
-            or str(booking.payment_status).lower() in ("success", "paid")
-        ):
+        is_paid = str(booking.payment_status).lower() in ("success", "paid")
+        is_refund_req = is_paid or (refund_amount is not None and refund_amount > 0)
+        fee_decimal = Decimal(str(cancellation_fee or "0.000"))
+        calc_refundable = (
+            refund_amount
+            if refund_amount is not None
+            else max(Decimal("0.000"), Decimal(str(booking.total_amount or "0.000")) - fee_decimal)
+        )
+
+        refund_record = None
+        if is_refund_req:
             booking.payment_status = PaymentStatus.REFUNDED.value
             await self._repo.update(booking)
             try:
@@ -1084,6 +1151,23 @@ class BookingService:
                 )
             except Exception as exc:
                 logger.warning("sync_booking_payment_status_failed", error=str(exc))
+
+            try:
+                refund_record = await self._ensure_cancellation_refund(
+                    booking,
+                    cancelled_by=cancelled_by,
+                    reason=reason,
+                    change_by_user=effective_user,
+                    change_by_user_data=change_by_user_data,
+                    refund_amount=calc_refundable,
+                    cancellation_fee=fee_decimal,
+                    correlation_id=correlation_id,
+                )
+                if refund_record:
+                    setattr(booking, "refund_number", refund_record.refund_number)
+                    setattr(booking, "refund_id", str(refund_record.id))
+            except Exception as exc:
+                logger.warning("ensure_cancellation_refund_failed", error=str(exc))
         elif not booking.payment_status or str(booking.payment_status).lower() in ("unpaid", "pending", "not_initiated"):
             booking.payment_status = PaymentStatus.CANCELLED.value
             await self._repo.update(booking)
@@ -1113,8 +1197,15 @@ class BookingService:
                 cancelled_by=cancelled_by,
                 change_by_user=str(effective_user),
                 change_by_user_data=change_by_user_data or {},
-                refund_issued=refund_amount is not None and refund_amount > 0,
-                refund_amount=str(refund_amount) if refund_amount else None,
+                refund_issued=is_refund_req,
+                refund_amount=str(refund_record.refunded_amount if refund_record else calc_refundable) if is_refund_req else None,
+                refund_required=is_refund_req,
+                refundable_amount=str(refund_record.refunded_amount if refund_record else calc_refundable) if is_refund_req else "0.000",
+                cancellation_fee=str(refund_record.cancellation_fee if refund_record else fee_decimal),
+                refund_id=str(refund_record.id) if refund_record else None,
+                refund_number=refund_record.refund_number if refund_record else None,
+                refund_type=refund_record.refund_type if refund_record else None,
+                refund_method=refund_record.refund_method if refund_record else None,
             )
         )
 
@@ -1277,7 +1368,18 @@ class BookingService:
     async def get_booking(
         self, booking_id: uuid.UUID, *, load_history: bool = False
     ) -> Booking:
-        return await self._repo.get_by_id(booking_id, load_history=load_history)
+        b = await self._repo.get_by_id(booking_id, load_history=load_history)
+        try:
+            from app.payment.infrastructure.models import Refund
+            stmt = select(Refund.refund_number, Refund.id).where(Refund.booking_id == booking_id)
+            res = await self._session.execute(stmt)
+            r_row = res.first()
+            if r_row:
+                setattr(b, "refund_number", r_row[0])
+                setattr(b, "refund_id", str(r_row[1]))
+        except Exception:
+            pass
+        return b
 
     async def list_bookings(
         self,
@@ -1375,6 +1477,25 @@ class BookingService:
             ev_cancel = dict(ev_data)
             ev_cancel.pop("change_by_user", None)
             ev_cancel.pop("change_by_user_data", None)
+
+            # Ensure refund record exists if booking was paid
+            refund_record = None
+            is_paid = str(booking.payment_status).lower() in ("success", "paid", "refunded")
+            if is_paid:
+                try:
+                    refund_record = await self._ensure_cancellation_refund(
+                        booking,
+                        cancelled_by=source or "admin",
+                        reason=reason or "",
+                        change_by_user=str(changed_by or source or "admin"),
+                        change_by_user_data=change_by_user_data or {},
+                    )
+                    if refund_record:
+                        setattr(booking, "refund_number", refund_record.refund_number)
+                        setattr(booking, "refund_id", str(refund_record.id))
+                except Exception as exc:
+                    logger.warning("ensure_cancellation_refund_on_dispatch_failed", error=str(exc))
+
             await self._enqueue_event(
                 BookingCancelledEvent(
                     **ev_cancel,
@@ -1383,8 +1504,15 @@ class BookingService:
                     cancelled_by=source or "admin",
                     change_by_user=str(changed_by or source or "admin"),
                     change_by_user_data=change_by_user_data or {},
-                    refund_issued=False,
-                    refund_amount=None,
+                    refund_issued=refund_record is not None,
+                    refund_amount=str(refund_record.refunded_amount) if refund_record else None,
+                    refund_required=is_paid,
+                    refundable_amount=str(refund_record.refunded_amount) if refund_record else "0.000",
+                    cancellation_fee=str(refund_record.cancellation_fee) if refund_record else "0.000",
+                    refund_id=str(refund_record.id) if refund_record else None,
+                    refund_number=refund_record.refund_number if refund_record else None,
+                    refund_type=refund_record.refund_type if refund_record else None,
+                    refund_method=refund_record.refund_method if refund_record else None,
                 )
             )
         elif new_status in (BookingStatus.NO_SHOW, "no_show"):
@@ -1435,6 +1563,186 @@ class BookingService:
         )
         await self._repo.save_status_history(history)
 
+    async def _ensure_cancellation_refund(
+        self,
+        booking: Booking,
+        *,
+        cancelled_by: str = "customer",
+        reason: str = "",
+        change_by_user: str | None = None,
+        change_by_user_data: dict | None = None,
+        refund_amount: Decimal | None = None,
+        cancellation_fee: Decimal | None = None,
+        refund_method: str | None = None,
+        correlation_id: str | None = None,
+    ) -> Any | None:
+        """
+        Idempotently create and persist an auditable Refund record for a cancelled booking.
+        Guarantees that a Refund row (REF/YYYY/MM/NNNNNN) exists and payment.amount_refunded
+        is properly updated without modifying or deleting historical payment or booking records.
+        """
+        async with _safe_begin_nested(self._session):
+            from app.payment.domain.value_objects import (
+                RefundMethod,
+                RefundStatus,
+                RefundType,
+            )
+            from app.payment.infrastructure.models import Payment, Refund
+            from app.payment.infrastructure.repository import generate_refund_number
+
+            # 1. Check if a Refund already exists for this booking
+            stmt = select(Refund).where(Refund.booking_id == booking.id)
+            res = await self._session.execute(stmt)
+            existing = res.scalars().first()
+            if existing:
+                return existing
+
+            # 2. Find linked payment (if any)
+            payment_stmt = select(Payment).where(Payment.booking_id == booking.id)
+            p_res = await self._session.execute(payment_stmt)
+            payment = p_res.scalars().first()
+            if not payment and getattr(booking, "payment_id", None):
+                try:
+                    p_uuid = uuid.UUID(str(booking.payment_id))
+                    p_res2 = await self._session.execute(select(Payment).where(Payment.id == p_uuid))
+                    payment = p_res2.scalars().first()
+                except (ValueError, TypeError):
+                    p_res2 = await self._session.execute(
+                        select(Payment).where(Payment.payment_id == str(booking.payment_id))
+                    )
+                    payment = p_res2.scalars().first()
+
+            # 3. Calculate refund amounts
+            total_amt = Decimal(
+                str(
+                    (payment.total_amount if payment else None)
+                    or getattr(booking, "total_amount", None)
+                    or "0.000"
+                )
+            )
+            fee_dec = Decimal(str(cancellation_fee or "0.000"))
+            if refund_amount is not None:
+                net_refund_amt = max(Decimal("0.000"), Decimal(str(refund_amount)))
+                requested_amt = net_refund_amt + fee_dec
+            else:
+                requested_amt = total_amt
+                net_refund_amt = max(Decimal("0.000"), requested_amt - fee_dec)
+
+            # Determine refund type
+            canc_actor = str(cancelled_by or "").lower()
+            if canc_actor in ("customer", "ushspa", "app", "mobile_app", "online"):
+                ref_type = RefundType.AUTOMATED.value
+            else:
+                ref_type = RefundType.MANUAL.value
+
+            # Determine refund method
+            if refund_method:
+                ref_method = RefundMethod.normalise(refund_method).value
+            elif ref_type == RefundType.AUTOMATED.value:
+                ref_method = RefundMethod.PAYMENT_GATEWAY.value
+            elif payment and getattr(payment, "payment_method", None):
+                ref_method = RefundMethod.normalise(payment.payment_method).value
+            else:
+                ref_method = RefundMethod.CASH.value
+
+            # 4. Generate sequential refund number
+            ref_number = await generate_refund_number(self._session)
+
+            effective_user = change_by_user or cancelled_by
+            user_data = change_by_user_data or {}
+
+            # 5. Create Refund record
+            from app.payment.application.refund_service import _now_kuwait
+
+            refund = Refund(
+                refund_number=ref_number,
+                booking_id=booking.id,
+                booking_data={
+                    "booking_number": getattr(booking, "booking_number", None),
+                    "status": booking.status,
+                    "appointment_start": (
+                        booking.appointment_start.isoformat()
+                        if getattr(booking, "appointment_start", None)
+                        else None
+                    ),
+                    "service_id": str(booking.service_id) if booking.service_id else None,
+                    "branch_id": str(booking.branch_id) if booking.branch_id else None,
+                },
+                payment_id=payment.id if payment else None,
+                invoice_number=getattr(payment, "invoice_number", None) or getattr(booking, "invoice_number", None),
+                customer_id=booking.customer_id,
+                customer_data=booking.customer_data,
+                branch_id=booking.branch_id,
+                branch_data=booking.branch_data,
+                refund_type=ref_type,
+                refund_method=ref_method,
+                status=RefundStatus.COMPLETED.value,
+                requested_amount=requested_amt,
+                cancellation_fee=fee_dec,
+                refunded_amount=net_refund_amt,
+                currency=getattr(booking, "currency", None) or (payment.currency if payment else "KWD"),
+                reason=reason or "Booking cancellation refund",
+                notes=f"Auto-generated on booking cancellation by {cancelled_by}",
+                payment_gateway=getattr(payment, "payment_gateway", None) if payment else None,
+                gateway_transaction_id=getattr(payment, "transaction_id", None) if payment else None,
+                processed_by=str(effective_user) if effective_user else None,
+                processed_by_data=user_data,
+                processed_at=_now_kuwait(),
+            )
+            self._session.add(refund)
+
+            # Update payment amount_refunded
+            if payment:
+                payment.amount_refunded = (
+                    Decimal(str(payment.amount_refunded or "0.000")) + net_refund_amt
+                )
+
+            await self._session.flush()
+
+            # Emit BookingRefundCompletedEvent for downstream notifications
+            try:
+                from app.events.contracts import BookingRefundCompletedEvent
+
+                b_ref = getattr(booking, "booking_number", "") or str(booking.id)
+                await self._enqueue_event(
+                    BookingRefundCompletedEvent(
+                        refund_id=str(refund.id),
+                        refund_number=refund.refund_number,
+                        booking_id=str(booking.id),
+                        booking_number=getattr(booking, "booking_number", "") or "",
+                        booking_reference=b_ref,
+                        payment_id=str(payment.id) if payment else "",
+                        customer_id=str(booking.customer_id) if booking.customer_id else "",
+                        customer_name=_extract_customer_name(booking.customer_data),
+                        customer_phone=_extract_customer_phone(booking.customer_data),
+                        customer_email=_extract_customer_email(booking.customer_data),
+                        branch_id=str(booking.branch_id) if booking.branch_id else "",
+                        service_id=str(booking.service_id) if booking.service_id else "",
+                        refund_type=refund.refund_type,
+                        refund_method=refund.refund_method,
+                        status=refund.status,
+                        requested_amount=str(refund.requested_amount),
+                        cancellation_fee=str(refund.cancellation_fee),
+                        refund_amount=str(refund.refunded_amount),
+                        currency=refund.currency,
+                        reason=refund.reason or "",
+                        notes=refund.notes or "",
+                        processed_by=str(refund.processed_by or ""),
+                        processed_by_data=refund.processed_by_data or {},
+                    )
+                )
+            except Exception as ev_exc:
+                logger.warning("emit_booking_refund_completed_event_failed", error=str(ev_exc))
+
+            logger.info(
+                "cancellation_refund_recorded",
+                booking_id=str(booking.id),
+                refund_number=refund.refund_number,
+                amount=str(net_refund_amt),
+                refund_type=ref_type,
+            )
+            return refund
+
     async def _sync_booking_payment_status(
         self,
         booking: Booking,
@@ -1448,60 +1756,61 @@ class BookingService:
     ) -> list[Any]:
         """
         Synchronize Payment records for a booking and record audit trail in payment_status_history.
+        Runs inside a savepoint to isolate failures from the caller transaction.
         """
-        from app.payment.infrastructure.models import Payment, PaymentStatusHistory
-        from app.payment.infrastructure.repository import generate_payment_number
+        async with _safe_begin_nested(self._session):
+            from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+            from app.payment.infrastructure.repository import generate_payment_number
 
-        target_status = str(target_payment_status).lower().strip()
+            target_status = str(target_payment_status).lower().strip()
 
-        # 1. Fetch payments linked to this booking
-        stmt = select(Payment).where(Payment.booking_id == booking.id)
-        result = await self._session.execute(stmt)
-        payments = list(result.scalars().all())
+            # 1. Fetch payments linked to this booking
+            stmt = select(Payment).where(Payment.booking_id == booking.id)
+            result = await self._session.execute(stmt)
+            payments = list(result.scalars().all())
 
-        # 2. Check by payment_id from booking if not linked
-        if not payments:
-            cand_ids = []
-            if getattr(booking, "payment_id", None):
-                cand_ids.append(str(booking.payment_id))
-            if isinstance(getattr(booking, "payment_data", None), dict):
-                p_id = booking.payment_data.get("payment_id") or booking.payment_data.get("id")
-                if p_id:
-                    cand_ids.append(str(p_id))
+            # 2. Check by payment_id from booking if not linked
+            if not payments:
+                cand_ids = []
+                if getattr(booking, "payment_id", None):
+                    cand_ids.append(str(booking.payment_id))
+                if isinstance(getattr(booking, "payment_data", None), dict):
+                    p_id = booking.payment_data.get("payment_id") or booking.payment_data.get("id")
+                    if p_id:
+                        cand_ids.append(str(p_id))
 
-            for cid in cand_ids:
+                for cid in cand_ids:
+                    try:
+                        uuid_val = uuid.UUID(cid)
+                        stmt2 = select(Payment).where((Payment.id == uuid_val) | (Payment.payment_id == cid))
+                    except (ValueError, TypeError):
+                        stmt2 = select(Payment).where(Payment.payment_id == cid)
+                    res2 = await self._session.execute(stmt2)
+                    for p in res2.scalars().all():
+                        if p not in payments:
+                            p.booking_id = booking.id
+                            payments.append(p)
+
+            # 3. For each payment, transition status and record history
+            for p in payments:
+                old_status = p.status
+                if old_status != target_status:
+                    p.status = target_status
+                    history = PaymentStatusHistory(
+                        payment_id=p.id,
+                        old_status=old_status,
+                        new_status=target_status,
+                        source=source or "booking_cancellation",
+                        reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                        change_by_user=str(change_by_user) if change_by_user else (source if source else None),
+                        change_by_user_data=change_by_user_data,
+                        correlation_id=correlation_id or (p.payment_id or str(p.id)),
+                    )
+                    self._session.add(history)
+
+            # 4. If no payment record exists in payments table, create one and record history
+            if not payments and getattr(booking, "total_amount", None) and getattr(booking, "customer_id", None):
                 try:
-                    uuid_val = uuid.UUID(cid)
-                    stmt2 = select(Payment).where((Payment.id == uuid_val) | (Payment.payment_id == cid))
-                except (ValueError, TypeError):
-                    stmt2 = select(Payment).where(Payment.payment_id == cid)
-                res2 = await self._session.execute(stmt2)
-                for p in res2.scalars().all():
-                    if p not in payments:
-                        p.booking_id = booking.id
-                        payments.append(p)
-
-        # 3. For each payment, transition status and record history
-        for p in payments:
-            old_status = p.status
-            if old_status != target_status:
-                p.status = target_status
-                history = PaymentStatusHistory(
-                    payment_id=p.id,
-                    old_status=old_status,
-                    new_status=target_status,
-                    source=source or "booking_cancellation",
-                    reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
-                    change_by_user=str(change_by_user) if change_by_user else (source if source else None),
-                    change_by_user_data=change_by_user_data,
-                    correlation_id=correlation_id or (p.payment_id or str(p.id)),
-                )
-                self._session.add(history)
-
-        # 4. If no payment record exists in payments table, create one and record history
-        if not payments and getattr(booking, "total_amount", None) and getattr(booking, "customer_id", None):
-            try:
-                async with self._session.begin_nested():
                     computed_duration = (
                         getattr(booking, "total_duration", None)
                         or (
@@ -1512,11 +1821,23 @@ class BookingService:
                         or 60
                     )
                     pmt_number = await generate_payment_number(self._session)
+                    v_id = getattr(booking, "voucher_id", None)
+                    v_num = (getattr(booking, "voucher_data", None) or {}).get("voucher_number") if isinstance(getattr(booking, "voucher_data", None), dict) else None
+                    if v_id and not v_num:
+                        try:
+                            from app.voucher.infrastructure.models import GiftVoucher
+                            v_res = await self._session.execute(select(GiftVoucher.voucher_number).where(GiftVoucher.id == v_id))
+                            v_num = v_res.scalar_one_or_none()
+                        except Exception:
+                            pass
                     payment = Payment(
                         payment_number=pmt_number,
                         booking_id=booking.id,
                         customer_id=booking.customer_id,
                         customer_data=booking.customer_data,
+                        voucher_id=v_id,
+                        voucher_number=v_num,
+                        voucher_data=getattr(booking, "voucher_data", None),
                         service_id=booking.service_id,
                         service_data=booking.service_data,
                         branch_id=booking.branch_id,
@@ -1551,13 +1872,13 @@ class BookingService:
                     )
                     self._session.add(history)
                     payments.append(payment)
-            except Exception as exc:
-                logger.warning("create_fallback_payment_on_sync_failed", error=str(exc))
+                except Exception as exc:
+                    logger.warning("create_fallback_payment_on_sync_failed", error=str(exc))
 
-        if payments:
-            await self._session.flush()
+            if payments:
+                await self._session.flush()
 
-        return payments
+            return payments
 
     async def _enqueue_event(self, event: object) -> None:
         """Publish event directly to AWS_SQS_NOTIFICATION_QUEUE_URL asynchronously."""

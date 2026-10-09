@@ -224,6 +224,8 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         invoice_number=_safe_str(getattr(b, "invoice_number", None)),
+        refund_number=_safe_str(getattr(b, "refund_number", None)),
+        refund_id=_safe_str(getattr(b, "refund_id", None)),
     )
 
 
@@ -1311,10 +1313,26 @@ async def cancel_booking(
         correlation_id=None,
     )
 
+    refund_num = _safe_str(getattr(updated, "refund_number", None))
+    if not refund_num:
+        try:
+            from app.payment.infrastructure.models import Refund
+            from sqlalchemy import select
+            r_stmt = select(Refund.refund_number).where(Refund.booking_id == booking_id)
+            r_res = await booking_service._session.execute(r_stmt)
+            refund_num = r_res.scalars().first()
+        except Exception:
+            pass
+
     return JSONResponse(
         content={
             "success": True,
-            "data": {"booking_id": str(updated.id), "status": updated.status},
+            "data": {
+                "booking_id": str(updated.id),
+                "status": updated.status,
+                "payment_status": updated.payment_status,
+                "refund_number": refund_num,
+            },
         }
     )
 

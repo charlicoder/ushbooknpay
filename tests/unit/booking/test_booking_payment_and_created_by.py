@@ -570,6 +570,125 @@ async def test_cancel_booking_syncs_payment_status_and_records_history():
 
 
 @pytest.mark.asyncio
+async def test_cancel_booking_creates_refund_record_and_dispatches_event():
+    """Verify that cancelling a paid booking creates a Refund row and emits BookingCancelledEvent with refund_number."""
+    from app.booking.application.services import BookingService
+    from app.payment.infrastructure.models import Payment, Refund
+    from app.events.contracts import BookingCancelledEvent
+
+    booking_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    payment_id = uuid.uuid4()
+
+    mock_booking = MagicMock(spec=Booking)
+    mock_booking.id = booking_id
+    mock_booking.customer_id = customer_id
+    mock_booking.status = "confirmed"
+    mock_booking.payment_status = "success"
+    mock_booking.total_amount = Decimal("60.000")
+    mock_booking.currency = "KWD"
+    mock_booking.internal_notes = ""
+    mock_booking.booking_number = "BOK-REFUND-001"
+    mock_booking.branch_id = uuid.uuid4()
+    mock_booking.service_id = uuid.uuid4()
+    mock_booking.therapist_id = uuid.uuid4()
+    mock_booking.appointment_start = datetime.now(timezone.utc)
+    mock_booking.appointment_end = datetime.now(timezone.utc)
+    mock_booking.duration_minutes = 60
+    mock_booking.extra_minutes = 0
+    mock_booking.booking_type = "branch_service"
+    mock_booking.payment_type = "service"
+    mock_booking.customer_data = {"phone_number": "+96512345678", "name": "Fatima"}
+    mock_booking.branch_data = {}
+    mock_booking.service_data = {}
+    mock_booking.service_arrangement_data = {}
+    mock_booking.therapist_data = {}
+    mock_booking.payment_data = {}
+    mock_booking.addons = []
+    mock_booking.created_at = datetime.now(timezone.utc)
+    mock_booking.updated_at = datetime.now(timezone.utc)
+
+    mock_payment = MagicMock(spec=Payment)
+    mock_payment.id = payment_id
+    mock_payment.booking_id = booking_id
+    mock_payment.status = "success"
+    mock_payment.total_amount = Decimal("60.000")
+    mock_payment.amount_refunded = Decimal("0.000")
+    mock_payment.payment_method = "knet"
+    mock_payment.payment_gateway = "TAP"
+    mock_payment.currency = "KWD"
+
+    added_objects = []
+    mock_session = AsyncMock()
+
+    # First execute: select(Payment) in _sync_booking_payment_status -> [mock_payment]
+    # Second execute: select(Refund) in _ensure_cancellation_refund -> None (first() -> None)
+    # Third execute: select(Payment) in _ensure_cancellation_refund -> [mock_payment]
+    # Fourth execute: generate_refund_number -> count
+    mock_res_payment = MagicMock()
+    mock_res_payment.scalars.return_value.all.return_value = [mock_payment]
+    mock_res_payment.scalars.return_value.first.return_value = mock_payment
+
+    mock_res_no_refund = MagicMock()
+    mock_res_no_refund.scalars.return_value.first.return_value = None
+
+    mock_res_count = MagicMock()
+    mock_res_count.scalar_one.return_value = 0
+
+    mock_session.execute = AsyncMock(side_effect=[
+        mock_res_payment,    # _sync_booking_payment_status
+        mock_res_no_refund,   # _ensure_cancellation_refund check existing
+        mock_res_payment,    # _ensure_cancellation_refund lookup payment
+        mock_res_count,      # generate_refund_number count
+    ])
+    mock_session.flush = AsyncMock()
+    mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_id = AsyncMock(return_value=mock_booking)
+    mock_repo.update = AsyncMock()
+    mock_repo.delete_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock()
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    enqueued_events = []
+    service._enqueue_event = AsyncMock(side_effect=lambda ev: enqueued_events.append(ev))
+
+    updated = await service.cancel_booking(
+        booking_id,
+        reason="Customer cancellation",
+        cancelled_by=str(customer_id),
+        change_by_user=str(customer_id),
+        change_by_user_data={"id": str(customer_id), "name": "Fatima"},
+        cancellation_fee=Decimal("5.000"),
+    )
+
+    assert updated.status == "cancelled"
+    assert updated.payment_status == "refunded"
+
+    # Verify Refund record was created and added to session
+    refunds = [obj for obj in added_objects if isinstance(obj, Refund)]
+    assert len(refunds) == 1
+    refund = refunds[0]
+    assert refund.booking_id == booking_id
+    assert refund.refund_number.startswith("REF/")
+    assert refund.status == "completed"
+    assert refund.cancellation_fee == Decimal("5.000")
+    assert refund.refunded_amount == Decimal("55.000")
+
+    # Verify BookingCancelledEvent was enqueued with refund_number
+    cancelled_events = [ev for ev in enqueued_events if isinstance(ev, BookingCancelledEvent)]
+    assert len(cancelled_events) == 1
+    c_ev = cancelled_events[0]
+    assert c_ev.refund_issued is True
+    assert c_ev.refund_required is True
+    assert c_ev.refund_number == refund.refund_number
+    assert c_ev.refund_amount == "55.000"
+    assert c_ev.cancellation_fee == "5.000"
+
+
+@pytest.mark.asyncio
 async def test_create_booking_records_status_history_from_ushdesk():
     """Verify that creating a booking via ushdesk records change_by_user and change_by_user_data in BookingStatusHistory."""
     from app.common.utils import utcnow
@@ -774,4 +893,61 @@ async def test_update_booking_status_records_change_by_user():
     assert hist.change_by_user == desk_staff_id
     assert hist.change_by_user_data == desk_staff_data
     assert hist.reason == "Confirmed by receptionist"
+
+
+@pytest.mark.asyncio
+async def test_update_status_delete_hold_succeeds_even_if_payment_sync_fails():
+    from app.booking.application.services import BookingService
+
+    booking_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    mock_booking = MagicMock(spec=Booking)
+    mock_booking.id = booking_id
+    mock_booking.customer_id = customer_id
+    mock_booking.status = "confirmed"
+    mock_booking.payment_status = "success"
+    mock_booking.internal_notes = ""
+    mock_booking.booking_number = "BOK-001"
+    mock_booking.branch_id = uuid.uuid4()
+    mock_booking.service_id = uuid.uuid4()
+    mock_booking.therapist_id = uuid.uuid4()
+    mock_booking.total_amount = Decimal("50.000")
+    mock_booking.currency = "KWD"
+    mock_booking.appointment_start = datetime.now(timezone.utc)
+    mock_booking.appointment_end = datetime.now(timezone.utc)
+    mock_booking.duration_minutes = 60
+    mock_booking.extra_minutes = 0
+    mock_booking.customer_data = {}
+    mock_booking.branch_data = {}
+    mock_booking.service_data = {}
+    mock_booking.therapist_data = {}
+
+    mock_session = AsyncMock()
+    # Simulate DB error during payment lookup
+    mock_session.execute = AsyncMock(side_effect=Exception("Database error during payment lookup"))
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_id = AsyncMock(return_value=mock_booking)
+    mock_repo.update = AsyncMock()
+    mock_repo.delete_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock()
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    service._enqueue_event = AsyncMock()
+
+    updated = await service.update_status(
+        booking_id=booking_id,
+        new_status=BookingStatus.CANCELLED,
+        payment_status=PaymentStatus.REFUNDED,
+        reason="Customer cancellation",
+        source="desk",
+    )
+
+    assert updated.status == "cancelled"
+    assert updated.payment_status == "refunded"
+    # Ensure delete_hold was called and not blocked by payment sync error
+    mock_repo.delete_hold.assert_awaited_once_with(booking_id)
+    mock_repo.update.assert_awaited_once_with(mock_booking)
+
 

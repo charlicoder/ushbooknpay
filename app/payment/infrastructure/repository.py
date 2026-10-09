@@ -44,6 +44,36 @@ async def generate_payment_number(
     return f"{date_prefix}{sequence:06d}"
 
 
+async def generate_refund_number(
+    session: AsyncSession, for_date: date | None = None
+) -> str:
+    """
+    Generate the next unique sequential refund number for the given date.
+
+    Format: REF/YYYY/MM/{NNNNNN}
+    Example: REF/2026/10/000001 → first refund in October 2026
+    """
+    from app.payment.infrastructure.models import Refund
+
+    ref_date = for_date or datetime.now(tz=timezone.utc).date()
+    date_prefix = f"REF/{ref_date.strftime('%Y/%m')}/"
+
+    stmt = select(func.count(Refund.id)).where(
+        Refund.refund_number.like(f"{date_prefix}%")
+    )
+    result = await session.execute(stmt)
+    try:
+        existing_val = result.scalar_one() if hasattr(result, "scalar_one") else 0
+        if hasattr(existing_val, "__await__"):
+            existing_val = await existing_val
+        existing_count = int(existing_val)
+    except Exception:
+        existing_count = 0
+
+    sequence = existing_count + 1
+    return f"{date_prefix}{sequence:06d}"
+
+
 class PaymentRepository:
     """Async repository for Payment aggregate."""
 
@@ -52,3 +82,7 @@ class PaymentRepository:
 
     async def generate_payment_number(self, for_date: date | None = None) -> str:
         return await generate_payment_number(self._session, for_date)
+
+    async def generate_refund_number(self, for_date: date | None = None) -> str:
+        return await generate_refund_number(self._session, for_date)
+

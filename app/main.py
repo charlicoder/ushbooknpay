@@ -44,7 +44,7 @@ from app.core.middleware import (
     SecureHeadersMiddleware,
 )
 from app.events.sqs_client import SQSClient, get_sqs_client
-from app.payment.infrastructure.models import Payment, PaymentStatusHistory  # noqa: F401
+from app.payment.infrastructure.models import Payment, PaymentStatusHistory, Refund  # noqa: F401
 from app.voucher.infrastructure.models import GiftVoucher  # noqa: F401
 from app.gifts.infrastructure.models import (  # noqa: F401
     GiftVoucherCart,
@@ -95,9 +95,18 @@ async def lifespan(app: FastAPI):
 
     # Initialise DB and ensure tables exist
     try:
+        import sqlalchemy as sa
         engine = get_engine()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            try:
+                await conn.execute(
+                    sa.text(
+                        "ALTER TABLE payments ADD COLUMN IF NOT EXISTS amount_refunded NUMERIC(10, 3) NOT NULL DEFAULT 0.000;"
+                    )
+                )
+            except Exception as col_exc:
+                logger.debug("ensure_amount_refunded_column_note", error=str(col_exc))
         logger.info("database_schema_initialized")
     except Exception as exc:
         logger.warning("database_schema_init_warning", error=str(exc))

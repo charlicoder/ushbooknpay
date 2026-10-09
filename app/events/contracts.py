@@ -451,6 +451,59 @@ class BookingCancelledEvent(BaseEvent):
     change_by_user_data: dict[str, Any] = field(default_factory=dict)
     refund_issued: bool = False
     refund_amount: str | None = None
+    refund_required: bool = False
+    refundable_amount: str | None = None
+    cancellation_fee: str | None = None
+    refund_id: str | None = None
+    refund_number: str | None = None
+    refund_type: str | None = None
+    refund_method: str | None = None
+
+
+@dataclass
+class BookingRefundCompletedEvent(BaseEvent):
+    """Fired when a booking refund (automated gateway or manual desk) is completed."""
+
+    event_name: str = field(default="Booking.RefundCompleted", init=False)
+    event_type: str = field(default="booking.refund_completed", init=False)
+    refund_id: str = ""
+    refund_number: str = ""
+    booking_id: str = ""
+    booking_number: str = ""
+    booking_reference: str = ""
+    payment_id: str = ""
+    customer_id: str = ""
+    customer_name: str = ""
+    customer_phone: str = ""
+    customer_email: str = ""
+    customer_language: str = "en"
+    language_preference: str = "en"
+    branch_id: str = ""
+    branch_name: str = ""
+    service_id: str = ""
+    service_name: str = ""
+    refund_type: str = "manual"        # manual | automated
+    refund_method: str = "cash"        # cash, card, bank_transfer, payment_gateway, other
+    status: str = "completed"
+    requested_amount: str = "0.000"
+    cancellation_fee: str = "0.000"
+    refund_amount: str = "0.000"
+    currency: str = "KWD"
+    reason: str = ""
+    notes: str = ""
+    customer_confirmation: str = ""
+    reference_number: str = ""
+    payment_gateway: str | None = None
+    gateway_refund_id: str | None = None
+    gateway_transaction_id: str | None = None
+    processed_by: str = ""
+    processed_by_data: dict[str, Any] = field(default_factory=dict)
+    processed_at: str = ""
+    created_at: str = ""
+
+
+RefundCompletedEvent = BookingRefundCompletedEvent
+
 
 
 
@@ -611,6 +664,7 @@ class PaymentInitiatedEvent(BaseEvent):
     payment_id: str = ""
     booking_id: str | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     payment_for: str = "service"
     customer_id: str = ""
     provider: str = ""
@@ -627,6 +681,7 @@ class PaymentSucceededEvent(BaseEvent):
     payment_id: str = ""
     booking_id: str | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     payment_for: str = "service"
     customer_id: str = ""
     provider: str = ""
@@ -645,6 +700,7 @@ class PaymentFailedEvent(BaseEvent):
     payment_id: str = ""
     booking_id: str | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     payment_for: str = "service"
     customer_id: str = ""
     provider: str = ""
@@ -660,6 +716,7 @@ class RefundIssuedEvent(BaseEvent):
     payment_id: str = ""
     booking_id: str | None = None
     voucher_id: str | None = None
+    voucher_number: str | None = None
     payment_for: str = "service"
     customer_id: str = ""
     provider: str = ""
