@@ -9,6 +9,7 @@ All other fields are optional.
 
 from __future__ import annotations
 
+from app.common.utils import LocalDateTime
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -80,7 +81,7 @@ class CreatePaymentRequestSchema(BaseModel):
         default=PaymentTransactionStatus.INITIATED.value,
         description="Payment status: initiated, pending, success, failed, cancelled, refunded.",
     )
-    paid_at: datetime | None = Field(default=None, description="Timestamp when payment was settled.")
+    paid_at: LocalDateTime | None = Field(default=None, description="Timestamp when payment was settled.")
 
     # ── Recipient ─────────────────────────────────────────────────────────
     recipient_id: uuid.UUID | None = Field(default=None, description="Recipient UUID.")
@@ -223,7 +224,7 @@ class UpdatePaymentRequestSchema(BaseModel):
 
     # Status
     status: str | None = None
-    paid_at: datetime | None = None
+    paid_at: LocalDateTime | None = None
 
     # Recipient
     recipient_id: uuid.UUID | None = None
@@ -320,7 +321,7 @@ class PaymentStatusHistoryItem(BaseModel):
     provider_reference: str | None = None
     correlation_id: str | None = None
     metadata: dict[str, Any] | None = None
-    created_at: datetime
+    created_at: LocalDateTime
 
 
 
@@ -360,7 +361,7 @@ class PaymentListItem(BaseModel):
     country: str | None = None
 
     status: str | None = None
-    paid_at: datetime | None = None
+    paid_at: LocalDateTime | None = None
 
     recipient_id: str | None = None
     recipient_phone: str | None = None
@@ -391,7 +392,7 @@ class PaymentListItem(BaseModel):
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
-    created_at: datetime
+    created_at: LocalDateTime
 
 
 
@@ -437,7 +438,7 @@ class PaymentDetailResponse(BaseModel):
     country: str | None = None
 
     status: str | None = None
-    paid_at: datetime | None = None
+    paid_at: LocalDateTime | None = None
 
     recipient_id: str | None = None
     recipient_phone: str | None = None
@@ -473,7 +474,7 @@ class PaymentDetailResponse(BaseModel):
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
-    created_at: datetime
+    created_at: LocalDateTime
 
 
 
@@ -523,7 +524,7 @@ class PaymentSessionResponse(BaseModel):
     payment_url: str
     total_amount: str
     currency: str
-    expires_at: datetime | None = None
+    expires_at: LocalDateTime | None = None
 
 
 class PaymentStatusResponse(BaseModel):
@@ -543,7 +544,7 @@ class PaymentStatusResponse(BaseModel):
     currency: str
     payment_method: str | None = None
     reference_id: str | None = None
-    created_at: datetime
+    created_at: LocalDateTime
 
 
 
@@ -667,9 +668,9 @@ class RefundResponse(BaseModel):
     reference_number: str | None = None
     processed_by: str | None = None
     processed_by_data: dict[str, Any] | None = None
-    processed_at: datetime | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
+    processed_at: LocalDateTime | None = None
+    created_at: LocalDateTime
+    updated_at: LocalDateTime | None = None
 
     model_config = {"from_attributes": True, "extra": "allow"}
 

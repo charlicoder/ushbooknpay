@@ -6,6 +6,7 @@ Pydantic v2 request / response schemas for the loyalty API.
 
 from __future__ import annotations
 
+from app.common.utils import LocalDateTime
 import uuid
 from datetime import datetime
 from typing import Any
@@ -24,10 +25,10 @@ class LoyaltyAccountResponse(BaseModel):
     balance_points: int
     total_earned: int
     total_redeemed: int
-    points_expire_at: datetime | None = None
+    points_expire_at: LocalDateTime | None = None
     is_expired: bool = False
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
     model_config = {"from_attributes": True}
 
@@ -41,7 +42,7 @@ class LoyaltyTransactionResponse(BaseModel):
     booking_id: str | None = None
     booking_number: str | None = None
     description: str | None = None
-    created_at: datetime
+    created_at: LocalDateTime
     created_by: str | None = None
 
     model_config = {"from_attributes": True}
@@ -107,7 +108,7 @@ class CreditPointsResponse(BaseModel):
     customer_id: str
     points_credited: int
     new_balance: int
-    points_expire_at: datetime | None
+    points_expire_at: LocalDateTime | None
     booking_id: str | None = None
     booking_number: str | None = None
 

@@ -12,6 +12,7 @@ Convention:
 
 from __future__ import annotations
 
+from app.common.utils import LocalDateTime
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -58,7 +59,13 @@ class StatusHistoryItem(BaseModel):
     change_by_user: str | None = None
     change_by_user_data: dict[str, Any] | None = None
     reason: str | None
-    created_at: datetime
+    created_at: LocalDateTime
+
+    @field_validator("created_at")
+    @classmethod
+    def render_in_local_tz(cls, v: datetime) -> datetime:
+        from app.common.utils import to_local_tz
+        return to_local_tz(v)
 
 
 
@@ -166,7 +173,7 @@ class CreateBookingRequest(BaseModel):
         description="Appointment time in HH:MM or HH:MM:SS format. Milliseconds and timezone suffixes are stripped.",
     )
     display_time: str | None = Field(default=None, alias="displayTime")
-    appointment_start: datetime | None = Field(default=None)
+    appointment_start: LocalDateTime | None = Field(default=None)
     booking_type: BookingType | str | None = Field(default=BookingType.BRANCH_SERVICE, alias="bookingType")
     payment_type: str | None = Field(
         default=None,
@@ -516,7 +523,7 @@ class UpdateBookingRequest(BaseModel):
         default=None,
         description="Service duration in minutes",
     )
-    appointment_start: datetime | None = Field(
+    appointment_start: LocalDateTime | None = Field(
         default=None,
         description="New appointment start datetime",
     )
@@ -610,8 +617,8 @@ class UpdateBookingRequest(BaseModel):
             s = v.strip()
             if " " in s and "T" not in s:
                 s = s.replace(" ", "T")
-            if not s.endswith("Z") and "+" not in s and "-" not in s[10:]:
-                s += "Z"
+            # Leave offset-less strings naive; they are interpreted as
+            # Asia/Kuwait local time by the validator below.
             return s
         return v
 
@@ -619,8 +626,8 @@ class UpdateBookingRequest(BaseModel):
     @classmethod
     def validate_appointment_start_timezone(cls, v: datetime | None) -> datetime | None:
         if v is not None and v.tzinfo is None:
-            from datetime import timezone
-            return v.replace(tzinfo=timezone.utc)
+            from app.common.utils import to_local_tz
+            return to_local_tz(v)
         return v
 
     model_config = {
@@ -794,7 +801,7 @@ class UpdateBookingStatusRequest(BaseModel):
 class RescheduleRequest(BaseModel):
     """POST /api/v1/bookings/{id}/reschedule/"""
 
-    new_start: datetime = Field(..., description="Requested new appointment start")
+    new_start: LocalDateTime = Field(..., description="Requested new appointment start")
     change_by_user: str | None = Field(
         default=None,
         alias="changeByUser",
@@ -842,8 +849,8 @@ class BookingListItem(BaseModel):
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
     appointment_date: str | None = None
-    appointment_start: datetime
-    appointment_end: datetime
+    appointment_start: LocalDateTime
+    appointment_end: LocalDateTime
     duration_minutes: int
     extra_minutes: int = 0
     total_duration: int | None = None
@@ -867,7 +874,7 @@ class BookingListItem(BaseModel):
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
-    created_at: datetime
+    created_at: LocalDateTime
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
@@ -887,9 +894,18 @@ class BookingListItem(BaseModel):
     def sanitize_appointment_date(cls, v: Any) -> str | None:
         if not v:
             return None
-        if isinstance(v, (datetime, date)):
+        if isinstance(v, datetime):
+            from app.common.utils import to_local_tz
+            return to_local_tz(v).strftime("%Y-%m-%d")
+        if isinstance(v, date):
             return v.strftime("%Y-%m-%d")
         return str(v).split("T")[0].strip()
+
+    @field_validator("appointment_start", "appointment_end", "created_at")
+    @classmethod
+    def render_in_local_tz(cls, v: datetime) -> datetime:
+        from app.common.utils import to_local_tz
+        return to_local_tz(v)
 
 
 class BookingDetailResponse(BaseModel):
@@ -908,8 +924,8 @@ class BookingDetailResponse(BaseModel):
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
     appointment_date: str | None = None
-    appointment_start: datetime
-    appointment_end: datetime
+    appointment_start: LocalDateTime
+    appointment_end: LocalDateTime
     duration_minutes: int
     extra_minutes: int = 0
     total_duration: int | None = None
@@ -937,8 +953,8 @@ class BookingDetailResponse(BaseModel):
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
@@ -960,9 +976,18 @@ class BookingDetailResponse(BaseModel):
     def sanitize_appointment_date(cls, v: Any) -> str | None:
         if not v:
             return None
-        if isinstance(v, (datetime, date)):
+        if isinstance(v, datetime):
+            from app.common.utils import to_local_tz
+            return to_local_tz(v).strftime("%Y-%m-%d")
+        if isinstance(v, date):
             return v.strftime("%Y-%m-%d")
         return str(v).split("T")[0].strip()
+
+    @field_validator("appointment_start", "appointment_end", "created_at", "updated_at")
+    @classmethod
+    def render_in_local_tz(cls, v: datetime) -> datetime:
+        from app.common.utils import to_local_tz
+        return to_local_tz(v)
 
 
 class CreateBookingDataResponse(BaseModel):

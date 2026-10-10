@@ -20,6 +20,7 @@ All methods are transactional — the session is managed by the caller (FastAPI 
 
 from __future__ import annotations
 
+from app.common.utils import to_local_tz as _to_local_tz
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -28,6 +29,8 @@ from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.common.utils import local_midnight, to_local_tz
 
 from app.booking.domain.rules import (
     assert_booking_is_reschedulable,
@@ -171,8 +174,8 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     }
 
 
-    appt_start = booking.appointment_start
-    appt_end = booking.appointment_end
+    appt_start = to_local_tz(booking.appointment_start)
+    appt_end = to_local_tz(booking.appointment_end)
     start_iso = appt_start.isoformat() if appt_start else ""
     end_iso = appt_end.isoformat() if appt_end else ""
     date_str = appt_start.strftime("%Y-%m-%d") if appt_start else ""
@@ -309,8 +312,8 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "arrangement_loyalty_points": None if is_loyalty_redemption else arr_dict.get("loyalty_points"),  # None = use service level
         "price_in_points": int(_raw_service_dict.get("price_in_points") or 0),
         "arrangement_price_in_points": arr_dict.get("price_in_points"),  # None = use service level
-        "created_at": booking.created_at.isoformat() if getattr(booking, "created_at", None) else "",
-        "updated_at": booking.updated_at.isoformat() if getattr(booking, "updated_at", None) else "",
+        "created_at": _to_local_tz(booking.created_at).isoformat() if getattr(booking, "created_at", None) else "",
+        "updated_at": _to_local_tz(booking.updated_at).isoformat() if getattr(booking, "updated_at", None) else "",
         "created_by": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
         "created_by_user": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
         "created_by_user_data": getattr(booking, "created_by_user_data", None) or {},
@@ -560,9 +563,7 @@ class BookingService:
             service_arrangement_data=service_arrangement_data or {},
             therapist_id=therapist_id,
             therapist_data=therapist_data or {},
-            appointment_date=appointment_start.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ),
+            appointment_date=local_midnight(appointment_start),
             appointment_start=appointment_start,
             appointment_end=appointment_end,
             duration_minutes=duration_minutes,
@@ -602,7 +603,7 @@ class BookingService:
         )
 
         # ── Generate booking number (e.g. BOK/2026/10/000001) ─────────────
-        booking_date = appointment_start.date() if hasattr(appointment_start, "date") else appointment_start
+        booking_date = to_local_tz(appointment_start).date()
         booking.booking_number = await self._repo.generate_booking_number(for_date=booking_date)
 
         booking = await self._repo.create(booking)
@@ -665,8 +666,8 @@ class BookingService:
                 service_name=str(service_dict.get("name") or ""),
                 therapist_id=str(booking.therapist_id),
                 therapist_name=str(therapist_dict.get("name") or therapist_dict.get("full_name") or ""),
-                appointment_start=booking.appointment_start.isoformat(),
-                appointment_end=booking.appointment_end.isoformat(),
+                appointment_start=to_local_tz(booking.appointment_start).isoformat(),
+                appointment_end=to_local_tz(booking.appointment_end).isoformat(),
                 duration_minutes=booking.duration_minutes,
                 total_amount=str(booking.total_amount),
                 currency=booking.currency,
@@ -743,7 +744,7 @@ class BookingService:
 
         # ── Update timing / therapist if provided ────────────────────────
         target_therapist_id = therapist_id or booking.therapist_id
-        target_start = appointment_start or booking.appointment_start
+        target_start = to_local_tz(appointment_start or booking.appointment_start)
         target_extra = extra_minutes if extra_minutes is not None else booking.extra_minutes
         total_duration = booking.duration_minutes + target_extra
         target_end = target_start + timedelta(minutes=total_duration)
@@ -768,9 +769,7 @@ class BookingService:
             booking.extra_minutes = target_extra
             booking.appointment_start = target_start
             booking.appointment_end = target_end
-            booking.appointment_date = target_start.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
+            booking.appointment_date = local_midnight(target_start)
 
         # ── Update branch / arrangement if provided ──────────────────────
         if branch_id is not None:
@@ -969,7 +968,7 @@ class BookingService:
                 async with _safe_begin_nested(self._session):
                     await self._session.execute(
                         update(Payment)
-                        .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                        .where(Payment.booking_id == booking.id)
                         .values(invoice_number=booking.invoice_number)
                     )
             except Exception:
@@ -1000,7 +999,7 @@ class BookingService:
                     async with _safe_begin_nested(self._session):
                         await self._session.execute(
                             update(Payment)
-                            .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                            .where(Payment.booking_id == booking.id)
                             .values(invoice_number=inv_name)
                         )
                 except Exception:
@@ -1283,9 +1282,9 @@ class BookingService:
             RescheduleRequestedEvent(
                 booking_id=str(booking.id),
                 customer_id=str(booking.customer_id),
-                current_appointment_start=booking.appointment_start.isoformat(),
-                requested_appointment_start=new_start.isoformat(),
-                requested_appointment_end=new_end.isoformat(),
+                current_appointment_start=to_local_tz(booking.appointment_start).isoformat(),
+                requested_appointment_start=to_local_tz(new_start).isoformat(),
+                requested_appointment_end=to_local_tz(new_end).isoformat(),
             )
         )
 
@@ -1661,7 +1660,7 @@ class BookingService:
                     "booking_number": getattr(booking, "booking_number", None),
                     "status": booking.status,
                     "appointment_start": (
-                        booking.appointment_start.isoformat()
+                        to_local_tz(booking.appointment_start).isoformat()
                         if getattr(booking, "appointment_start", None)
                         else None
                     ),

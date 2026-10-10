@@ -18,6 +18,8 @@ Routes:
 
 from __future__ import annotations
 
+from app.common.utils import to_local_tz as _to_local_tz
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -112,8 +114,8 @@ def _build_booking_snapshot(booking: Booking) -> dict[str, Any]:
             or (booking.therapist_data or {}).get("full_name")
             or ""
         ) if getattr(booking, "therapist_data", None) else "",
-        "appointment_start": booking.appointment_start.isoformat() if booking.appointment_start else None,
-        "appointment_end": booking.appointment_end.isoformat() if booking.appointment_end else None,
+        "appointment_start": _to_local_tz(booking.appointment_start).isoformat() if booking.appointment_start else None,
+        "appointment_end": _to_local_tz(booking.appointment_end).isoformat() if booking.appointment_end else None,
         "duration_minutes": getattr(booking, "duration_minutes", None),
         "extra_minutes": getattr(booking, "extra_minutes", None),
         "arrangement_price": str(getattr(booking, "arrangement_price", "0")),
@@ -127,6 +129,35 @@ def _build_booking_snapshot(booking: Booking) -> dict[str, Any]:
         "addons": getattr(booking, "addons", []) or [],
         "customer_notes": getattr(booking, "customer_notes", None),
     }
+
+
+
+# ushanr is the single source of truth for invoice numbers (invoices.name).
+# Format: PREFIX/YYYY/MM/NNNNN, e.g. INV/2026/10/00002.
+_USHANR_INVOICE_NAME_RE = re.compile(r"^[A-Z]{2,6}/\d{4}/\d{2}/\d{5,}$")
+
+
+def _trusted_invoice_number(supplied: str | None, booking: Booking | None = None) -> str | None:
+    """
+    Resolve the invoice number to store on a payment.
+
+    Never trust a client-supplied number blindly: front-ends have historically
+    sent fabricated values (e.g. ``INV/2026/00011``) that do not exist in ushanr.
+
+    1. The booking's own invoice_number (set from ushanr) always wins.
+    2. A supplied value is kept only if it matches ushanr's naming format.
+    3. Otherwise return None; ``/payments/link-invoice/`` / ``_ensure_booking_invoice``
+       fill in the real ``invoices.name`` afterwards.
+    """
+    booking_inv = getattr(booking, "invoice_number", None) if booking is not None else None
+    if booking_inv and _USHANR_INVOICE_NAME_RE.match(str(booking_inv).strip()):
+        return str(booking_inv).strip()
+    cleaned = (supplied or "").strip()
+    if cleaned and _USHANR_INVOICE_NAME_RE.match(cleaned):
+        return cleaned
+    if cleaned:
+        logger.warning("payment_invoice_number_rejected", supplied=cleaned)
+    return None
 
 
 def _safe_str(val: Any) -> str | None:
@@ -164,16 +195,25 @@ def _resolve_created_by_user_data(
     """Resolve user data snapshot for created_by_user_data."""
     body_data = getattr(body, "created_by_user_data", None)
     if isinstance(body_data, dict):
-        return body_data
+        res = dict(body_data)
+        if "user_type" not in res and current_user:
+            res["user_type"] = getattr(current_user, "user_type", None) or "customer"
+        if "role" not in res and current_user:
+            res["role"] = getattr(current_user, "role", None)
+        return res
     if current_user:
         snapshot: dict[str, Any] = {}
         if resolved_user_id:
             snapshot["id"] = resolved_user_id
-        for attr in ("email", "name", "phone", "role", "roles"):
+        for attr in ("email", "name", "phone", "role", "roles", "user_type"):
             v = getattr(current_user, attr, None)
             safe_v = _safe_str(v)
             if safe_v is not None:
                 snapshot[attr] = safe_v
+        if "user_type" not in snapshot:
+            snapshot["user_type"] = getattr(current_user, "user_type", None) or "customer"
+        if "role" not in snapshot and getattr(current_user, "role", None) is not None:
+            snapshot["role"] = getattr(current_user, "role", None)
         return snapshot or None
     return None
 
@@ -486,7 +526,9 @@ async def create_payment(
     track_id = body.track_id or parsed_gateway.get("track_id") or None
     reference_id = body.reference_id or parsed_gateway.get("reference_id") or None
     transaction_status = body.transaction_status or parsed_gateway.get("transaction_status") or None
-    transaction_date = body.transaction_date or parsed_gateway.get("transaction_date") or None
+    transaction_date = (
+        body.transaction_date or parsed_gateway.get("transaction_date") or datetime.now(tz=timezone.utc).isoformat()
+    )
 
     # ── 9. Status & paid_at ───────────────────────────────────────────
     status_str = body.status or parsed_gateway.get("status") or PaymentTransactionStatus.INITIATED.value
@@ -578,7 +620,10 @@ async def create_payment(
     payment_number = body.payment_number or await generate_payment_number(session)
     payment = Payment(
         payment_number=payment_number,
-        invoice_number=body.invoice_number,
+        invoice_number=_trusted_invoice_number(
+            body.invoice_number,
+            booking,
+        ),
         customer_id=body.customer_id,
         customer_data=customer_data or None,
         sender_id=body.sender_id,
@@ -666,7 +711,7 @@ async def create_payment(
             "transaction_date": payment.transaction_date,
             "payment_gateway": payment.payment_gateway,
             "payment_provider": payment.payment_provider,
-            "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+            "paid_at": _to_local_tz(payment.paid_at).isoformat() if payment.paid_at else None,
         }
         booking.payment_data = {**(booking.payment_data or {}), **payment_meta_snapshot}
         if payment.status == PaymentTransactionStatus.SUCCESS.value and payment.booking_id:
@@ -1012,7 +1057,9 @@ async def update_payment(
     if body.payment_number is not None:
         payment.payment_number = body.payment_number
     if body.invoice_number is not None:
-        payment.invoice_number = body.invoice_number
+        _clean_inv = _trusted_invoice_number(body.invoice_number)
+        if _clean_inv:
+            payment.invoice_number = _clean_inv
     if body.invoice_value is not None:
         payment.invoice_value = Decimal(str(body.invoice_value))
     if body.payment_url is not None:
@@ -1085,7 +1132,7 @@ async def update_payment(
                 "transaction_date": payment.transaction_date,
                 "payment_gateway": payment.payment_gateway,
                 "payment_provider": payment.payment_provider,
-                "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+                "paid_at": _to_local_tz(payment.paid_at).isoformat() if payment.paid_at else None,
             }
             try:
                 booking_service = BookingService(session=session, settings=settings)
@@ -1189,9 +1236,9 @@ async def link_invoice_to_payments(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": "source_id must be a UUID"},
         )
-    result = await session.execute(
-        select(Payment).where(column == source_uuid, Payment.invoice_number.is_(None))
-    )
+    # ushanr invoices.name is the source of truth: always overwrite any
+    # previously stored (possibly stale/incorrect) invoice number.
+    result = await session.execute(select(Payment).where(column == source_uuid))
     payments = result.scalars().all()
     for p in payments:
         p.invoice_number = body.invoice_number
@@ -1429,7 +1476,7 @@ async def get_payment_status(
                 "currency": payment.currency,
                 "payment_method": payment.payment_method,
                 "reference_id": payment.reference_id,
-                "created_at": payment.created_at.isoformat(),
+                "created_at": _to_local_tz(payment.created_at).isoformat(),
             },
         }
     )
@@ -1498,7 +1545,7 @@ async def myfatoorah_webhook(
             track_id=parsed.get("track_id"),
             reference_id=parsed.get("reference_id"),
             transaction_status=parsed.get("transaction_status"),
-            transaction_date=parsed.get("transaction_date"),
+            transaction_date=parsed.get("transaction_date") or datetime.now(tz=timezone.utc).isoformat(),
             payment_method=parsed.get("payment_method"),
             payment_gateway=parsed.get("payment_gateway"),
             payment_url=parsed.get("payment_url"),
@@ -1554,7 +1601,7 @@ async def myfatoorah_webhook(
                 "status": payment.status,
                 "payment_gateway": payment.payment_gateway,
                 "payment_provider": payment.payment_provider,
-                "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+                "paid_at": _to_local_tz(payment.paid_at).isoformat() if payment.paid_at else None,
             }
             booking_service = BookingService(session=session, settings=settings)
             confirmed_b = await booking_service.confirm_booking(
@@ -1650,7 +1697,7 @@ async def tap_webhook(
                     "status": payment.status,
                     "payment_gateway": payment.payment_gateway,
                     "payment_provider": payment.payment_provider,
-                    "paid_at": payment.paid_at.isoformat() if payment.paid_at else None,
+                    "paid_at": _to_local_tz(payment.paid_at).isoformat() if payment.paid_at else None,
                 }
                 booking_service = BookingService(session=session, settings=settings)
                 confirmed_b = await booking_service.confirm_booking(

@@ -7,6 +7,7 @@ All query methods are async and return ORM instances.
 The caller (application service) is responsible for commit/rollback.
 """
 
+from app.common.utils import DEFAULT_TIMEZONE
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Sequence
@@ -56,10 +57,10 @@ def _parse_filter_date(val: str | None, end_of_day: bool = False) -> datetime | 
         if len(s) == 10 and s[4] == "-" and s[7] == "-":
             d = date.fromisoformat(s)
             t = time.max if end_of_day else time.min
-            return datetime.combine(d, t, tzinfo=timezone.utc)
+            return datetime.combine(d, t, tzinfo=DEFAULT_TIMEZONE)  # filter dates are Kuwait business dates
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=DEFAULT_TIMEZONE)  # naive input = Kuwait wall-clock
         return dt
     except Exception:
         return None

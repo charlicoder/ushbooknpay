@@ -10,6 +10,7 @@ Follows SOLID's Interface Segregation:
 
 from __future__ import annotations
 
+from app.common.utils import LocalDateTime
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -71,7 +72,7 @@ class StatusHistoryOut(BaseModel):
     to_status_label_ar: str
     changed_by: str
     note: str | None
-    created_at: datetime
+    created_at: LocalDateTime
 
 
 # ── Create order ─────────────────────────────────────────────────────────────
@@ -302,10 +303,10 @@ class ShopOrderListItem(BaseModel):
     items_count: int
     # Tracking token fields
     public_token: str
-    token_expires_at: datetime | None
+    token_expires_at: LocalDateTime | None
     tracking_url: str  # full public URL for this order's tracking page
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 class ShopOrderDetailResponse(BaseModel):
@@ -340,10 +341,10 @@ class ShopOrderDetailResponse(BaseModel):
     status_history: list[StatusHistoryOut]
     # Tracking token fields
     public_token: str
-    token_expires_at: datetime | None
+    token_expires_at: LocalDateTime | None
     tracking_url: str  # full public URL for this order's tracking page
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 class PublicOrderTrackingResponse(BaseModel):
@@ -358,10 +359,10 @@ class PublicOrderTrackingResponse(BaseModel):
     delivery_status_label: str
     delivery_status_label_ar: str
     payment_status: str
-    token_expires_at: datetime | None
+    token_expires_at: LocalDateTime | None
     items: list[OrderItemOut]
     status_history: list[StatusHistoryOut]
-    created_at: datetime
+    created_at: LocalDateTime
 
 
 class ShopOrderListResponse(BaseModel):

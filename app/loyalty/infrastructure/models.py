@@ -33,7 +33,7 @@ _KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
 
 
 def _now_kuwait() -> datetime:
-    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    """Current instant as a timezone-aware UTC datetime (stored as timestamptz; rendered in Asia/Kuwait by APIs)."""
     return datetime.now(timezone.utc)
 
 

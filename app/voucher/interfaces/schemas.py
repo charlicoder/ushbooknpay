@@ -16,6 +16,7 @@ Design decisions:
 
 from __future__ import annotations
 
+from app.common.utils import LocalDateTime
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -172,7 +173,7 @@ class CreateGiftVoucherRequest(BaseModel):
             "Defaults to 'created' (or 'active' if payment is already confirmed)."
         ),
     )
-    expire_date: datetime | None = Field(
+    expire_date: LocalDateTime | None = Field(
         default=None,
         description="Optional explicit expiration date/time (ISO 8601). Defaults to 60 days from now.",
     )
@@ -693,7 +694,7 @@ class UpdateGiftVoucherRequest(BaseModel):
         default=None,
         description="Target voucher status: 'created', 'payment_pending', 'active', 'redeemed', 'fulfilled', 'expired', 'cancelled'.",
     )
-    expire_date: datetime | None = Field(
+    expire_date: LocalDateTime | None = Field(
         default=None,
         description="Explicit expiration date/time (ISO 8601).",
     )
@@ -857,7 +858,7 @@ class GiftVoucherResponse(BaseModel):
     addons: list[dict[str, Any]]
     extra_time: int
     price_for_extra_time: Decimal | None = None
-    expire_date: datetime
+    expire_date: LocalDateTime
     status: str
     sender_id: uuid.UUID
     sender_data: dict[str, Any]
@@ -876,7 +877,7 @@ class GiftVoucherResponse(BaseModel):
     secret_code: str
     public_token: str
     redeemed_booking_id: uuid.UUID | None
-    redeemed_at: datetime | None
+    redeemed_at: LocalDateTime | None
     redeemed_by: uuid.UUID | None = None
     booking_id: uuid.UUID | None
     booking_data: dict[str, Any] | None = None
@@ -886,8 +887,8 @@ class GiftVoucherResponse(BaseModel):
     payment_url: str | None = None
     payment_provider: str | None = None
     payment_through: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
     model_config = {"from_attributes": True}
 
@@ -918,7 +919,7 @@ class GiftVoucherPublicResponse(BaseModel):
     service_arrangement_data: dict[str, Any]
     addons: list[dict[str, Any]]
     extra_time: int
-    expire_date: datetime
+    expire_date: LocalDateTime
     status: str
     # Sender: only show name, not full contact details
     sender_data: dict[str, Any]
@@ -931,7 +932,7 @@ class GiftVoucherPublicResponse(BaseModel):
     public_token: str
     secret_code: str | None = None
     # payment_id / payment_data are OMITTED from the public response
-    created_at: datetime
+    created_at: LocalDateTime
 
     model_config = {"from_attributes": True}
 
@@ -956,7 +957,7 @@ class GiftVoucherListItem(BaseModel):
     status: str
     total_amount: str
     currency: str
-    expire_date: datetime
+    expire_date: LocalDateTime
     extra_time: int = 0
     price_for_extra_time: Decimal | None = None
     sender_data: dict[str, Any] = Field(default_factory=dict)
@@ -967,7 +968,7 @@ class GiftVoucherListItem(BaseModel):
     gift_from: str | None = None
     secret_code: str | None = None
     public_token: str
-    redeemed_at: datetime | None
+    redeemed_at: LocalDateTime | None
     redeemed_by: uuid.UUID | None = None
     booking_id: uuid.UUID | None = None
     booking_data: dict[str, Any] | None = None
@@ -978,8 +979,8 @@ class GiftVoucherListItem(BaseModel):
     payment_provider: str | None = None
     payment_through: str | None = None
     created_by: uuid.UUID | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
     model_config = {"from_attributes": True}
 

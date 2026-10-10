@@ -10,6 +10,7 @@ Responsibilities:
 """
 
 from __future__ import annotations
+from app.common.utils import local_now
 
 import uuid
 from datetime import date, datetime
@@ -191,7 +192,7 @@ class ShopOrderRepository:
 
         Uses a DB count query matched on month prefix (e.g. 'ORD/2026/10/%').
         """
-        target_date = for_date or date.today()
+        target_date = for_date or local_now().date()
         date_prefix = f"ORD/{target_date.strftime('%Y/%m')}/"
 
         stmt = select(func.count(ShopOrder.id)).where(

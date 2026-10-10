@@ -344,7 +344,7 @@ async def test_create_booking_endpoint_passes_payment_and_user_fields():
     assert kwargs["payment_method"] == "KNET"
     assert kwargs["payment_url"] == "https://fatoorah.com/invoice/123"
     assert kwargs["created_by_user"] == "user-requester-sub"
-    assert kwargs["created_by_user_data"] == {"name": "Requester"}
+    assert kwargs["created_by_user_data"] == {"name": "Requester", "user_type": "customer", "role": "admin"}
 
 
 @pytest.mark.asyncio
@@ -949,5 +949,124 @@ async def test_update_status_delete_hold_succeeds_even_if_payment_sync_fails():
     # Ensure delete_hold was called and not blocked by payment sync error
     mock_repo.delete_hold.assert_awaited_once_with(booking_id)
     mock_repo.update.assert_awaited_once_with(mock_booking)
+
+
+@pytest.mark.asyncio
+async def test_create_booking_includes_user_type_and_role_in_created_by_user_data():
+    """Verify create_booking includes user_type and role in created_by_user_data."""
+    from app.api.v1.bookings import create_booking
+    from app.booking.interfaces.schemas import CreateBookingRequest
+    from app.booking.infrastructure.models import Booking
+
+    mock_service = AsyncMock()
+    mock_ushauth = AsyncMock()
+    mock_ushauth.get_customer_profile.return_value = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "first_name": "Sarah",
+        "last_name": "Connor",
+        "phone_number": "+96599887766",
+        "email": "sarah@example.com",
+    }
+    mock_ushauth.get_service.return_value = {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "name": "Massage",
+        "base_price": "25.000",
+        "duration_minutes": 60,
+        "is_eligible_for_loyalty": True,
+    }
+    mock_ushauth.get_service_arrangement.return_value = {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "price": "25.000",
+        "arrangement_services": [],
+    }
+    mock_ushauth.get_therapist.return_value = {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "first_name": "Jane",
+        "last_name": "Therapist",
+    }
+    mock_ushauth.check_appointment_availability.return_value = {
+        "available": "yes",
+        "therapist_id": "44444444-4444-4444-4444-444444444444",
+        "available_therapist_ids": ["44444444-4444-4444-4444-444444444444"],
+    }
+
+    mock_booking = MagicMock(spec=Booking)
+    mock_booking.id = uuid.uuid4()
+    mock_booking.booking_number = "BOK-2026-10-001"
+    mock_booking.customer_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    mock_booking.total_amount = Decimal("25.000")
+    mock_booking.status = "requested"
+    mock_booking.payment_status = "not_initiated"
+    mock_booking.payment_id = None
+    mock_booking.payment_provider = None
+    mock_booking.payment_gateway = None
+    mock_booking.payment_through = "ushdesk"
+    mock_booking.payment_method = None
+    mock_booking.payment_url = None
+    mock_booking.payment_type = "service"
+    mock_booking.payment_data = {}
+    mock_booking.service_data = {"is_eligible_for_loyalty": True}
+    mock_booking.loyalty_data = None
+    mock_booking.reward_id = None
+    mock_booking.voucher_id = None
+    mock_booking.voucher_data = None
+    mock_booking.created_by_user = "employee-uuid-999"
+    mock_booking.created_by_user_data = {
+        "id": "employee-uuid-999",
+        "first_name": "Receptionist",
+        "last_name": "One",
+        "phone_number": "+96511112222",
+        "email": "recep@ushspa.com",
+        "user_type": "employee",
+        "role": "desk",
+    }
+    mock_service.create_booking.return_value = mock_booking
+
+    request = MagicMock()
+    request.headers = {"x-client-app": "ushdesk"}
+    body = CreateBookingRequest(
+        customer_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        service_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
+        service_arrangement_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
+        therapist_id=uuid.UUID("44444444-4444-4444-4444-444444444444"),
+        appointment_date="2026-10-01",
+        appointment_time="10:00:00",
+    )
+    current_user = MagicMock()
+    current_user.sub = "employee-uuid-999"
+    current_user.first_name = "Receptionist"
+    current_user.last_name = "One"
+    current_user.phone_number = "+96511112222"
+    current_user.email = "recep@ushspa.com"
+    current_user.user_type = "employee"
+    current_user.role = "desk"
+    settings = MagicMock()
+
+    res = await create_booking(
+        request=request,
+        body=body,
+        current_user=current_user,
+        booking_service=mock_service,
+        ushauth=mock_ushauth,
+        settings=settings,
+    )
+
+    assert res.success is True
+    assert res.data.created_by_user == "employee-uuid-999"
+    assert res.data.created_by_user_data["user_type"] == "employee"
+    assert res.data.created_by_user_data["role"] == "desk"
+
+    _, kwargs = mock_service.create_booking.call_args
+    assert kwargs["created_by_user"] == "employee-uuid-999"
+    assert kwargs["created_by_user_data"] == {
+        "id": "employee-uuid-999",
+        "first_name": "Receptionist",
+        "last_name": "One",
+        "phone_number": "+96511112222",
+        "email": "recep@ushspa.com",
+        "user_type": "employee",
+        "role": "desk",
+    }
+
 
 

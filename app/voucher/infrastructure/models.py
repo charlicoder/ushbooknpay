@@ -20,6 +20,7 @@ Design notes:
 
 from __future__ import annotations
 
+from app.common.utils import to_local_tz as _to_local_tz
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -343,7 +344,7 @@ class GiftVoucher(Base):
             "secret_code": self.secret_code,
             "public_token": self.public_token,
             "redeemed_booking_id": str(self.redeemed_booking_id) if self.redeemed_booking_id else None,
-            "redeemed_at": self.redeemed_at.isoformat() if self.redeemed_at else None,
+            "redeemed_at": _to_local_tz(self.redeemed_at).isoformat() if self.redeemed_at else None,
             "redeemed_by": str(self.redeemed_by) if self.redeemed_by else None,
             "booking_id": str(self.booking_id) if self.booking_id else None,
             "booking_data": self.booking_data or {},
@@ -353,6 +354,6 @@ class GiftVoucher(Base):
             "payment_url": self.payment_url or None,
             "payment_provider": self.payment_provider or None,
             "payment_through": self.payment_through or None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "created_at": _to_local_tz(self.created_at).isoformat() if self.created_at else None,
+            "updated_at": _to_local_tz(self.updated_at).isoformat() if self.updated_at else None,
         }

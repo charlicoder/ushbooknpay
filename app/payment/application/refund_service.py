@@ -12,6 +12,7 @@ Guarantees accounting and financial immutability:
 
 from __future__ import annotations
 
+from app.common.utils import to_local_tz as _to_local_tz
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -154,7 +155,7 @@ class RefundService:
             booking_data={
                 "booking_number": getattr(booking, "booking_number", None),
                 "status": booking.status,
-                "appointment_start": booking.appointment_start.isoformat() if getattr(booking, "appointment_start", None) else None,
+                "appointment_start": _to_local_tz(booking.appointment_start).isoformat() if getattr(booking, "appointment_start", None) else None,
                 "service_id": str(booking.service_id) if booking.service_id else None,
                 "branch_id": str(booking.branch_id) if booking.branch_id else None,
             },
@@ -357,7 +358,7 @@ class RefundService:
             booking_data={
                 "booking_number": getattr(booking, "booking_number", None),
                 "status": booking.status,
-                "appointment_start": booking.appointment_start.isoformat() if getattr(booking, "appointment_start", None) else None,
+                "appointment_start": _to_local_tz(booking.appointment_start).isoformat() if getattr(booking, "appointment_start", None) else None,
                 "service_id": str(booking.service_id) if booking.service_id else None,
                 "branch_id": str(booking.branch_id) if booking.branch_id else None,
             },
@@ -472,8 +473,8 @@ class RefundService:
             gateway_transaction_id=refund.gateway_transaction_id,
             processed_by=refund.processed_by or "",
             processed_by_data=refund.processed_by_data or {},
-            processed_at=refund.processed_at.isoformat() if refund.processed_at else "",
-            created_at=refund.created_at.isoformat() if refund.created_at else "",
+            processed_at=_to_local_tz(refund.processed_at).isoformat() if refund.processed_at else "",
+            created_at=_to_local_tz(refund.created_at).isoformat() if refund.created_at else "",
         )
 
         try:

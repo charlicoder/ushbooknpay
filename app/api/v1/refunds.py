@@ -9,6 +9,7 @@ API routes for booking refunds:
 
 from __future__ import annotations
 
+from app.common.utils import to_local_tz as _to_local_tz
 import uuid
 from datetime import datetime
 from typing import Any
@@ -58,9 +59,9 @@ def _refund_to_dict(refund: Any) -> dict[str, Any]:
         "reference_number": refund.reference_number,
         "processed_by": refund.processed_by,
         "processed_by_data": refund.processed_by_data,
-        "processed_at": refund.processed_at.isoformat() if refund.processed_at else None,
-        "created_at": refund.created_at.isoformat() if refund.created_at else None,
-        "updated_at": refund.updated_at.isoformat() if getattr(refund, "updated_at", None) else None,
+        "processed_at": _to_local_tz(refund.processed_at).isoformat() if refund.processed_at else None,
+        "created_at": _to_local_tz(refund.created_at).isoformat() if refund.created_at else None,
+        "updated_at": _to_local_tz(refund.updated_at).isoformat() if getattr(refund, "updated_at", None) else None,
     }
 
 

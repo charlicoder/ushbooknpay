@@ -14,6 +14,7 @@ Accounting note:
   audit records and do not possess a 'paid' state.
 """
 from __future__ import annotations
+from app.common.utils import local_now
 
 import logging
 from datetime import date
@@ -173,7 +174,7 @@ class UshanrClient:
             "company_id": company_id,
             "partner_id": partner_id,
             "journal_id": journal_id,
-            "invoice_date": date.today().isoformat(),
+            "invoice_date": local_now().date().isoformat(),
             "source_document_type": "booking",
             "source_document_id": str(booking.id),
             "source_document_ref": booking_number,

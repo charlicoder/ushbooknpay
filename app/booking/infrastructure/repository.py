@@ -11,9 +11,10 @@ Responsibilities:
 """
 
 from __future__ import annotations
+from app.common.utils import local_now
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import and_, cast, delete, func, or_, select, update, Date
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,7 @@ from app.booking.infrastructure.models import (
     BookingStatusHistory,
     TemporaryHold,
 )
-from app.common.utils import utcnow
+from app.common.utils import local_midnight, to_local_tz, utcnow
 from app.core.exceptions import BookingNotFoundError
 from app.core.logging import get_logger
 
@@ -58,7 +59,7 @@ class BookingRepository:
         The counter (NNNNNN) is the count of bookings that already have a
         booking_number assigned for that calendar month + 1.
         """
-        target_date = for_date or date.today()
+        target_date = for_date or local_now().date()
 
         # Count bookings that already have a booking_number for this month.
         date_prefix = f"BOK/{target_date.strftime('%Y/%m')}/"
@@ -181,7 +182,8 @@ class BookingRepository:
         if date_str:
             try:
                 d = date.fromisoformat(date_str.strip())
-                conditions.append(cast(Booking.appointment_start, Date) == d)
+                conditions.append(Booking.appointment_start >= local_midnight(d))
+                conditions.append(Booking.appointment_start < local_midnight(d + timedelta(days=1)))
             except Exception:
                 pass
 
@@ -189,9 +191,9 @@ class BookingRepository:
             try:
                 if len(from_date) == 10:
                     d_from = date.fromisoformat(from_date.strip())
-                    conditions.append(cast(Booking.appointment_start, Date) >= d_from)
+                    conditions.append(Booking.appointment_start >= local_midnight(d_from))
                 else:
-                    dt_from = datetime.fromisoformat(from_date.strip())
+                    dt_from = to_local_tz(datetime.fromisoformat(from_date.strip()))
                     conditions.append(Booking.appointment_start >= dt_from)
             except Exception:
                 pass
@@ -200,9 +202,9 @@ class BookingRepository:
             try:
                 if len(to_date) == 10:
                     d_to = date.fromisoformat(to_date.strip())
-                    conditions.append(cast(Booking.appointment_start, Date) <= d_to)
+                    conditions.append(Booking.appointment_start < local_midnight(d_to + timedelta(days=1)))
                 else:
-                    dt_to = datetime.fromisoformat(to_date.strip())
+                    dt_to = to_local_tz(datetime.fromisoformat(to_date.strip()))
                     conditions.append(Booking.appointment_start <= dt_to)
             except Exception:
                 pass

@@ -45,6 +45,7 @@ from app.booking.interfaces.schemas import (
     UpdateBookingStatusRequest,
 )
 from app.common.pagination import make_paginated_response
+from app.common.utils import local_now, to_local_tz
 from app.core.exceptions import (
     AuthorizationError,
     BookingNotFoundError,
@@ -256,6 +257,8 @@ async def create_booking(
         or body.created_by
         or current_user.sub
     )
+    user_type_val = _safe_str(getattr(current_user, "user_type", None)) or "customer"
+    role_val = _safe_str(getattr(current_user, "role", None))
     req_user_data = body.change_by_user_data or body.created_by_user_data
     if req_user_data is None:
         req_user_data = {
@@ -264,8 +267,15 @@ async def create_booking(
             "last_name": current_user.last_name or "",
             "phone_number": current_user.phone_number or "",
             "email": current_user.email or "",
-            "role": getattr(current_user, "role", None),
+            "user_type": user_type_val,
+            "role": role_val,
         }
+    else:
+        req_user_data = dict(req_user_data)
+        if "user_type" not in req_user_data:
+            req_user_data["user_type"] = user_type_val
+        if "role" not in req_user_data:
+            req_user_data["role"] = role_val
     created_by_user: str = req_user_id
     created_by: str = req_user_id
     created_by_user_data: dict[str, Any] = req_user_data
@@ -349,7 +359,7 @@ async def create_booking(
     appointment_date: str = (
         body.appointment_date
         or body.date
-        or (body.appointment_start.strftime("%Y-%m-%d") if body.appointment_start else "")
+        or (to_local_tz(body.appointment_start).strftime("%Y-%m-%d") if body.appointment_start else "")
     )
     # Strip any residual time/tz suffix (safety net)
     appointment_date = str(appointment_date).split("T")[0].strip()
@@ -358,7 +368,7 @@ async def create_booking(
         body.appointment_time
         or body.start_time
         or body.time_slot
-        or (body.appointment_start.strftime("%H:%M:%S") if body.appointment_start else "")
+        or (to_local_tz(body.appointment_start).strftime("%H:%M:%S") if body.appointment_start else "")
     )
     # Schema validator already cleaned appointment_time/time_slot; apply
     # the same cleaning to appointment_start fallback just in case.
@@ -569,14 +579,13 @@ async def create_booking(
             )
 
     # ── 4. Build start and end datetime ─────────────────────────────────
-    # NOTE: The system is timezone-naive by design — times are stored as local
-    # Kuwait time but labelled as UTC. This matches the appointment_cache which
-    # also stores local time as UTC. Do NOT convert; just stamp as UTC.
+    # The customer's chosen date/time is Asia/Kuwait local time. Store it as a
+    # real timezone-aware instant (e.g. 2026-10-10T10:00:00+03:00).
     try:
         naive_dt = datetime.fromisoformat(f"{appointment_date}T{appointment_time}")
-        appointment_start = naive_dt.replace(tzinfo=timezone.utc)
+        appointment_start = to_local_tz(naive_dt)
     except Exception:
-        appointment_start = body.appointment_start or datetime.now(timezone.utc)
+        appointment_start = to_local_tz(body.appointment_start) or local_now()
     appointment_end = appointment_start + timedelta(minutes=duration)
 
     # ── 5. Build pricing and addons ─────────────────────────────────────
@@ -926,7 +935,7 @@ async def create_booking(
                 try:
                     await booking_service._session.execute(
                         update(Payment)
-                        .where(Payment.booking_id == booking.id, Payment.invoice_number.is_(None))
+                        .where(Payment.booking_id == booking.id)
                         .values(invoice_number=inv_name)
                     )
                     await booking_service._session.commit()
@@ -1169,11 +1178,11 @@ async def update_booking(
         except Exception:
             pass
 
-    target_start = body.appointment_start
+    target_start = to_local_tz(body.appointment_start)
     if target_start is None and body.appointment_date and body.appointment_time:
         try:
             naive_dt = datetime.fromisoformat(f"{body.appointment_date}T{body.appointment_time}")
-            target_start = naive_dt.replace(tzinfo=timezone.utc)
+            target_start = to_local_tz(naive_dt)
         except Exception:
             pass
 
@@ -1210,7 +1219,8 @@ async def update_booking(
             "last_name": current_user.last_name or "",
             "phone_number": current_user.phone_number or "",
             "email": current_user.email or "",
-            "role": getattr(current_user, "role", None),
+            "user_type": _safe_str(getattr(current_user, "user_type", None)) or "customer",
+            "role": _safe_str(getattr(current_user, "role", None)),
         },
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
@@ -1219,8 +1229,8 @@ async def update_booking(
 
 
     # ── Dispatch booking.updated SQS event to ushnotice ───────────────────
-    appt_dt_str = updated.appointment_date.strftime("%Y-%m-%d") if updated.appointment_date else ""
-    appt_time_str = updated.appointment_start.strftime("%H:%M:%S") if updated.appointment_start else ""
+    appt_dt_str = to_local_tz(updated.appointment_start).strftime("%Y-%m-%d") if updated.appointment_start else ""
+    appt_time_str = to_local_tz(updated.appointment_start).strftime("%H:%M:%S") if updated.appointment_start else ""
     duration_val = int(updated.duration_minutes + (updated.extra_minutes or 0))
 
     await booking_service._enqueue_event(
@@ -1447,6 +1457,8 @@ async def update_booking_status(
                 settings = get_settings()
                 payload = decode_token(auth_header.split(" ")[1], settings)
                 user_id = payload.sub
+                payload_user_type = _safe_str(getattr(payload, "user_type", None)) or "customer"
+                payload_role = _safe_str(getattr(payload, "role", None))
                 if not user_data:
                     full_name = f"{payload.first_name or ''} {payload.last_name or ''}".strip()
                     user_data = {
@@ -1457,8 +1469,15 @@ async def update_booking_status(
                         "last_name": payload.last_name or "",
                         "phone_number": payload.phone_number or "",
                         "email": payload.email or "",
-                        "role": getattr(payload, "role", None),
+                        "user_type": payload_user_type,
+                        "role": payload_role,
                     }
+                elif isinstance(user_data, dict):
+                    user_data = dict(user_data)
+                    if "user_type" not in user_data:
+                        user_data["user_type"] = payload_user_type
+                    if "role" not in user_data:
+                        user_data["role"] = payload_role
             except Exception:
                 pass
     if not user_id:
@@ -1605,7 +1624,7 @@ async def link_booking_invoice(
     # Also update any payments for this booking that don't have an invoice_number
     await session.execute(
         update(Payment)
-        .where(Payment.booking_id == booking_id, Payment.invoice_number.is_(None))
+        .where(Payment.booking_id == booking.id)
         .values(invoice_number=body.invoice_number)
     )
     await session.commit()

@@ -4,6 +4,7 @@ Unit tests for /my-vouchers/ endpoint, repository query, and phone formatting.
 
 import uuid
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,7 +47,8 @@ def test_get_phone_variants():
 def test_parse_filter_date():
     # YYYY-MM-DD start of day
     dt_start = _parse_filter_date("2026-09-04", end_of_day=False)
-    assert dt_start == datetime(2026, 9, 4, 0, 0, 0, tzinfo=timezone.utc)
+    # Business dates are Asia/Kuwait days (standard across USH services)
+    assert dt_start == datetime(2026, 9, 4, 0, 0, 0, tzinfo=ZoneInfo("Asia/Kuwait"))
 
     # YYYY-MM-DD end of day
     dt_end = _parse_filter_date("2026-09-04", end_of_day=True)
