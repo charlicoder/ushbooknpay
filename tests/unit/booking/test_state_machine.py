@@ -25,6 +25,14 @@ class TestBookingStateMachine:
         assert result == BookingStatus.PAYMENT_PENDING
         assert machine.current_status == BookingStatus.PAYMENT_PENDING
 
+    def test_valid_transitions_from_draft(self):
+        machine = BookingStateMachine(BookingStatus.DRAFT)
+        assert machine.can_transition_to(BookingStatus.CONFIRMED) is True
+        assert machine.can_transition_to(BookingStatus.PAYMENT_PENDING) is True
+        assert machine.can_transition_to(BookingStatus.CANCELLED) is True
+        res = machine.transition_to(BookingStatus.CONFIRMED)
+        assert res == BookingStatus.CONFIRMED
+
     def test_valid_transition_payment_pending_to_confirmed(self):
         machine = BookingStateMachine(BookingStatus.PAYMENT_PENDING)
         machine.transition_to(BookingStatus.CONFIRMED)

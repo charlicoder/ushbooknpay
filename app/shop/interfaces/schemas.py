@@ -355,6 +355,7 @@ class PublicOrderTrackingResponse(BaseModel):
     """
 
     order_number: str
+    tracking_code: str | None = None
     delivery_status: str
     delivery_status_label: str
     delivery_status_label_ar: str
@@ -506,6 +507,7 @@ def order_to_public_tracking(order: Any) -> PublicOrderTrackingResponse:
     ds = DeliveryStatus(order.delivery_status)
     return PublicOrderTrackingResponse(
         order_number=order.order_number,
+        tracking_code=getattr(order, "tracking_code", None),
         delivery_status=order.delivery_status,
         delivery_status_label=get_status_label(ds, "en"),
         delivery_status_label_ar=get_status_label(ds, "ar"),

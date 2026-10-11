@@ -186,7 +186,7 @@ class CreateBookingRequest(BaseModel):
     status: BookingStatus | str | None = Field(
         default=None,
         description=(
-            "Initial booking status: requested (default), payment_pending, confirmed, etc. "
+            "Initial booking status: requested (default), draft, payment_pending, confirmed, etc. "
             "Case-insensitive."
         ),
     )
@@ -566,6 +566,60 @@ class UpdateBookingRequest(BaseModel):
         default=None,
         alias="invoiceNumber",
         description="Invoice number from ushanr invoice record for this booking.",
+    )
+    addons: list[dict[str, Any]] | list[Any] | None = Field(
+        default=None,
+        description="Updated list of add-ons",
+    )
+    selected_addons: list[dict[str, Any]] | list[Any] | None = Field(
+        default=None,
+        alias="selectedAddons",
+        description="Alias for addons",
+    )
+    addon_price: Decimal | str | float | None = Field(
+        default=None,
+        alias="addonPrice",
+        description="Total addon price",
+    )
+    addons_price: Decimal | str | float | None = Field(
+        default=None,
+        alias="addonsPrice",
+        description="Alias for addon_price",
+    )
+    addons_duration: int | None = Field(
+        default=None,
+        alias="addonsDuration",
+        description="Total duration contributed by addons in minutes",
+    )
+    price_for_extra_minutes: Decimal | str | float | None = Field(
+        default=None,
+        alias="priceForExtraMinutes",
+        description="Price for extra minutes",
+    )
+    extra_price: Decimal | str | float | None = Field(
+        default=None,
+        alias="extraPrice",
+        description="Alias for price_for_extra_minutes",
+    )
+    total_duration: int | None = Field(
+        default=None,
+        alias="totalDuration",
+        description="Total booked duration including add-on time and extra minutes",
+    )
+    total_amount: Decimal | str | float | None = Field(
+        default=None,
+        alias="totalAmount",
+        description="Updated total booking amount",
+    )
+    total_price: Decimal | str | float | None = Field(
+        default=None,
+        alias="totalPrice",
+        description="Alias for total_amount",
+    )
+    pricing_details: dict[str, Any] | None = Field(
+        default=None,
+        alias="pricingDetails",
+        description="Pricing breakdown snapshot",
     )
 
 

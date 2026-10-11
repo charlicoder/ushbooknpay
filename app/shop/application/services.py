@@ -103,7 +103,7 @@ class ShopOrderService:
         payment_invoice_id: str | None = None,
         payment_url: str | None = None,
         payment_data: dict[str, Any] | None = None,
-        customer_language_preference: str = "en",
+        customer_language_preference: str = "ar",
     ) -> ShopOrder:
         """
         Validate products against ushauth, snapshot prices, persist the order,
@@ -586,7 +586,8 @@ class ShopOrderService:
             or inner_data.get("UserDefinedField")
             or ""
         )
-        customer_language_preference = getattr(order, "customer_language_preference", None) or "en"
+        _order_lang = getattr(order, "customer_language_preference", None) or "ar"
+        customer_language_preference = "en" if str(_order_lang).strip().lower().startswith("en") else "ar"
 
         event = ShopOrderCreatedEvent(
             # ── Identity ─────────────────────────────────────────────
@@ -601,10 +602,10 @@ class ShopOrderService:
                 "name": order.customer_name,
                 "phone": order.customer_phone,
                 "contact_number": order.contact_number or order.customer_phone,
-                "language_preference": customer_language_preference or "en",
+                "language_preference": customer_language_preference,
             },
-            customer_language=customer_language_preference or "en",
-            language_preference=customer_language_preference or "en",
+            customer_language=customer_language_preference,
+            language_preference=customer_language_preference,
             # ── Requester user info ──────────────────────────────────
             order_requested_by_user=str(order.order_requested_by_user) if order.order_requested_by_user else None,
             order_requested_by_user_data=order.order_requested_by_user_data or {},

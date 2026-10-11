@@ -25,6 +25,7 @@ class BookingStatus(str, Enum):
     State transitions are enforced by BookingStateMachine.
     """
 
+    DRAFT = "draft"
     REQUESTED = "requested"
     PAYMENT_PENDING = "payment_pending"
     CONFIRMED = "confirmed"

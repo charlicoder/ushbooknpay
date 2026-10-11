@@ -946,6 +946,44 @@ async def create_booking(
         finally:
             await ushanr_c.aclose()
 
+    # ── 7b. If status is draft, create appointment_cache with status=confirmed, payment_status=pending ──
+    if booking.status == BookingStatus.DRAFT.value:
+        try:
+            appt_date_str = appointment_start.strftime("%Y-%m-%d")
+            appt_time_str = appointment_start.strftime("%H:%M:%S")
+            cache_booking_type = "home" if booking_type_str in ("home_service", "home") else "branch"
+            cust_name = f"{customer_data.get('first_name', '')} {customer_data.get('last_name', '')}".strip()
+
+            await ushauth.create_appointment_cache(
+                service_arrangement_id=str(body.service_arrangement_id) if body.service_arrangement_id else None,
+                therapist_id=str(selected_therapist_id),
+                booking_id=str(booking.id),
+                appointment_date=appt_date_str,
+                appointment_time=appt_time_str,
+                booking_type=cache_booking_type,
+                duration=duration,
+                status="confirmed",
+                payment_status="pending",
+                customer_id=str(customer_id) if customer_id else None,
+                customer_name=cust_name or None,
+                branch_id=str(body.branch_id) if body.branch_id else None,
+                branch_name=branch_name or None,
+                service_id=str(body.service_id) if body.service_id else None,
+                service_name=service_name or None,
+            )
+            logger.info(
+                "appointment_cache_created_for_draft_booking",
+                booking_id=str(booking.id),
+                status="confirmed",
+                payment_status="pending",
+            )
+        except Exception as exc:
+            logger.warning(
+                "appointment_cache_creation_failed_for_draft_booking",
+                booking_id=str(booking.id),
+                error=str(exc),
+            )
+
     # ── 8. Return success response ──────────────────────────────────────
     return CreateBookingResponse(
         success=True,
@@ -1225,6 +1263,12 @@ async def update_booking(
         voucher_id=body.voucher_id,
         voucher_data=body.voucher_data,
         invoice_number=body.invoice_number,
+        addons=body.addons or body.selected_addons,
+        addon_price=body.addon_price or body.addons_price,
+        addons_duration=body.addons_duration,
+        price_for_extra_minutes=body.price_for_extra_minutes or body.extra_price,
+        total_duration=body.total_duration,
+        total_amount=body.total_amount or body.total_price,
     )
 
 
@@ -1252,14 +1296,39 @@ async def update_booking(
 
     # ── Sync appointment cache in ushauth directly ─────────────────────────
     try:
+        _b_status = str(updated.status).lower().strip() if updated.status else None
+        _p_status = str(updated.payment_status).lower().strip() if updated.payment_status else None
+        _STATUS_NORM = {
+            "draft": "confirmed",
+            "payment_pending": "confirmed",
+            "requested": "pending",
+            "reschedule_requested": "pending",
+            "reschedule_approved": "confirmed",
+            "payment_failed": "cancelled",
+            "no_show": "completed",
+        }
+        _PAYMENT_STATUS_NORM = {
+            "not_initiated": "unpaid",
+            "initiated": "pending",
+            "payment_pending": "pending",
+            "paid": "success",
+        }
+        cache_status = _STATUS_NORM.get(_b_status, _b_status) if _b_status else None
+        if _p_status:
+            cache_payment_status = _PAYMENT_STATUS_NORM.get(_p_status, _p_status)
+        elif _b_status in ("payment_pending", "draft"):
+            cache_payment_status = "pending"
+        else:
+            cache_payment_status = None
+
         await ushauth.update_appointment_cache_by_booking_id(
             booking_id=str(booking_id),
             appointment_date=appt_dt_str,
             appointment_time=appt_time_str,
             duration=duration_val,
             therapist_id=str(updated.therapist_id) if updated.therapist_id else None,
-            status=str(updated.status) if updated.status else None,
-            payment_status=str(updated.payment_status) if updated.payment_status else None,
+            status=cache_status,
+            payment_status=cache_payment_status,
             branch_id=str(updated.branch_id) if updated.branch_id else None,
             service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else None,
         )

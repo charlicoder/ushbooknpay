@@ -452,7 +452,7 @@ class RefundService:
             customer_name=c_name,
             customer_phone=c_phone,
             customer_email=c_email,
-            customer_language=str(c_dict.get("language_preference") or "en"),
+            customer_language="en" if str(c_dict.get("language_preference") or "").strip().lower().startswith("en") else "ar",
             branch_id=str(booking.branch_id) if booking.branch_id else "",
             branch_name=str(b_dict.get("name") or ""),
             service_id=str(booking.service_id) if booking.service_id else "",

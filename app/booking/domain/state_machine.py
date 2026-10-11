@@ -19,8 +19,17 @@ from app.core.exceptions import BookingStateError
 # Maps: current_status -> set of valid next statuses
 
 VALID_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
+    BookingStatus.DRAFT: frozenset(
+        {
+            BookingStatus.CONFIRMED,
+            BookingStatus.PAYMENT_PENDING,
+            BookingStatus.REQUESTED,
+            BookingStatus.CANCELLED,
+            BookingStatus.PAYMENT_FAILED,
+        }
+    ),
     BookingStatus.REQUESTED: frozenset(
-        {BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAYMENT_FAILED, BookingStatus.CANCELLED}
+        {BookingStatus.DRAFT, BookingStatus.PAYMENT_PENDING, BookingStatus.CONFIRMED, BookingStatus.PAYMENT_FAILED, BookingStatus.CANCELLED}
     ),
     BookingStatus.PAYMENT_PENDING: frozenset(
         {BookingStatus.CONFIRMED, BookingStatus.PAYMENT_FAILED, BookingStatus.CANCELLED}

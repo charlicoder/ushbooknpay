@@ -139,9 +139,9 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     _raw_lang = (
         customer_dict.get("language_preference")
         or customer_dict.get("language")
-        or "en"
+        or "ar"
     )
-    customer_language_preference: str = "ar" if str(_raw_lang).strip().lower().startswith("ar") else "en"
+    customer_language_preference: str = "en" if str(_raw_lang).strip().lower().startswith("en") else "ar"
     branch_dict = booking.branch_data or {}
     arr_dict = booking.service_arrangement_data or {}
     therapist_dict = booking.therapist_data or {}
@@ -608,8 +608,8 @@ class BookingService:
 
         booking = await self._repo.create(booking)
 
-        # ── Temporary hold (only for unconfirmed branch bookings with a service arrangement) ─
-        if service_arrangement_id is not None and booking.status != BookingStatus.CONFIRMED.value:
+        # ── Temporary hold (only for unconfirmed branch bookings with a service arrangement; skip for draft) ─
+        if service_arrangement_id is not None and booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.DRAFT.value):
             hold = TemporaryHold(
                 booking_id=booking.id,
                 therapist_id=therapist_id,
@@ -646,50 +646,54 @@ class BookingService:
             change_by_user_data=created_by_user_data,
         )
 
-        # ── Enqueue SQS event for Booking.Created ─────────────────────────
-        customer_dict = booking.customer_data or {}
-        branch_dict = booking.branch_data or {}
-        service_dict = booking.service_data or {}
-        therapist_dict = booking.therapist_data or {}
+        # ── Notifications / Events: Skip completely if status is DRAFT ──
+        if booking.status == BookingStatus.DRAFT.value:
+            logger.info("booking_created_draft_no_notifications", booking_id=str(booking.id))
+        else:
+            # ── Enqueue SQS event for Booking.Created ─────────────────────────
+            customer_dict = booking.customer_data or {}
+            branch_dict = booking.branch_data or {}
+            service_dict = booking.service_data or {}
+            therapist_dict = booking.therapist_data or {}
 
-        await self._enqueue_event(
-            BookingCreatedEvent(
-                booking_id=str(booking.id),
-                booking_number=getattr(booking, "booking_number", None) or "",
-                customer_id=str(booking.customer_id),
-                customer_name=_extract_customer_name(customer_dict),
-                customer_phone=str(customer_dict.get("phone_number") or customer_dict.get("phone") or ""),
-                customer_email=str(customer_dict.get("email") or ""),
-                branch_id=str(booking.branch_id),
-                branch_name=str(branch_dict.get("name") or ""),
-                service_id=str(booking.service_id),
-                service_name=str(service_dict.get("name") or ""),
-                therapist_id=str(booking.therapist_id),
-                therapist_name=str(therapist_dict.get("name") or therapist_dict.get("full_name") or ""),
-                appointment_start=to_local_tz(booking.appointment_start).isoformat(),
-                appointment_end=to_local_tz(booking.appointment_end).isoformat(),
-                duration_minutes=booking.duration_minutes,
-                total_amount=str(booking.total_amount),
-                currency=booking.currency,
-                status=booking.status,
-                created_by_user=str(effective_user),
-                created_by_user_data=created_by_user_data or {},
-                change_by_user=str(effective_user),
-                change_by_user_data=created_by_user_data or {},
+            await self._enqueue_event(
+                BookingCreatedEvent(
+                    booking_id=str(booking.id),
+                    booking_number=getattr(booking, "booking_number", None) or "",
+                    customer_id=str(booking.customer_id),
+                    customer_name=_extract_customer_name(customer_dict),
+                    customer_phone=str(customer_dict.get("phone_number") or customer_dict.get("phone") or ""),
+                    customer_email=str(customer_dict.get("email") or ""),
+                    branch_id=str(booking.branch_id),
+                    branch_name=str(branch_dict.get("name") or ""),
+                    service_id=str(booking.service_id),
+                    service_name=str(service_dict.get("name") or ""),
+                    therapist_id=str(booking.therapist_id),
+                    therapist_name=str(therapist_dict.get("name") or therapist_dict.get("full_name") or ""),
+                    appointment_start=to_local_tz(booking.appointment_start).isoformat(),
+                    appointment_end=to_local_tz(booking.appointment_end).isoformat(),
+                    duration_minutes=booking.duration_minutes,
+                    total_amount=str(booking.total_amount),
+                    currency=booking.currency,
+                    status=booking.status,
+                    created_by_user=str(effective_user),
+                    created_by_user_data=created_by_user_data or {},
+                    change_by_user=str(effective_user),
+                    change_by_user_data=created_by_user_data or {},
+                )
             )
-        )
 
-        logger.info("booking_created", booking_id=str(booking.id))
+            logger.info("booking_created", booking_id=str(booking.id))
 
-        # If a booking arrives already confirmed, fire BookingConfirmedEvent immediately.
-        if booking.status == BookingStatus.CONFIRMED.value:
-            await self._ensure_booking_loyalty_details(booking)
-            ev_data = _build_booking_event_data(booking)
-            await self._enqueue_event(BookingConfirmedEvent(**ev_data))
-        elif booking.status == BookingStatus.PAYMENT_PENDING.value:
-            await self._ensure_booking_loyalty_details(booking)
-            ev_data = _build_booking_event_data(booking)
-            await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
+            # If a booking arrives already confirmed, fire BookingConfirmedEvent immediately.
+            if booking.status == BookingStatus.CONFIRMED.value:
+                await self._ensure_booking_loyalty_details(booking)
+                ev_data = _build_booking_event_data(booking)
+                await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+            elif booking.status == BookingStatus.PAYMENT_PENDING.value:
+                await self._ensure_booking_loyalty_details(booking)
+                ev_data = _build_booking_event_data(booking)
+                await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
 
 
         return booking
@@ -733,9 +737,15 @@ class BookingService:
         voucher_id: uuid.UUID | None = None,
         voucher_data: dict | None = None,
         invoice_number: str | None = None,
+        addons: list | None = None,
+        addon_price: Decimal | str | float | None = None,
+        addons_duration: int | None = None,
+        price_for_extra_minutes: Decimal | str | float | None = None,
+        total_duration: int | None = None,
+        total_amount: Decimal | str | float | None = None,
     ) -> Booking:
         """
-        Update booking fields (status, payment_status, payment_data, timing, therapist, notes).
+        Update booking fields (status, payment_status, payment_data, timing, therapist, notes, addons, pricing).
         Follows REST standard for partial/full update.
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
@@ -746,8 +756,10 @@ class BookingService:
         target_therapist_id = therapist_id or booking.therapist_id
         target_start = to_local_tz(appointment_start or booking.appointment_start)
         target_extra = extra_minutes if extra_minutes is not None else booking.extra_minutes
-        total_duration = booking.duration_minutes + target_extra
-        target_end = target_start + timedelta(minutes=total_duration)
+        raw_addons_dur = getattr(booking, "addons_duration", 0)
+        target_addons_dur = addons_duration if isinstance(addons_duration, int) else (raw_addons_dur if isinstance(raw_addons_dur, int) else 0)
+        eff_total_duration = total_duration if isinstance(total_duration, int) else (booking.duration_minutes + target_extra + target_addons_dur)
+        target_end = target_start + timedelta(minutes=eff_total_duration)
 
         if therapist_id is not None or appointment_start is not None or extra_minutes is not None:
             # Check overlap against other bookings
@@ -856,6 +868,20 @@ class BookingService:
             booking.voucher_id = voucher_id
         if voucher_data is not None:
             booking.voucher_data = voucher_data
+
+        # ── Addons & Pricing fields ────────────────────────────────────
+        if addons is not None:
+            booking.addons = addons
+        if addon_price is not None:
+            booking.addon_price = Decimal(str(addon_price))
+        if addons_duration is not None:
+            booking.addons_duration = addons_duration
+        if price_for_extra_minutes is not None:
+            booking.price_for_extra_minutes = Decimal(str(price_for_extra_minutes))
+        if total_duration is not None:
+            booking.total_duration = total_duration
+        if total_amount is not None:
+            booking.total_amount = Decimal(str(total_amount))
 
         # ── Status update & event emission ───────────────────────────────
         if status is not None and BookingStatus(booking.status) != status:

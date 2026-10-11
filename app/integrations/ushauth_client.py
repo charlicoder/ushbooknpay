@@ -485,21 +485,30 @@ class USHAuthClient:
 
     async def create_appointment_cache(
         self,
-        service_arrangement_id: str,
-        therapist_id: str,
-        booking_id: str,
-        appointment_date: str,
-        appointment_time: str,
+        service_arrangement_id: str | None = None,
+        therapist_id: str = "",
+        booking_id: str = "",
+        appointment_date: str = "",
+        appointment_time: str = "",
         booking_type: str = "branch",
         duration: int = 60,
         status: str = "confirmed",
+        payment_status: str = "pending",
+        customer_id: str | None = None,
+        customer_name: str | None = None,
+        branch_id: str | None = None,
+        branch_name: str | None = None,
+        service_id: str | None = None,
+        service_name: str | None = None,
+        service_arrangement_name: str | None = None,
+        therapist_name: str | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """
-        Create appointment cache records in ushauth (ush_spa_appointment_cache and ush_therapist_booking_cache).
+        Create appointment cache records in ushauth (ush_spa_appointment_cache).
         POST /api/v1/create-appointment-cache/
         """
-        payload = {
-            "service_arrangement_id": str(service_arrangement_id),
+        payload: dict[str, Any] = {
             "therapist_id": str(therapist_id),
             "booking_id": str(booking_id),
             "appointment_date": str(appointment_date),
@@ -507,7 +516,27 @@ class USHAuthClient:
             "booking_type": str(booking_type),
             "duration": int(duration),
             "status": str(status),
+            "payment_status": str(payment_status),
         }
+        if service_arrangement_id:
+            payload["service_arrangement_id"] = str(service_arrangement_id)
+        if customer_id:
+            payload["customer_id"] = str(customer_id)
+        if customer_name:
+            payload["customer_name"] = str(customer_name)
+        if branch_id:
+            payload["branch_id"] = str(branch_id)
+        if branch_name:
+            payload["branch_name"] = str(branch_name)
+        if service_id:
+            payload["service_id"] = str(service_id)
+        if service_name:
+            payload["service_name"] = str(service_name)
+        if service_arrangement_name:
+            payload["service_arrangement_name"] = str(service_arrangement_name)
+        if therapist_name:
+            payload["therapist_name"] = str(therapist_name)
+
         return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
 
     async def update_appointment_cache_status_by_booking_id(
@@ -551,11 +580,29 @@ class USHAuthClient:
         Comprehensive update for appointment cache record(s) matching booking_id in ushauth.
         POST /api/v1/update-appointment-cache-by-booking-id/
         """
+        _STATUS_NORM = {
+            "payment_pending": "confirmed",
+            "requested": "pending",
+            "reschedule_requested": "pending",
+            "reschedule_approved": "confirmed",
+            "payment_failed": "cancelled",
+            "no_show": "completed",
+        }
+        _PAYMENT_STATUS_NORM = {
+            "not_initiated": "unpaid",
+            "initiated": "pending",
+            "payment_pending": "pending",
+            "paid": "success",
+        }
         payload: dict[str, Any] = {"booking_id": str(booking_id)}
         if status is not None:
-            payload["status"] = str(status)
+            norm_status = _STATUS_NORM.get(str(status).lower().strip(), str(status))
+            payload["status"] = norm_status
         if payment_status is not None:
-            payload["payment_status"] = str(payment_status)
+            norm_ps = _PAYMENT_STATUS_NORM.get(str(payment_status).lower().strip(), str(payment_status))
+            payload["payment_status"] = norm_ps
+        elif status is not None and str(status).lower().strip() == "payment_pending":
+            payload["payment_status"] = "pending"
         if appointment_date is not None:
             payload["appointment_date"] = str(appointment_date)
         if appointment_time is not None:
