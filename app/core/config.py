@@ -151,19 +151,19 @@ class Settings(BaseSettings):
         description="Internal API key for ushanr service-to-service calls.",
     )
     USHANR_COMPANY_ID: str = Field(
-        default="20bf55dd-7db8-40d1-a2f8-f9da6bb61b68",
+        default="b3056214-f8e9-482a-b551-08e89e4243aa",
         description="Default company UUID in ushanr.",
     )
     USHANR_AR_JOURNAL_ID: str = Field(
-        default="b9647bd3-f913-43c6-8d7c-d247144a307c",
+        default="0cf8253e-9cfb-45b9-9f81-33f6e12f620b",
         description="Default AR journal UUID in ushanr.",
     )
     USHANR_REVENUE_ACCOUNT_ID: str = Field(
-        default="8ac2132f-ca98-4354-864d-ab4244ff73b6",
+        default="45a627dd-4c46-45a8-b3d5-34088c8b2816",
         description="Default revenue account UUID in ushanr.",
     )
     USHANR_ADDON_ACCOUNT_ID: str = Field(
-        default="",
+        default="25df6768-d4dc-49a1-8965-a5aa93f0aad1",
         description="Default add-on revenue account UUID in ushanr.",
     )
 
