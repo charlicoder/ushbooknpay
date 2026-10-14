@@ -216,6 +216,21 @@ class Settings(BaseSettings):
     MYFATOORAH_CALLBACK_URL: str = ""
     MYFATOORAH_SUCCESS_URL: str = ""
     MYFATOORAH_ERROR_URL: str = ""
+    # Webhook V2 signature secret (portal → Integration Settings → Webhook). Never log.
+    MYFATOORAH_WEBHOOK_SECRET: str = ""
+    # Public URL MyFatoorah calls server-to-server (sent per invoice where supported)
+    MYFATOORAH_WEBHOOK_URL: str = ""
+    # Default country dial code used when a customer phone has no explicit prefix
+    MYFATOORAH_DEFAULT_COUNTRY_CODE: str = "+965"
+
+    # ── Payment links (provider-agnostic) ────────────────────────────────
+    PAYMENT_LINK_DEFAULT_GATEWAY: str = "myfatoorah"
+    PAYMENT_LINK_EXPIRY_MINUTES: int = Field(default=60, ge=5, le=10080)
+    # Reject webhooks older than this many seconds (replay protection); 0 disables
+    PAYMENT_WEBHOOK_MAX_AGE_SECONDS: int = Field(default=0, ge=0)
+    # Verbose webhook request/response logging for debugging. Always on in
+    # development; opt-in elsewhere. Secrets and card data are never logged.
+    PAYMENT_WEBHOOK_DEBUG_LOG: bool = False
 
     # Tap Payments
     TAP_SECRET_KEY: str = ""  # never log
@@ -259,6 +274,10 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.APP_ENV == "development"
+
+    @property
+    def payment_webhook_debug(self) -> bool:
+        return self.PAYMENT_WEBHOOK_DEBUG_LOG or self.is_development
 
 
 @lru_cache(maxsize=1)

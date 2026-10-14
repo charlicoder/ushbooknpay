@@ -38,6 +38,7 @@ VALID_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
         {
             BookingStatus.RESCHEDULE_REQUESTED,
             BookingStatus.CANCELLED,
+            BookingStatus.REFUNDED,
             BookingStatus.COMPLETED,
             BookingStatus.NO_SHOW,
         }
@@ -50,19 +51,21 @@ VALID_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
             BookingStatus.RESCHEDULE_APPROVED,
             BookingStatus.CONFIRMED,   # reschedule denied → revert to confirmed
             BookingStatus.CANCELLED,
+            BookingStatus.REFUNDED,
         }
     ),
     BookingStatus.RESCHEDULE_APPROVED: frozenset(
-        {BookingStatus.CONFIRMED, BookingStatus.CANCELLED}
+        {BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.REFUNDED}
     ),
-    # Terminal states — no valid transitions
-    BookingStatus.CANCELLED: frozenset(),
+    # Terminal states
+    BookingStatus.CANCELLED: frozenset({BookingStatus.REFUNDED}),
+    BookingStatus.REFUNDED: frozenset(),
     BookingStatus.COMPLETED: frozenset(),
     BookingStatus.NO_SHOW: frozenset(),
 }
 
 TERMINAL_STATUSES: frozenset[BookingStatus] = frozenset(
-    {BookingStatus.CANCELLED, BookingStatus.COMPLETED, BookingStatus.NO_SHOW}
+    {BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED, BookingStatus.NO_SHOW}
 )
 
 

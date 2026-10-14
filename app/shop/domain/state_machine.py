@@ -22,8 +22,11 @@ TRANSITIONS: dict[DeliveryStatus, set[DeliveryStatus]] = {
     DeliveryStatus.RECEIVED: set(),  # terminal
 }
 
-# Transitions that require the customer secret code
-CUSTOMER_ONLY_TRANSITIONS: set[tuple[DeliveryStatus, DeliveryStatus]] = {
+# Transitions that require the customer secret code (empty now as staff can also mark received)
+CUSTOMER_ONLY_TRANSITIONS: set[tuple[DeliveryStatus, DeliveryStatus]] = set()
+
+# Transitions that customers can perform via their tracking code
+CUSTOMER_ALLOWED_TRANSITIONS: set[tuple[DeliveryStatus, DeliveryStatus]] = {
     (DeliveryStatus.DELIVERED, DeliveryStatus.RECEIVED),
 }
 
@@ -61,7 +64,7 @@ class DeliveryStateMachine:
 
     def assert_customer_can_transition(self, to: DeliveryStatus) -> None:
         self.assert_can_transition(to)
-        if (self._current, to) not in CUSTOMER_ONLY_TRANSITIONS:
+        if (self._current, to) not in CUSTOMER_ALLOWED_TRANSITIONS:
             raise InvalidDeliveryTransitionError(
                 f"Transition '{self._current}' → '{to}' is not available to customers."
             )

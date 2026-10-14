@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from app.api.v1 import availability, bookings, payments, refunds
 from app.gifts.api.router import router as gifts_router
 from app.loyalty.api.router import router as loyalty_router
+from app.payment_links.api.router import router as payment_links_router
 from app.shop.api.router import router as shop_router
 from app.voucher.api.router import (
     list_my_received_vouchers,
@@ -24,6 +25,7 @@ api_router.include_router(availability.router)
 api_router.include_router(bookings.router)
 api_router.include_router(payments.router)
 api_router.include_router(refunds.router)
+api_router.include_router(payment_links_router)
 api_router.include_router(vouchers_router)
 api_router.include_router(shop_router)
 api_router.include_router(gifts_router)

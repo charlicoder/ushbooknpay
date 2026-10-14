@@ -76,9 +76,20 @@ class RefundService:
         return booking
 
     async def _get_payment_for_booking(self, booking: Booking) -> Payment | None:
-        stmt = select(Payment).where(Payment.booking_id == booking.id)
+        stmt = (
+            select(Payment)
+            .where(Payment.booking_id == booking.id)
+            .order_by(
+                (Payment.status.in_(("success", "partially_refunded", "refunded"))).desc(),
+                Payment.created_at.desc(),
+            )
+            .limit(1)
+        )
         result = await self._session.execute(stmt)
-        payment = result.scalar_one_or_none()
+        try:
+            payment = result.scalar_one_or_none()
+        except Exception:
+            payment = result.scalars().first()
         if payment:
             return payment
 
@@ -103,7 +114,10 @@ class RefundService:
     def _resolve_gateway_provider(self, payment: Payment):
         prov = str(payment.payment_provider or payment.payment_gateway or "").strip().lower()
         if "fatoorah" in prov:
-            return MyFatoorahProvider(http_client=self._http, settings=self._settings)
+            # Provider-agnostic payment-link gateway (also implements refund_payment)
+            from app.payment_links import get_gateway
+
+            return get_gateway("myfatoorah", self._http, self._settings)
         return TapProvider(http_client=self._http, settings=self._settings)
 
     async def record_manual_refund(
@@ -207,9 +221,10 @@ class RefundService:
             )
             self._session.add(history)
 
-        # Update booking payment_status
+        # Update booking payment_status & status
         if str(booking.payment_status).lower() in ("paid", "success"):
             booking.payment_status = "refunded" if (not payment or payment.status == PaymentTransactionStatus.REFUNDED.value) else "partially_refunded"
+            booking.status = "refunded"
         if req.notes:
             booking.internal_notes = (f"{booking.internal_notes or ''}\n[Refund {refund_number}]: {req.notes}").strip()
 
@@ -266,7 +281,10 @@ class RefundService:
             raise ValidationError("Net refunded amount after cancellation fee must be greater than zero.")
 
         # Identify external gateway transaction id
-        gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id
+        if "fatoorah" in str(payment.payment_provider or "").lower():
+            gateway_payment_id = payment.invoice_id or payment.payment_id or payment.transaction_id
+        else:
+            gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id
         if not gateway_payment_id:
             raise ValidationError("Payment lacks external gateway reference required for automated refund.")
 
@@ -408,8 +426,9 @@ class RefundService:
         )
         self._session.add(history)
 
-        # Update booking payment_status
+        # Update booking payment_status & status
         booking.payment_status = "refunded" if payment.status == PaymentTransactionStatus.REFUNDED.value else "partially_refunded"
+        booking.status = "refunded"
 
         await self._session.flush()
 

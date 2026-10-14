@@ -23,7 +23,7 @@ from __future__ import annotations
 from app.common.utils import to_local_tz as _to_local_tz
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -802,38 +802,47 @@ class BookingService:
 
         # ── Payment status & Meta ────────────────────────────────────────
         if payment_status is not None:
-            booking.payment_status = payment_status.value
-            try:
-                from app.payment.domain.value_objects import PaymentTransactionStatus
+            # If cancelling a paid booking without refund, keep payments and payment status unchanged
+            is_currently_paid = str(getattr(booking, "payment_status", "")).lower().strip() in ("paid", "success")
+            is_cancelling_without_refund = (
+                is_currently_paid
+                and status in (BookingStatus.CANCELLED, "cancelled")
+                and str(payment_status.value).lower().strip() != "refunded"
+            )
 
-                p_stat_str = str(payment_status.value).lower().strip()
-                if p_stat_str in ("refunded", "cancelled"):
-                    target_status = (
-                        PaymentTransactionStatus.REFUNDED.value
-                        if p_stat_str == "refunded"
-                        else PaymentTransactionStatus.CANCELLED.value
-                    )
-                    await self._sync_booking_payment_status(
-                        booking,
-                        target_status,
-                        source=source,
-                        reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
-                        change_by_user=effective_changed_by,
-                        change_by_user_data=effective_changed_user_data,
-                        correlation_id=correlation_id,
-                    )
-                elif p_stat_str in ("success", "paid"):
-                    await self._sync_booking_payment_status(
-                        booking,
-                        PaymentTransactionStatus.SUCCESS.value,
-                        source=source,
-                        reason=reason or "Payment status updated to success",
-                        change_by_user=effective_changed_by,
-                        change_by_user_data=effective_changed_user_data,
-                        correlation_id=correlation_id,
-                    )
-            except Exception as exc:
-                logger.warning("sync_booking_payment_status_failed", error=str(exc))
+            if not is_cancelling_without_refund:
+                booking.payment_status = payment_status.value
+                try:
+                    from app.payment.domain.value_objects import PaymentTransactionStatus
+
+                    p_stat_str = str(payment_status.value).lower().strip()
+                    if p_stat_str in ("refunded", "cancelled"):
+                        target_status = (
+                            PaymentTransactionStatus.REFUNDED.value
+                            if p_stat_str == "refunded"
+                            else PaymentTransactionStatus.CANCELLED.value
+                        )
+                        await self._sync_booking_payment_status(
+                            booking,
+                            target_status,
+                            source=source,
+                            reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                            change_by_user=effective_changed_by,
+                            change_by_user_data=effective_changed_user_data,
+                            correlation_id=correlation_id,
+                        )
+                    elif p_stat_str in ("success", "paid"):
+                        await self._sync_booking_payment_status(
+                            booking,
+                            PaymentTransactionStatus.SUCCESS.value,
+                            source=source,
+                            reason=reason or "Payment status updated to success",
+                            change_by_user=effective_changed_by,
+                            change_by_user_data=effective_changed_user_data,
+                            correlation_id=correlation_id,
+                        )
+                except Exception as exc:
+                    logger.warning("sync_booking_payment_status_failed", error=str(exc))
         if payment_data is not None:
             booking.payment_data = {**(booking.payment_data or {}), **payment_data}
         if payment_id is not None:
@@ -881,7 +890,63 @@ class BookingService:
         if total_duration is not None:
             booking.total_duration = total_duration
         if total_amount is not None:
-            booking.total_amount = Decimal(str(total_amount))
+            old_amount = booking.total_amount
+            new_amount = Decimal(str(total_amount))
+            booking.total_amount = new_amount
+
+            # Requirement:
+            # In Booking Details popup window when update a booking with status=confirmed and payment_status=pending
+            # but paymentlink is created for this booking (payment_url is not null or paymentlink records exist)
+            # and updated payment amount is not equal to previous payment amount (current paymentlink amount),
+            # send cancel request to MyFatoorah to cancel previous paymentlink, delete paymentlink record for this booking,
+            # and create new paymentlink.
+            eff_status = str(status.value if isinstance(status, BookingStatus) else (status or booking.status)).lower().strip()
+            eff_pay_status = str(payment_status.value if isinstance(payment_status, PaymentStatus) else (payment_status or booking.payment_status)).lower().strip()
+            is_confirmed_booking = eff_status == BookingStatus.CONFIRMED.value
+            is_pending_payment = eff_pay_status in ("pending", "unpaid")
+            is_amount_diff = old_amount is not None and abs(new_amount - Decimal(str(old_amount))) > Decimal("0.001")
+
+            if is_confirmed_booking and is_pending_payment and is_amount_diff:
+                try:
+                    from app.payment_links.application.link_service import PaymentLinkService
+                    from app.payment_links import get_gateway
+                    from app.api.deps import get_http_client
+                    from app.core.config import get_settings
+
+                    pl_settings = get_settings()
+                    gateway = get_gateway(pl_settings.PAYMENT_LINK_DEFAULT_GATEWAY, get_http_client(), pl_settings)
+                    pl_service = PaymentLinkService(self._session, pl_settings, gateway)
+
+                    open_link = await pl_service._find_open_link("booking", booking.id)
+                    has_payment_link = open_link is not None or bool(getattr(booking, "payment_url", None))
+
+                    if has_payment_link:
+                        # 1. Send cancel request to MyFatoorah & delete paymentlink records for this booking
+                        await pl_service.cancel_and_delete_links_for_target("booking", booking.id)
+                        # 2. Create new paymentlink
+                        new_link = await pl_service.create_link(
+                            target_type="booking",
+                            target_id=booking.id,
+                            amount=new_amount,
+                            actor_id=effective_changed_by or "system",
+                            actor_data=effective_changed_user_data,
+                            force_new=True,
+                        )
+                        booking.payment_url = new_link.payment_url
+                        booking.payment_provider = new_link.provider_label
+                        logger.info(
+                            "booking_payment_link_recreated_on_amount_change",
+                            booking_id=str(booking.id),
+                            old_amount=str(old_amount),
+                            new_amount=str(new_amount),
+                            new_payment_url=new_link.payment_url,
+                        )
+                except Exception as pl_exc:
+                    logger.warning(
+                        "booking_payment_link_recreation_failed",
+                        booking_id=str(booking.id),
+                        error=str(pl_exc),
+                    )
 
         # ── Status update & event emission ───────────────────────────────
         if status is not None and BookingStatus(booking.status) != status:
@@ -905,10 +970,10 @@ class BookingService:
                     f"{booking.internal_notes or ''}\n[{utcnow().isoformat()}] Status changed to {status.value} by {source}: {reason}"
                 ).strip()
 
-            if status in (BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.COMPLETED):
+            if status in (BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED):
                 await self._repo.delete_hold(booking_id)
 
-            if status in (BookingStatus.CANCELLED, "cancelled") and str(booking.payment_status).lower() in ("paid", "success"):
+            if status in (BookingStatus.REFUNDED, "refunded"):
                 booking.payment_status = PaymentStatus.REFUNDED.value
                 try:
                     from app.payment.domain.value_objects import PaymentTransactionStatus
@@ -917,7 +982,7 @@ class BookingService:
                         booking,
                         PaymentTransactionStatus.REFUNDED.value,
                         source=source,
-                        reason=reason or f"Booking cancelled - payment status updated to refunded",
+                        reason=reason or f"Booking refunded - payment status updated to refunded",
                         change_by_user=effective_changed_by,
                         change_by_user_data=effective_changed_user_data,
                         correlation_id=correlation_id,
@@ -948,8 +1013,37 @@ class BookingService:
                 change_by_user_data=effective_changed_user_data,
             )
 
-            # Sync appointment cache on cancellation
+            # Sync appointment cache and cancel open payment links on cancellation
             if status in (BookingStatus.CANCELLED, "cancelled"):
+                try:
+                    from app.payment_links.infrastructure.models import PaymentLink, PaymentLinkStatus
+                    session = getattr(self._repo, "_session", None)
+                    if session is not None:
+                        stmt = (
+                            update(PaymentLink)
+                            .where(
+                                PaymentLink.target_type == "booking",
+                                PaymentLink.target_id == booking.id,
+                                PaymentLink.status.in_([
+                                    PaymentLinkStatus.PENDING.value,
+                                    PaymentLinkStatus.CREATED.value,
+                                    "pending",
+                                    "created",
+                                ]),
+                            )
+                            .values(
+                                status=PaymentLinkStatus.CANCELLED.value,
+                                failure_data={
+                                    "stage": "cancel_on_booking_cancellation",
+                                    "reason": "Booking cancelled",
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                },
+                            )
+                        )
+                        await session.execute(stmt)
+                except Exception as exc:
+                    logger.warning("cancel_open_payment_links_on_status_cancel_failed", error=str(exc))
+
                 try:
                     ushauth = self._get_ushauth_client()
                     if ushauth is not None:
@@ -1833,8 +1927,21 @@ class BookingService:
                     )
                     self._session.add(history)
 
-            # 4. If no payment record exists in payments table, create one and record history
-            if not payments and getattr(booking, "total_amount", None) and getattr(booking, "customer_id", None):
+            # 4. If no payment record exists in payments table, create one only if the payment was actually completed/paid.
+            # Never create a payment record when target_status is 'cancelled' or 'refunded',
+            # and never create a payment record when cancelling a booking with status=confirmed and payment_status=pending.
+            is_cancellation_or_unpaid = (
+                target_status in ("cancelled", "refunded")
+                or str(getattr(booking, "payment_status", "")).lower().strip() in ("pending", "payment_pending", "unpaid", "not_initiated", "cancelled")
+                or str(getattr(booking, "status", "")).lower().strip() == "cancelled"
+            )
+            if (
+                not payments
+                and not is_cancellation_or_unpaid
+                and target_status in ("success", "paid")
+                and getattr(booking, "total_amount", None)
+                and getattr(booking, "customer_id", None)
+            ):
                 try:
                     computed_duration = (
                         getattr(booking, "total_duration", None)

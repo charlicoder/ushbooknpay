@@ -28,6 +28,7 @@ from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession,
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
 from app.payment.infrastructure.models import Payment
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
+from app.booking.application.services import _build_booking_event_data
 from app.booking.interfaces.schemas import (
     AddonSchema,
     BookingDetailResponse,
@@ -225,6 +226,7 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         invoice_number=_safe_str(getattr(b, "invoice_number", None)),
+        invoice_id=None,
         refund_number=_safe_str(getattr(b, "refund_number", None)),
         refund_id=_safe_str(getattr(b, "refund_id", None)),
     )
@@ -914,7 +916,9 @@ async def create_booking(
                 )
 
     # ── Auto-create or fetch invoice from ushanr if booking is confirmed / paid ─
-    if not booking.invoice_number and (
+    inv_id_res: str | None = None
+    inv_num_res: str | None = getattr(booking, "invoice_number", None)
+    if not inv_num_res and (
         booking.status == BookingStatus.CONFIRMED.value
         or booking.payment_status == PaymentStatus.SUCCESS.value
     ):
@@ -922,27 +926,41 @@ async def create_booking(
         ushanr_c = UshanrClient()
         try:
             cust_name = f"{customer_data.get('first_name', '')} {customer_data.get('last_name', '')}".strip()
-            inv_name = await ushanr_c.create_or_get_booking_invoice(
+            inv_data = await ushanr_c.create_or_get_booking_invoice_data(
                 booking=booking,
                 customer_name=cust_name,
                 customer_phone=customer_data.get("phone_number", ""),
                 customer_email=customer_data.get("email", ""),
             )
-            if inv_name:
-                booking.invoice_number = inv_name
-                await booking_service._session.commit()
+            if inv_data:
+                inv_num_res = inv_data.get("invoice_number")
+                inv_id_res = inv_data.get("invoice_id")
+                if inv_num_res:
+                    booking.invoice_number = inv_num_res
+                    await booking_service._session.commit()
                 # Also link to any payments for this booking
                 try:
                     await booking_service._session.execute(
                         update(Payment)
                         .where(Payment.booking_id == booking.id)
-                        .values(invoice_number=inv_name)
+                        .values(invoice_number=inv_num_res)
                     )
                     await booking_service._session.commit()
                 except Exception:
                     pass
         except Exception as exc:
             logger.warning("auto_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))
+        finally:
+            await ushanr_c.aclose()
+    elif inv_num_res:
+        from app.integrations.ushanr_client import UshanrClient
+        ushanr_c = UshanrClient()
+        try:
+            existing = await ushanr_c.get_invoice_by_source("booking", str(booking.id))
+            if existing and existing.get("invoice_id"):
+                inv_id_res = str(existing.get("invoice_id"))
+        except Exception:
+            pass
         finally:
             await ushanr_c.aclose()
 
@@ -1010,7 +1028,8 @@ async def create_booking(
             created_by_user=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
             created_by_user_data=getattr(booking, "created_by_user_data", None) if isinstance(getattr(booking, "created_by_user_data", None), dict) else None,
             created_by=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
-            invoice_number=_safe_str(getattr(booking, "invoice_number", None)),
+            invoice_number=_safe_str(inv_num_res or getattr(booking, "invoice_number", None)),
+            invoice_id=inv_id_res,
         ),
     )
 
@@ -1277,6 +1296,12 @@ async def update_booking(
     appt_time_str = to_local_tz(updated.appointment_start).strftime("%H:%M:%S") if updated.appointment_start else ""
     duration_val = int(updated.duration_minutes + (updated.extra_minutes or 0))
 
+    try:
+        ev_data = _build_booking_event_data(updated)
+    except Exception as ev_build_exc:
+        logger.warning("booking_updated_build_event_data_warn", booking_id=str(booking_id), error=str(ev_build_exc))
+        ev_data = {}
+
     await booking_service._enqueue_event(
         BookingUpdatedEvent(
             booking_id=str(booking_id),
@@ -1291,6 +1316,21 @@ async def update_booking(
             service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else "",
             source=body.source or "",
             reason=body.reason or "",
+            booking_number=str(ev_data.get("booking_number") or getattr(updated, "booking_number", "") or ""),
+            booking_reference=str(ev_data.get("booking_reference") or getattr(updated, "booking_number", "") or str(booking_id)),
+            customer_name=str(ev_data.get("customer_name") or ""),
+            customer_phone=str(ev_data.get("customer_phone") or ""),
+            customer_email=str(ev_data.get("customer_email") or ""),
+            language_preference=str(ev_data.get("language_preference") or ""),
+            customer_data=ev_data.get("customer_data") or (updated.customer_data if isinstance(updated.customer_data, dict) else {}),
+            service_name=str(ev_data.get("service_name") or ""),
+            branch_name=str(ev_data.get("branch_name") or ""),
+            therapist_name=str(ev_data.get("therapist_name") or ""),
+            total_amount=str(ev_data.get("total_amount") or str(updated.total_amount)),
+            currency=str(ev_data.get("currency") or updated.currency or "KWD"),
+            appointment_start=str(ev_data.get("appointment_start") or ""),
+            appointment_end=str(ev_data.get("appointment_end") or ""),
+            appointment_endtime=str(ev_data.get("appointment_endtime") or ""),
         )
     )
 

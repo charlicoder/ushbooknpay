@@ -887,6 +887,8 @@ class GiftVoucherResponse(BaseModel):
     payment_url: str | None = None
     payment_provider: str | None = None
     payment_through: str | None = None
+    invoice_number: str | None = None
+    payment_number: str | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
 
@@ -978,6 +980,8 @@ class GiftVoucherListItem(BaseModel):
     payment_url: str | None = None
     payment_provider: str | None = None
     payment_through: str | None = None
+    invoice_number: str | None = None
+    payment_number: str | None = None
     created_by: uuid.UUID | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime

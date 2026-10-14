@@ -650,6 +650,21 @@ class BookingUpdatedEvent(BaseEvent):
     service_arrangement_id: str = ""
     source: str = ""
     reason: str = ""
+    booking_number: str = ""
+    booking_reference: str = ""
+    customer_name: str = ""
+    customer_phone: str = ""
+    customer_email: str = ""
+    language_preference: str = ""
+    customer_data: dict = field(default_factory=dict)
+    service_name: str = ""
+    branch_name: str = ""
+    therapist_name: str = ""
+    total_amount: str = ""
+    currency: str = "KWD"
+    appointment_start: str = ""
+    appointment_end: str = ""
+    appointment_endtime: str = ""
 
 
 # ── Payment Events ────────────────────────────────────────────────────────────
@@ -704,6 +719,58 @@ class PaymentFailedEvent(BaseEvent):
     payment_for: str = "service"
     customer_id: str = ""
     provider: str = ""
+    failure_reason: str = ""
+
+
+@dataclass
+class PaymentLinkPaidEvent(BaseEvent):
+    """Fired by the payment-link webhook once a gateway payment is verified as paid.
+
+    ``booking`` carries the full booking event snapshot (same shape as
+    ``booking.confirmed``) so the consumer can create the payment record,
+    mark the invoice paid and notify the customer without extra lookups.
+    """
+
+    event_name: str = field(default="PaymentLink.Paid", init=False)
+    event_type: str = field(default="payment_link.paid", init=False)
+    payment_link_id: str = ""
+    target_type: str = "booking"
+    target_id: str = ""
+    booking_id: str | None = None
+    invoice_id: str | None = None  # accounting invoice (ushanr) id
+    invoice_number: str | None = None
+    gateway: str = ""
+    provider: str = ""
+    gateway_invoice_id: str = ""
+    gateway_payment_id: str = ""
+    transaction_id: str = ""
+    track_id: str = ""
+    reference_id: str = ""
+    payment_method: str = ""
+    amount: str = ""
+    currency: str = "KWD"
+    paid_at: str = ""
+    booking: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PaymentLinkFailedEvent(BaseEvent):
+    """Fired by the payment-link webhook when a gateway payment attempt failed."""
+
+    event_name: str = field(default="PaymentLink.Failed", init=False)
+    event_type: str = field(default="payment_link.failed", init=False)
+    payment_link_id: str = ""
+    target_type: str = "booking"
+    target_id: str = ""
+    booking_id: str | None = None
+    invoice_id: str | None = None
+    invoice_number: str | None = None
+    gateway: str = ""
+    provider: str = ""
+    gateway_invoice_id: str = ""
+    payment_method: str = ""
+    amount: str = ""
+    currency: str = "KWD"
     failure_reason: str = ""
 
 
@@ -789,6 +856,8 @@ class VoucherActiveEvent(BaseEvent):
     # ── Payment & timestamps ──────────────────────────────────────────
     # payment_id is a gateway reference string (e.g. "100624710000000255"), not UUID
     payment_id: str | None = None
+    payment_number: str | None = None
+    invoice_number: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
     payment_provider: str | None = None
@@ -865,6 +934,8 @@ class VoucherPaymentPendingEvent(BaseEvent):
     # ── Payment & timestamps ──────────────────────────────────────────
     # payment_id is a gateway reference string (e.g. "100624710000000255"), not UUID
     payment_id: str | None = None
+    payment_number: str | None = None
+    invoice_number: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
     payment_provider: str | None = None
@@ -947,6 +1018,8 @@ class VoucherRedeemedEvent(BaseEvent):
     # ── Payment & timestamps ──────────────────────────────────────────
     # payment_id is a gateway reference string (e.g. "100624710000000255"), not UUID
     payment_id: str | None = None
+    payment_number: str | None = None
+    invoice_number: str | None = None
     payment_data: dict[str, Any] = field(default_factory=dict)
     payment_url: str | None = None
     payment_provider: str | None = None

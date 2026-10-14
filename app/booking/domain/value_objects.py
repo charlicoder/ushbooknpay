@@ -33,6 +33,7 @@ class BookingStatus(str, Enum):
     RESCHEDULE_REQUESTED = "reschedule_requested"
     RESCHEDULE_APPROVED = "reschedule_approved"
     CANCELLED = "cancelled"
+    REFUNDED = "refunded"
     COMPLETED = "completed"
     NO_SHOW = "no_show"
 

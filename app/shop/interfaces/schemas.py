@@ -183,21 +183,11 @@ class UpdateDeliveryStatusRequest(BaseModel):
     """
     Payload to advance the delivery status.
 
-    Used by delivery agents/staff only (JWT-authenticated).
-    Cannot transition to 'received' — that requires the customer's tracking_code.
+    Used by delivery agents/staff (JWT-authenticated).
     """
 
     status: DeliveryStatus
     note: str | None = Field(default=None, max_length=500)
-
-    @field_validator("status")
-    @classmethod
-    def not_received(cls, v: DeliveryStatus) -> DeliveryStatus:
-        if v == DeliveryStatus.RECEIVED:
-            raise ValueError(
-                "Use the /track/{order_number}/received/ endpoint for customer-confirmed receipt."
-            )
-        return v
 
 
 # ── Update payment status (staff/ushdesk) ────────────────────────────────────
@@ -302,6 +292,7 @@ class ShopOrderListItem(BaseModel):
     order_requested_by_user_data: dict[str, Any] | None = None
     items_count: int
     # Tracking token fields
+    tracking_code: str | None = None
     public_token: str
     token_expires_at: LocalDateTime | None
     tracking_url: str  # full public URL for this order's tracking page
@@ -340,6 +331,7 @@ class ShopOrderDetailResponse(BaseModel):
     items: list[OrderItemOut]
     status_history: list[StatusHistoryOut]
     # Tracking token fields
+    tracking_code: str | None = None
     public_token: str
     token_expires_at: LocalDateTime | None
     tracking_url: str  # full public URL for this order's tracking page
@@ -440,6 +432,7 @@ def order_to_list_item(order: Any) -> ShopOrderListItem:
         order_requested_by_user=getattr(order, "order_requested_by_user", None),
         order_requested_by_user_data=getattr(order, "order_requested_by_user_data", None),
         items_count=len(order.items),
+        tracking_code=str(order.tracking_code) if getattr(order, "tracking_code", None) and isinstance(order.tracking_code, (str, int)) else None,
         public_token=order.public_token,
         token_expires_at=order.token_expires_at,
         tracking_url=_build_tracking_url(order),
@@ -495,6 +488,7 @@ def order_to_detail(order: Any) -> ShopOrderDetailResponse:
             for i in order.items
         ],
         status_history=[build_status_history_out(h) for h in order.status_history],
+        tracking_code=str(order.tracking_code) if getattr(order, "tracking_code", None) and isinstance(order.tracking_code, (str, int)) else None,
         public_token=order.public_token,
         token_expires_at=order.token_expires_at,
         tracking_url=_build_tracking_url(order),

@@ -119,10 +119,32 @@ class UshanrClient:
         Create (or retrieve if already exists) the ushanr invoice for a booking.
         Returns the invoice_name (e.g. INV/2026/10/00001) or None.
         """
+        data = await self.create_or_get_booking_invoice_data(
+            booking=booking,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            customer_email=customer_email,
+        )
+        return data.get("invoice_number") if data else None
+
+    async def create_or_get_booking_invoice_data(
+        self,
+        booking: Any,
+        customer_name: str = "",
+        customer_phone: str = "",
+        customer_email: str = "",
+    ) -> dict[str, str] | None:
+        """
+        Create (or retrieve if already exists) the ushanr invoice for a booking.
+        Returns dict with {"invoice_id": str, "invoice_number": str} or None.
+        """
         # First check if invoice already exists
         existing = await self.get_invoice_by_source("booking", str(booking.id))
         if existing and existing.get("invoice_name"):
-            return str(existing["invoice_name"])
+            return {
+                "invoice_id": str(existing.get("invoice_id") or ""),
+                "invoice_number": str(existing.get("invoice_name") or ""),
+            }
 
         # Check if ushanr invoicing is configured
         company_id = self._settings.USHANR_COMPANY_ID
@@ -163,12 +185,10 @@ class UshanrClient:
             notes += f" — {service_name}"
 
         p_status = str(getattr(booking, "payment_status", "") or "").lower()
-        b_status = str(getattr(booking, "status", "") or "").lower()
-        is_paid = (
-            p_status in ("paid", "success", "rewarded", "completed")
-            or b_status in ("confirmed", "completed")
-            or bool(getattr(booking, "payment_id", None))
-        )
+        # Paid state depends ONLY on the payment: a confirmed booking whose
+        # payment is still pending (pay-on-branch / unpaid payment link) must
+        # produce a posted, unpaid invoice.
+        is_paid = p_status in ("paid", "success", "rewarded", "completed")
 
         body = {
             "company_id": company_id,
@@ -182,16 +202,19 @@ class UshanrClient:
             "notes": notes,
             "lines": lines,
             "is_paid": is_paid,
-            "payment_status": p_status or "paid",
+            "payment_status": p_status or "pending",
             "amount_paid": float(total_amount) if is_paid else 0.0,
-            "payment_id": str(getattr(booking, "payment_id", None) or ""),
+            "payment_id": str(getattr(booking, "payment_id", None) or "") if is_paid else "",
         }
 
         try:
             resp = await self._client.post("/api/v1/internal/invoices/from-source/", json=body)
             if resp.status_code in (200, 201):
                 data = resp.json()
-                return data.get("invoice_name")
+                return {
+                    "invoice_id": str(data.get("invoice_id") or ""),
+                    "invoice_number": str(data.get("invoice_name") or ""),
+                }
             return None
         except Exception as exc:
             logger.warning("ushanr_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))

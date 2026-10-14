@@ -45,6 +45,7 @@ from app.core.middleware import (
 )
 from app.events.sqs_client import SQSClient, get_sqs_client
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory, Refund  # noqa: F401
+from app.payment_links.infrastructure.models import PaymentLink, PaymentWebhookEvent  # noqa: F401
 from app.voucher.infrastructure.models import GiftVoucher  # noqa: F401
 from app.gifts.infrastructure.models import (  # noqa: F401
     GiftVoucherCart,

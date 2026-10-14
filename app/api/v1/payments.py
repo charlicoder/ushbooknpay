@@ -615,6 +615,83 @@ async def create_payment(
                 status_code=status.HTTP_200_OK,
                 content={"success": True, "data": response_data.model_dump(mode="json")},
             )
+    elif voucher_id:
+        existing_stmt = (
+            select(Payment)
+            .where(Payment.voucher_id == voucher_id)
+            .order_by(Payment.created_at.desc())
+        )
+        existing_res = await session.execute(existing_stmt)
+        existing_payment = existing_res.scalars().first()
+        if existing_payment:
+            logger.info(
+                "payment_already_exists_for_voucher",
+                voucher_id=str(voucher_id),
+                payment_id=str(existing_payment.id),
+            )
+            trusted_inv = _trusted_invoice_number(body.invoice_number, booking)
+            if trusted_inv:
+                existing_payment.invoice_number = trusted_inv
+            if invoice_id and not existing_payment.invoice_id:
+                existing_payment.invoice_id = invoice_id
+            if invoice_value:
+                existing_payment.invoice_value = invoice_value
+            if voucher_number and not existing_payment.voucher_number:
+                existing_payment.voucher_number = voucher_number
+            if body.voucher_data:
+                existing_v_data = dict(existing_payment.voucher_data or {})
+                existing_payment.voucher_data = {**existing_v_data, **body.voucher_data}
+            if payment_data:
+                existing_p_data = dict(existing_payment.payment_data or {})
+                existing_payment.payment_data = {**existing_p_data, **payment_data}
+            if status_str and existing_payment.status != "success":
+                existing_payment.status = status_str
+            if body.payment_method and not existing_payment.payment_method:
+                existing_payment.payment_method = body.payment_method
+            if payment_provider and not existing_payment.payment_provider:
+                existing_payment.payment_provider = payment_provider
+            if payment_through and not existing_payment.payment_through:
+                existing_payment.payment_through = payment_through
+            if payment_gateway and not existing_payment.payment_gateway:
+                existing_payment.payment_gateway = payment_gateway
+            if transaction_id and not existing_payment.transaction_id:
+                existing_payment.transaction_id = transaction_id
+            if track_id and not existing_payment.track_id:
+                existing_payment.track_id = track_id
+            if reference_id and not existing_payment.reference_id:
+                existing_payment.reference_id = reference_id
+            if body.created_by_user and not existing_payment.created_by_user:
+                existing_payment.created_by_user = _safe_str(body.created_by_user)
+            if body.created_by_user_data and not existing_payment.created_by_user_data:
+                existing_payment.created_by_user_data = body.created_by_user_data
+            if voucher_id:
+                from app.voucher.infrastructure.models import GiftVoucher
+                v_res = await session.execute(select(GiftVoucher).where(GiftVoucher.id == voucher_id))
+                v_record = v_res.scalar_one_or_none()
+                if v_record:
+                    v_pdata = dict(v_record.payment_data or {})
+                    if existing_payment.invoice_number:
+                        v_pdata["invoice_number"] = existing_payment.invoice_number
+                    if existing_payment.payment_number:
+                        v_pdata["payment_number"] = existing_payment.payment_number
+                    if existing_payment.payment_provider:
+                        v_pdata["payment_provider"] = existing_payment.payment_provider
+                    if existing_payment.payment_method:
+                        v_pdata["payment_method"] = existing_payment.payment_method
+                    if existing_payment.transaction_id:
+                        v_pdata["transaction_id"] = existing_payment.transaction_id
+                    if existing_payment.track_id:
+                        v_pdata["track_id"] = existing_payment.track_id
+                    if existing_payment.reference_id:
+                        v_pdata["reference_id"] = existing_payment.reference_id
+                    v_record.payment_data = v_pdata
+            await session.flush()
+            await session.refresh(existing_payment)
+            response_data = _payment_to_detail(existing_payment)
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={"success": True, "data": response_data.model_dump(mode="json")},
+            )
 
     # ── 12. Create Payment record ─────────────────────────────────────
     payment_number = body.payment_number or await generate_payment_number(session)
@@ -729,6 +806,32 @@ async def create_payment(
                 logger.warning("payment_auto_confirm_booking_notice", error=str(exc))
 
     logger.info("payment_record_created", payment_id=str(payment.id), status=payment.status)
+
+    if voucher_id:
+        from app.voucher.infrastructure.models import GiftVoucher
+        v_res = await session.execute(select(GiftVoucher).where(GiftVoucher.id == voucher_id))
+        v_record = v_res.scalar_one_or_none()
+        if v_record:
+            v_pdata = dict(v_record.payment_data or {})
+            if payment.invoice_number:
+                v_pdata["invoice_number"] = payment.invoice_number
+            if payment.payment_number:
+                v_pdata["payment_number"] = payment.payment_number
+            if payment.payment_provider:
+                v_pdata["payment_provider"] = payment.payment_provider
+            if payment.payment_method:
+                v_pdata["payment_method"] = payment.payment_method
+            if payment.transaction_id:
+                v_pdata["transaction_id"] = payment.transaction_id
+            if payment.track_id:
+                v_pdata["track_id"] = payment.track_id
+            if payment.reference_id:
+                v_pdata["reference_id"] = payment.reference_id
+            v_pdata["status"] = payment.status
+            v_record.payment_data = v_pdata
+            if payment.voucher_number and not v_record.voucher_number:
+                v_record.voucher_number = payment.voucher_number
+            await session.flush()
 
     response_data = _payment_to_detail(payment)
     return JSONResponse(
@@ -1259,6 +1362,31 @@ async def link_invoice_to_payments(
         b_record = b_res.scalar_one_or_none()
         if b_record:
             b_record.invoice_number = body.invoice_number
+
+    # Also update the GiftVoucher record and PaymentLink when source_type in ("gift_voucher", "gift_voucher_purchase", "voucher")
+    if body.source_type in ("gift_voucher", "gift_voucher_purchase", "voucher"):
+        from app.voucher.infrastructure.models import GiftVoucher
+        v_res = await session.execute(
+            select(GiftVoucher).where(GiftVoucher.id == source_uuid)
+        )
+        v_record = v_res.scalar_one_or_none()
+        if v_record:
+            pdata = dict(v_record.payment_data or {})
+            pdata["invoice_number"] = body.invoice_number
+            if payments and getattr(payments[0], "payment_number", None):
+                pdata["payment_number"] = payments[0].payment_number
+            v_record.payment_data = pdata
+
+        from app.payment_links.domain.entities import PaymentLink
+        pl_res = await session.execute(
+            select(PaymentLink).where(
+                PaymentLink.target_type.in_(("gift_voucher", "voucher")),
+                PaymentLink.target_id == source_uuid,
+            )
+        )
+        pl_records = pl_res.scalars().all()
+        for pl in pl_records:
+            pl.invoice_number = body.invoice_number
 
     await session.commit()
     return JSONResponse(content={"updated": len(payments), "invoice_number": body.invoice_number})

@@ -34,6 +34,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from app.api.deps import AppSettings, CurrentUser, DBSession, RequireAppToken
 from app.clients import ushauth as ushauth_client
@@ -119,6 +120,35 @@ def _delivery_labels(ds_str: str | None) -> tuple[str | None, str | None]:
         return ds_str, ds_str
 
 
+def _extract_invoice_number(v: Any) -> str | None:
+    inv = getattr(v, "invoice_number", None)
+    if isinstance(inv, str) and inv:
+        return inv
+    pdata = getattr(v, "payment_data", None)
+    if isinstance(pdata, dict):
+        return (
+            pdata.get("invoice_number")
+            or pdata.get("invoiceId")
+            or (pdata.get("data") or {}).get("InvoiceId")
+            or None
+        )
+    return None
+
+
+def _extract_payment_number(v: Any) -> str | None:
+    pmt = getattr(v, "payment_number", None)
+    if isinstance(pmt, str) and pmt:
+        return pmt
+    pdata = getattr(v, "payment_data", None)
+    if isinstance(pdata, dict):
+        return (
+            pdata.get("payment_number")
+            or (pdata.get("data") or {}).get("InvoiceTransactions", [{}])[0].get("PaymentId")
+            or None
+        )
+    return None
+
+
 def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
     """Map ORM GiftVoucher → full GiftVoucherResponse."""
     delivery_status = _extract_delivery_status(v)
@@ -169,6 +199,8 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         payment_url=v.payment_url,
         payment_provider=v.payment_provider,
         payment_through=v.payment_through,
+        invoice_number=_extract_invoice_number(v),
+        payment_number=_extract_payment_number(v),
         created_at=v.created_at,
         updated_at=v.updated_at,
     )
@@ -256,6 +288,8 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         payment_url=v.payment_url,
         payment_provider=v.payment_provider,
         payment_through=v.payment_through,
+        invoice_number=_extract_invoice_number(v),
+        payment_number=_extract_payment_number(v),
         created_by=v.created_by,
         created_at=v.created_at,
         updated_at=v.updated_at,
@@ -496,6 +530,31 @@ async def list_all_vouchers(
 
     vouchers, total = await svc.list_all(**list_kwargs)
     items = [_voucher_to_response(v) for v in vouchers]
+    missing_ids = [it.id for it in items if not it.invoice_number or not it.payment_number]
+    if missing_ids:
+        try:
+            from app.payment.infrastructure.models import Payment
+            res = await session.execute(
+                select(Payment.voucher_id, Payment.invoice_number, Payment.payment_number)
+                .where(Payment.voucher_id.in_(missing_ids))
+                .order_by(Payment.created_at.desc())
+            )
+            p_rows = res.all() if hasattr(res, "all") else []
+            pmt_map: dict[Any, tuple[str | None, str | None]] = {}
+            for row in p_rows:
+                vid, inv, pmt = row[0], row[1], row[2]
+                if vid not in pmt_map:
+                    pmt_map[vid] = (inv, pmt)
+            for it in items:
+                if it.id in pmt_map:
+                    inv, pmt = pmt_map[it.id]
+                    if not it.invoice_number and inv:
+                        it.invoice_number = inv
+                    if not it.payment_number and pmt:
+                        it.payment_number = pmt
+        except Exception:
+            pass
+
     paginated = make_paginated_response(
         items, count=total, page=p_page, page_size=p_page_size
     )
@@ -718,6 +777,31 @@ async def admin_list_vouchers(
 
     vouchers, total = await svc.list_all(**list_kwargs)
     items = [_voucher_to_list_item(v) for v in vouchers]
+    missing_ids = [it.id for it in items if not it.invoice_number or not it.payment_number]
+    if missing_ids:
+        try:
+            from app.payment.infrastructure.models import Payment
+            res = await session.execute(
+                select(Payment.voucher_id, Payment.invoice_number, Payment.payment_number)
+                .where(Payment.voucher_id.in_(missing_ids))
+                .order_by(Payment.created_at.desc())
+            )
+            p_rows = res.all() if hasattr(res, "all") else []
+            pmt_map = {}
+            for row in p_rows:
+                vid, inv, pmt = row[0], row[1], row[2]
+                if vid not in pmt_map:
+                    pmt_map[vid] = (inv, pmt)
+            for it in items:
+                if it.id in pmt_map:
+                    inv, pmt = pmt_map[it.id]
+                    if not it.invoice_number and inv:
+                        it.invoice_number = inv
+                    if not it.payment_number and pmt:
+                        it.payment_number = pmt
+        except Exception:
+            pass
+
     paginated = make_paginated_response(
         items, count=total, page=page, page_size=page_size
     )
@@ -1251,6 +1335,36 @@ async def get_voucher_detail(
         )
 
     data = _voucher_to_response(voucher)
+    if not data.invoice_number or not data.payment_number:
+        try:
+            from app.payment.infrastructure.models import Payment
+            res = await session.execute(
+                select(Payment.invoice_number, Payment.payment_number)
+                .where(Payment.voucher_id == voucher.id)
+                .order_by(Payment.created_at.desc())
+                .limit(1)
+            )
+            row = res.first() if hasattr(res, "first") else None
+            if row:
+                inv_num, pmt_num = row[0], row[1]
+                if not data.invoice_number and inv_num:
+                    data.invoice_number = inv_num
+                if not data.payment_number and pmt_num:
+                    data.payment_number = pmt_num
+                pdata = dict(voucher.payment_data or {})
+                changed = False
+                if inv_num and "invoice_number" not in pdata:
+                    pdata["invoice_number"] = inv_num
+                    changed = True
+                if pmt_num and "payment_number" not in pdata:
+                    pdata["payment_number"] = pmt_num
+                    changed = True
+                if changed:
+                    voucher.payment_data = pdata
+                    await session.flush()
+        except Exception:
+            pass
+
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},

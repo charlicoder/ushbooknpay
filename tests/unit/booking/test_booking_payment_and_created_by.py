@@ -1069,4 +1069,67 @@ async def test_create_booking_includes_user_type_and_role_in_created_by_user_dat
     }
 
 
+@pytest.mark.asyncio
+async def test_cancel_confirmed_booking_with_pending_payment_does_not_create_payment_record():
+    """Verify that cancelling a booking with status=confirmed and payment_status=pending does not create any Payment record."""
+    from app.booking.application.services import BookingService
+    from app.booking.infrastructure.models import Booking
+    from app.payment.infrastructure.models import Payment
+    from app.booking.domain.value_objects import BookingStatus, PaymentStatus
+
+    booking_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+
+    mock_booking = MagicMock(spec=Booking)
+    mock_booking.id = booking_id
+    mock_booking.customer_id = customer_id
+    mock_booking.status = "confirmed"
+    mock_booking.payment_status = "pending"
+    mock_booking.total_amount = Decimal("35.000")
+    mock_booking.currency = "KWD"
+    mock_booking.internal_notes = ""
+    mock_booking.booking_number = "BOK-PENDING-001"
+    mock_booking.duration_minutes = 60
+    mock_booking.extra_minutes = 0
+    mock_booking.addons_duration = 0
+    mock_booking.customer_data = {"name": "Test Customer"}
+
+    added_objects = []
+    mock_session = AsyncMock()
+
+    # select(Payment) in _sync_booking_payment_status -> []
+    mock_res_empty_payments = MagicMock()
+    mock_res_empty_payments.scalars.return_value.all.return_value = []
+    mock_session.execute = AsyncMock(return_value=mock_res_empty_payments)
+    mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
+    mock_session.flush = AsyncMock()
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_id = AsyncMock(return_value=mock_booking)
+    mock_repo.update = AsyncMock()
+    mock_repo.delete_hold = AsyncMock()
+    mock_repo.save_status_history = AsyncMock()
+
+    service = BookingService(session=mock_session)
+    service._repo = mock_repo
+    service._enqueue_event = AsyncMock()
+
+    # Cancel via update_status (PATCH /status/ flow)
+    updated = await service.update_status(
+        booking_id=booking_id,
+        new_status=BookingStatus.CANCELLED,
+        payment_status=PaymentStatus.CANCELLED,
+        reason="Customer called to cancel before paying",
+        source="ushdesk",
+    )
+
+    assert updated.status == "cancelled"
+    assert updated.payment_status == "cancelled"
+
+    # Assert that NO Payment object was added to the database session
+    payment_records = [obj for obj in added_objects if isinstance(obj, Payment)]
+    assert len(payment_records) == 0, f"Expected 0 Payment records, found {len(payment_records)}"
+
+
+
 

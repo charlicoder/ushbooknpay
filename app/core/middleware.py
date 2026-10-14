@@ -283,7 +283,12 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
     _APPLY_METHODS: frozenset[str] = frozenset({"POST"})
     _SKIP_PATHS: frozenset[str] = frozenset(
-        {"/api/v1/health/", "/api/v1/ready/", "/api/v1/payments/webhook/"}
+        {
+            "/api/v1/health/",
+            "/api/v1/ready/",
+            "/api/v1/payments/webhook/",
+            "/api/v1/payment-links/webhook/",
+        }
     )
 
     def __init__(

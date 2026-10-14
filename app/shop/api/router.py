@@ -184,8 +184,7 @@ async def get_order(
     summary="Update delivery status (staff/delivery agent)",
     description=(
         "Advance the order delivery status. "
-        "Valid transitions: ordered → ready_to_go → on_the_way → delivered. "
-        "Only the customer can set 'received' via the public tracking URL."
+        "Valid transitions: ordered → ready_to_go → on_the_way → delivered → received."
     ),
 )
 async def update_delivery_status(

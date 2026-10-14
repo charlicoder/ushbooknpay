@@ -1013,6 +1013,7 @@ class BookingDetailResponse(BaseModel):
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
     invoice_number: str | None = None
+    invoice_id: str | None = None
     refund_number: str | None = None
     refund_id: str | None = None
 
@@ -1070,6 +1071,7 @@ class CreateBookingDataResponse(BaseModel):
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
     invoice_number: str | None = None
+    invoice_id: str | None = None
 
     @model_validator(mode="after")
     def sync_created_by(self) -> "CreateBookingDataResponse":

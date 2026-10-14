@@ -285,6 +285,29 @@ class GiftVoucher(Base):
         Index("ix_gift_vouchers_is_digital_gift_opened", "is_digital_gift_opened"),
     )
 
+    @property
+    def invoice_number(self) -> str | None:
+        """Resolve invoice number from payment_data snapshot."""
+        if self.payment_data and isinstance(self.payment_data, dict):
+            return (
+                self.payment_data.get("invoice_number")
+                or self.payment_data.get("invoiceId")
+                or (self.payment_data.get("data") or {}).get("InvoiceId")
+                or None
+            )
+        return None
+
+    @property
+    def payment_number(self) -> str | None:
+        """Resolve payment number from payment_data snapshot."""
+        if self.payment_data and isinstance(self.payment_data, dict):
+            return (
+                self.payment_data.get("payment_number")
+                or (self.payment_data.get("data") or {}).get("InvoiceTransactions", [{}])[0].get("PaymentId")
+                or None
+            )
+        return None
+
     def __repr__(self) -> str:
         return (
             f"<GiftVoucher id={self.id} status={self.status!r} "
@@ -301,6 +324,8 @@ class GiftVoucher(Base):
         return {
             "id": str(self.id),
             "voucher_number": self.voucher_number or "",
+            "invoice_number": self.invoice_number,
+            "payment_number": self.payment_number,
             "service_id": str(self.service_id) if self.service_id else None,
             "service_data": self.service_data or {},
             "branch_id": str(self.branch_id) if self.branch_id else None,

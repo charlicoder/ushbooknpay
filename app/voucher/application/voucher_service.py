@@ -335,7 +335,7 @@ class GiftVoucherService:
             if payment_id is not None:
                 voucher.payment_id = payment_id
             if payment_data is not None:
-                voucher.payment_data = payment_data
+                voucher.payment_data = {**(voucher.payment_data or {}), **payment_data}
 
         if target_status == GiftVoucherStatus.REDEEMED:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
