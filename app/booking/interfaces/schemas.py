@@ -362,6 +362,11 @@ class CreateBookingRequest(BaseModel):
         alias="invoiceNumber",
         description="Invoice number from ushanr invoice record for this booking (e.g. INV/2026/10/00001).",
     )
+    payment_number: str | None = Field(
+        default=None,
+        alias="paymentNumber",
+        description="Payment number from payment record or voucher (e.g. PMT/2026/10/000001).",
+    )
 
     idempotency_key: str | None = Field(
         default=None, max_length=255, alias="Idempotency-Key"
@@ -567,6 +572,11 @@ class UpdateBookingRequest(BaseModel):
         alias="invoiceNumber",
         description="Invoice number from ushanr invoice record for this booking.",
     )
+    payment_number: str | None = Field(
+        default=None,
+        alias="paymentNumber",
+        description="Payment number from payment record or voucher.",
+    )
     addons: list[dict[str, Any]] | list[Any] | None = Field(
         default=None,
         description="Updated list of add-ons",
@@ -763,6 +773,11 @@ class UpdateBookingStatusRequest(BaseModel):
         alias="invoiceNumber",
         description="Invoice number from ushanr invoice record for this booking.",
     )
+    payment_number: str | None = Field(
+        default=None,
+        alias="paymentNumber",
+        description="Payment number from payment record or voucher.",
+    )
 
 
     @field_validator("payment_provider", mode="before")
@@ -933,6 +948,7 @@ class BookingListItem(BaseModel):
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None
     invoice_number: str | None = None
+    payment_number: str | None = None
 
 
     @model_validator(mode="after")
@@ -1014,6 +1030,7 @@ class BookingDetailResponse(BaseModel):
     created_by: str | None = None
     invoice_number: str | None = None
     invoice_id: str | None = None
+    payment_number: str | None = None
     refund_number: str | None = None
     refund_id: str | None = None
 
@@ -1072,6 +1089,7 @@ class CreateBookingDataResponse(BaseModel):
     created_by: str | None = None
     invoice_number: str | None = None
     invoice_id: str | None = None
+    payment_number: str | None = None
 
     @model_validator(mode="after")
     def sync_created_by(self) -> "CreateBookingDataResponse":

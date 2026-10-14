@@ -121,6 +121,7 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
         created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         invoice_number=_safe_str(getattr(b, "invoice_number", None)),
+        payment_number=_safe_str(getattr(b, "payment_number", None) or (b.payment_data or {}).get("payment_number")),
     )
 
 
@@ -227,6 +228,7 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         created_by=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         invoice_number=_safe_str(getattr(b, "invoice_number", None)),
         invoice_id=None,
+        payment_number=_safe_str(getattr(b, "payment_number", None) or (b.payment_data or {}).get("payment_number")),
         refund_number=_safe_str(getattr(b, "refund_number", None)),
         refund_id=_safe_str(getattr(b, "refund_id", None)),
     )
@@ -816,20 +818,30 @@ async def create_booking(
 
     idempotency_key = body.idempotency_key or request.headers.get("Idempotency-Key")
 
-    # ── Resolve invoice_number ──────────────────────────────────────────
-    resolved_invoice_number: str | None = body.invoice_number
-    if not resolved_invoice_number and body.payment_id:
+    # ── Resolve invoice_number & payment_number ──────────────────────────
+    resolved_invoice_number: str | None = body.invoice_number or (body.payment_data or {}).get("invoice_number") or (body.voucher_data or {}).get("invoice_number")
+    resolved_payment_number: str | None = body.payment_number or (body.payment_data or {}).get("payment_number") or (body.voucher_data or {}).get("payment_number")
+    if (not resolved_invoice_number or not resolved_payment_number) and body.payment_id:
         try:
-            p_stmt = select(Payment.invoice_number).where(
+            p_stmt = select(Payment.invoice_number, Payment.payment_number).where(
                 (Payment.id == uuid.UUID(str(body.payment_id)))
                 | (Payment.payment_id == str(body.payment_id))
             )
             p_res = await booking_service._session.execute(p_stmt)
-            p_inv = p_res.scalars().first()
-            if p_inv:
-                resolved_invoice_number = p_inv
+            p_row = p_res.first()
+            if p_row:
+                if not resolved_invoice_number and p_row[0]:
+                    resolved_invoice_number = p_row[0]
+                if not resolved_payment_number and p_row[1]:
+                    resolved_payment_number = p_row[1]
         except Exception:
             pass
+
+    merged_payment_data = dict(body.payment_data or {})
+    if resolved_payment_number:
+        merged_payment_data["payment_number"] = resolved_payment_number
+    if resolved_invoice_number:
+        merged_payment_data["invoice_number"] = resolved_invoice_number
 
     # ── 7. Create booking record ────────────────────────────────────────
     try:
@@ -860,7 +872,7 @@ async def create_booking(
             payment_through=body.payment_through,
             payment_method=body.payment_method,
             payment_url=body.payment_url,
-            payment_data=body.payment_data,
+            payment_data=merged_payment_data,
             idempotency_key=idempotency_key,
             booking_type=booking_type_str,
             payment_type=payment_type_str,
@@ -876,6 +888,28 @@ async def create_booking(
             created_by=created_by,
             source=request_source,
         )
+
+        # Link any existing Payment record to this new booking
+        try:
+            if body.payment_id:
+                await booking_service._session.execute(
+                    update(Payment)
+                    .where(
+                        (Payment.id == uuid.UUID(str(body.payment_id)))
+                        | (Payment.payment_id == str(body.payment_id))
+                    )
+                    .values(booking_id=booking.id)
+                )
+                await booking_service._session.commit()
+            elif resolved_payment_number:
+                await booking_service._session.execute(
+                    update(Payment)
+                    .where(Payment.payment_number == resolved_payment_number)
+                    .values(booking_id=booking.id)
+                )
+                await booking_service._session.commit()
+        except Exception:
+            pass
 
     except DoubleBookingError as exc:
         raise HTTPException(
@@ -918,7 +952,13 @@ async def create_booking(
     # ── Auto-create or fetch invoice from ushanr if booking is confirmed / paid ─
     inv_id_res: str | None = None
     inv_num_res: str | None = getattr(booking, "invoice_number", None)
-    if not inv_num_res and (
+    is_voucher_redemption = (
+        booking_type_str == "gift_voucher"
+        or payment_type_str == "gift_voucher"
+        or body.voucher_id is not None
+        or (body.payment_method or "").lower() in ("voucher", "gift_voucher")
+    )
+    if not inv_num_res and not is_voucher_redemption and (
         booking.status == BookingStatus.CONFIRMED.value
         or booking.payment_status == PaymentStatus.SUCCESS.value
     ):
@@ -1030,6 +1070,7 @@ async def create_booking(
             created_by=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
             invoice_number=_safe_str(inv_num_res or getattr(booking, "invoice_number", None)),
             invoice_id=inv_id_res,
+            payment_number=_safe_str(resolved_payment_number or (booking.payment_data or {}).get("payment_number")),
         ),
     )
 
@@ -1289,6 +1330,12 @@ async def update_booking(
         total_duration=body.total_duration,
         total_amount=body.total_amount or body.total_price,
     )
+
+    if body.payment_number:
+        pdata = dict(updated.payment_data or {})
+        pdata["payment_number"] = body.payment_number
+        updated.payment_data = pdata
+        await booking_service._session.commit()
 
 
     # ── Dispatch booking.updated SQS event to ushnotice ───────────────────
@@ -1620,6 +1667,12 @@ async def update_booking_status(
         voucher_data=body.voucher_data,
         invoice_number=body.invoice_number,
     )
+
+    if body.payment_number:
+        pdata = dict(updated.payment_data or {})
+        pdata["payment_number"] = body.payment_number
+        updated.payment_data = pdata
+        await booking_service._session.commit()
 
 
     # ── Update appointment cache when booking is cancelled ───────────────

@@ -325,8 +325,17 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "voucher_id": str(booking.voucher_id) if getattr(booking, "voucher_id", None) else "",
         "voucher_data": booking.voucher_data or {},
         "invoice_number": str(getattr(booking, "invoice_number", None) or ""),
+        "payment_number": str((payment_data or {}).get("payment_number") or ""),
     }
 
+
+def _safe_event_kwargs(cls: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from dataclasses import fields
+    try:
+        valid_names = {f.name for f in fields(cls)}
+        return {k: v for k, v in data.items() if k in valid_names}
+    except Exception:
+        return data
 
 
 def _extract_therapist_name(therapist_data: dict | None) -> str:
@@ -689,11 +698,11 @@ class BookingService:
             if booking.status == BookingStatus.CONFIRMED.value:
                 await self._ensure_booking_loyalty_details(booking)
                 ev_data = _build_booking_event_data(booking)
-                await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+                await self._enqueue_event(BookingConfirmedEvent(**_safe_event_kwargs(BookingConfirmedEvent, ev_data)))
             elif booking.status == BookingStatus.PAYMENT_PENDING.value:
                 await self._ensure_booking_loyalty_details(booking)
                 ev_data = _build_booking_event_data(booking)
-                await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
+                await self._enqueue_event(BookingPaymentPendingEvent(**_safe_event_kwargs(BookingPaymentPendingEvent, ev_data)))
 
 
         return booking
@@ -1197,7 +1206,7 @@ class BookingService:
         await self._ensure_booking_loyalty_details(booking)
         await self._ensure_booking_invoice(booking)
         ev_data = _build_booking_event_data(booking)
-        await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+        await self._enqueue_event(BookingConfirmedEvent(**_safe_event_kwargs(BookingConfirmedEvent, ev_data)))
 
 
         logger.info("booking_confirmed", booking_id=str(booking.id))
@@ -1310,7 +1319,7 @@ class BookingService:
         ev_data.pop("change_by_user_data", None)
         await self._enqueue_event(
             BookingCancelledEvent(
-                **ev_data,
+                **_safe_event_kwargs(BookingCancelledEvent, ev_data),
                 cancellation_reason=reason or "",
                 reason=reason or "",
                 cancelled_by=cancelled_by,
@@ -1587,11 +1596,11 @@ class BookingService:
         )
 
         if new_status in (BookingStatus.CONFIRMED, "confirmed"):
-            await self._enqueue_event(BookingConfirmedEvent(**ev_data))
+            await self._enqueue_event(BookingConfirmedEvent(**_safe_event_kwargs(BookingConfirmedEvent, ev_data)))
         elif new_status in (BookingStatus.PAYMENT_PENDING, "payment_pending"):
-            await self._enqueue_event(BookingPaymentPendingEvent(**ev_data))
+            await self._enqueue_event(BookingPaymentPendingEvent(**_safe_event_kwargs(BookingPaymentPendingEvent, ev_data)))
         elif new_status in (BookingStatus.COMPLETED, "completed"):
-            await self._enqueue_event(BookingCompletedEvent(**ev_data))
+            await self._enqueue_event(BookingCompletedEvent(**_safe_event_kwargs(BookingCompletedEvent, ev_data)))
         elif new_status in (BookingStatus.CANCELLED, "cancelled"):
             ev_cancel = dict(ev_data)
             ev_cancel.pop("change_by_user", None)
@@ -1617,7 +1626,7 @@ class BookingService:
 
             await self._enqueue_event(
                 BookingCancelledEvent(
-                    **ev_cancel,
+                    **_safe_event_kwargs(BookingCancelledEvent, ev_cancel),
                     cancellation_reason=reason or "",
                     reason=reason or "",
                     cancelled_by=source or "admin",
