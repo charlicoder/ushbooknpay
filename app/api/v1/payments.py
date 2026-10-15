@@ -1377,7 +1377,7 @@ async def link_invoice_to_payments(
                 pdata["payment_number"] = payments[0].payment_number
             v_record.payment_data = pdata
 
-        from app.payment_links.domain.entities import PaymentLink
+        from app.payment_links.infrastructure.models import PaymentLink
         pl_res = await session.execute(
             select(PaymentLink).where(
                 PaymentLink.target_type.in_(("gift_voucher", "voucher")),

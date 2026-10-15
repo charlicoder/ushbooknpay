@@ -17,11 +17,14 @@ from app.payment_links.application.link_service import (
 )
 
 
-def test_booking_linkable_includes_cancelled():
+def test_booking_linkable_includes_cancelled_and_draft():
     assert BookingStatus.CANCELLED.value in _BOOKING_LINKABLE
     assert "cancelled" in _BOOKING_LINKABLE
     assert BookingStatus.CONFIRMED.value in _BOOKING_LINKABLE
     assert BookingStatus.PAYMENT_PENDING.value in _BOOKING_LINKABLE
+    assert BookingStatus.DRAFT.value in _BOOKING_LINKABLE
+    assert BookingStatus.REQUESTED.value in _BOOKING_LINKABLE
+    assert BookingStatus.PAYMENT_FAILED.value in _BOOKING_LINKABLE
 
 
 @pytest.mark.asyncio
@@ -48,6 +51,29 @@ async def test_load_booking_allows_cancelled_paid_booking():
 
 
 @pytest.mark.asyncio
+async def test_load_booking_allows_draft_booking():
+    session = MagicMock()
+    settings = MagicMock()
+    gateway = MagicMock()
+    gateway.name = "myfatoorah"
+
+    service = PaymentLinkService(session, settings, gateway)
+
+    booking = MagicMock(spec=Booking)
+    booking.id = uuid.uuid4()
+    booking.status = "draft"
+    booking.payment_status = "pending"
+    booking.total_amount = Decimal("15.000")
+
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = booking
+    session.execute = AsyncMock(return_value=result_mock)
+
+    loaded = await service._load_booking(booking.id)
+    assert loaded == booking
+
+
+@pytest.mark.asyncio
 async def test_load_booking_rejects_unsupported_status():
     session = MagicMock()
     settings = MagicMock()
@@ -64,7 +90,7 @@ async def test_load_booking_rejects_unsupported_status():
     result_mock.scalar_one_or_none.return_value = booking
     session.execute = AsyncMock(return_value=result_mock)
 
-    with pytest.raises(ValidationError, match="A payment link can only be created for confirmed or cancelled bookings"):
+    with pytest.raises(ValidationError, match="A payment link cannot be created for a booking in 'no_show' status"):
         await service._load_booking(booking.id)
 
 

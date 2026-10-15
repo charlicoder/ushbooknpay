@@ -60,7 +60,15 @@ _PAID_BOOKING_STATUSES = {
 _BOOKING_LINKABLE = (
     BookingStatus.CONFIRMED.value,
     BookingStatus.PAYMENT_PENDING.value,
+    BookingStatus.DRAFT.value,
+    BookingStatus.REQUESTED.value,
+    BookingStatus.PAYMENT_FAILED.value,
     BookingStatus.CANCELLED.value,
+    "confirmed",
+    "payment_pending",
+    "draft",
+    "requested",
+    "payment_failed",
     "cancelled",
 )
 
@@ -401,12 +409,15 @@ class PaymentLinkService:
         ).scalar_one_or_none()
         if booking is None:
             raise NotFoundError("Booking not found.")
-        if booking.status not in _BOOKING_LINKABLE:
+        status_val = str(booking.status).lower() if booking.status else ""
+        if booking.status not in _BOOKING_LINKABLE and status_val not in _BOOKING_LINKABLE:
             raise ValidationError(
-                f"A payment link can only be created for confirmed or cancelled bookings (current: {booking.status})."
+                f"A payment link cannot be created for a booking in '{booking.status}' status."
             )
-        if booking.status not in (BookingStatus.CANCELLED.value, "cancelled"):
-            if booking.payment_status in _PAID_BOOKING_STATUSES:
+        if status_val not in (BookingStatus.CANCELLED.value, "cancelled"):
+            if booking.payment_status in _PAID_BOOKING_STATUSES or (
+                booking.payment_status and str(booking.payment_status).lower() in _PAID_BOOKING_STATUSES
+            ):
                 raise ValidationError("This booking is already paid.")
         return booking
 
@@ -441,23 +452,21 @@ class PaymentLinkService:
 
             client = UshanrClient()
             try:
-                found = await client.get_invoice_by_source("booking", str(target.id))
-                if not found:
-                    c_name, c_phone, c_email = self._payer_contact(target_type, target)
-                    inv_data = await client.create_or_get_booking_invoice_data(
-                        booking=target,
-                        customer_name=c_name,
-                        customer_phone=c_phone or "",
-                        customer_email=c_email or "",
-                    )
-                    if inv_data:
-                        found = {
-                            "invoice_id": inv_data.get("invoice_id"),
-                            "invoice_name": inv_data.get("invoice_number"),
-                        }
-                        if inv_data.get("invoice_number") and not getattr(target, "invoice_number", None):
-                            target.invoice_number = inv_data["invoice_number"]
-                            self._session.add(target)
+                c_name, c_phone, c_email = self._payer_contact(target_type, target)
+                inv_data = await client.create_or_get_booking_invoice_data(
+                    booking=target,
+                    customer_name=c_name,
+                    customer_phone=c_phone or "",
+                    customer_email=c_email or "",
+                )
+                if inv_data:
+                    found = {
+                        "invoice_id": inv_data.get("invoice_id"),
+                        "invoice_name": inv_data.get("invoice_number"),
+                    }
+                    if inv_data.get("invoice_number") and not getattr(target, "invoice_number", None):
+                        target.invoice_number = inv_data["invoice_number"]
+                        self._session.add(target)
             finally:
                 await client.aclose()
         except Exception as exc:  # accounting must never block link creation

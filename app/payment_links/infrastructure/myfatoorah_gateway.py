@@ -17,6 +17,7 @@ SECURITY: the API key and webhook secret are never logged.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -142,6 +143,7 @@ class MyFatoorahGateway(PaymentLinkGateway):
         return {
             "Authorization": f"Bearer {self._settings.MYFATOORAH_API_KEY}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
     def _url(self, path: str) -> str:
@@ -152,27 +154,44 @@ class MyFatoorahGateway(PaymentLinkGateway):
             raise PaymentProviderError(
                 "MyFatoorah is not configured (missing API key).", code="MYFATOORAH_NOT_CONFIGURED"
             )
-        try:
-            response = await self._http.post(
-                self._url(path), json=payload, headers=self._headers(), timeout=30.0
-            )
-        except httpx.TimeoutException as exc:
-            logger.error("myfatoorah_timeout", path=path)
-            raise PaymentProviderError("MyFatoorah API timed out.", code="MYFATOORAH_TIMEOUT") from exc
-        except httpx.HTTPError as exc:
-            logger.error("myfatoorah_network_error", path=path, error=type(exc).__name__)
-            raise PaymentProviderError("MyFatoorah is unreachable.", code="MYFATOORAH_UNREACHABLE") from exc
-
-        try:
-            body = response.json()
-        except ValueError:
-            body = {}
-        if response.status_code >= 400 and not body:
-            logger.error("myfatoorah_http_error", path=path, status=response.status_code)
-            raise PaymentProviderError(
-                f"MyFatoorah API error ({response.status_code}).", code="MYFATOORAH_API_ERROR"
-            )
-        return body
+        headers = self._headers()
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            try:
+                response = await self._http.post(
+                    self._url(path), json=payload, headers=headers, timeout=30.0
+                )
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                if response.status_code >= 400 and not body:
+                    if attempt == 0 and response.status_code >= 500:
+                        await asyncio.sleep(0.5)
+                        continue
+                    logger.error("myfatoorah_http_error", path=path, status=response.status_code)
+                    raise PaymentProviderError(
+                        f"MyFatoorah API error ({response.status_code}).", code="MYFATOORAH_API_ERROR"
+                    )
+                return body
+            except (httpx.TimeoutException, httpx.HTTPError) as exc:
+                last_exc = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+                if isinstance(exc, httpx.TimeoutException):
+                    logger.error("myfatoorah_timeout", path=path)
+                    raise PaymentProviderError("MyFatoorah API timed out.", code="MYFATOORAH_TIMEOUT") from exc
+                logger.error("myfatoorah_network_error", path=path, error=type(exc).__name__)
+                raise PaymentProviderError("MyFatoorah is unreachable.", code="MYFATOORAH_UNREACHABLE") from exc
+            except PaymentProviderError:
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return {}
 
     @staticmethod
     def _error_message(body: Mapping[str, Any]) -> str:
@@ -210,7 +229,11 @@ class MyFatoorahGateway(PaymentLinkGateway):
             or self._settings.MYFATOORAH_CALLBACK_URL
             or self._settings.MYFATOORAH_SUCCESS_URL
         )
-        error = request.error_url or self._settings.MYFATOORAH_ERROR_URL
+        error = (
+            request.error_url
+            or self._settings.MYFATOORAH_CALLBACK_URL
+            or self._settings.MYFATOORAH_ERROR_URL
+        )
         if callback:
             payload["CallBackUrl"] = callback
         if error:
@@ -246,25 +269,43 @@ class MyFatoorahGateway(PaymentLinkGateway):
         secondary_key_type = "InvoiceId" if is_payment_id else "PaymentId"
 
         body = None
-        try:
-            body = await self._post("v2/GetPaymentStatus", {"Key": val, "KeyType": primary_key_type})
-        except Exception:
-            body = None
+        for ktype in (primary_key_type, secondary_key_type):
+            try:
+                res_body = await self._post("v2/GetPaymentStatus", {"Key": val, "KeyType": ktype})
+                if isinstance(res_body, Mapping) and res_body.get("IsSuccess"):
+                    body = res_body
+                    break
+            except Exception as exc:
+                logger.info(
+                    "myfatoorah_status_probe_attempt",
+                    key=val,
+                    key_type=ktype,
+                    error=str(exc),
+                )
 
         if not body or not body.get("IsSuccess"):
-            try:
-                body_secondary = await self._post("v2/GetPaymentStatus", {"Key": val, "KeyType": secondary_key_type})
-                if body_secondary.get("IsSuccess"):
-                    body = body_secondary
-                else:
-                    raise PaymentProviderError(
-                        f"MyFatoorah status lookup failed: {self._error_message(body_secondary or body or {})}",
-                        code="MYFATOORAH_STATUS_FAILED",
-                    )
-            except PaymentProviderError:
-                raise
-            except Exception as exc:
-                raise PaymentProviderError(f"MyFatoorah status lookup failed: {exc}", code="MYFATOORAH_STATUS_FAILED") from exc
+            # When querying by InvoiceId before a payment attempt has occurred, MyFatoorah's
+            # test environment returns 500 because no transaction record exists yet.
+            # In that case, treat it as still PENDING rather than crashing the sync / polling loop.
+            if not is_payment_id:
+                logger.info("myfatoorah_status_pending_fallback", invoice_id=val)
+                return GatewayPaymentState(
+                    status=GatewayPaymentStatus.PENDING,
+                    invoice_id=val,
+                    payment_id=None,
+                    transaction_id=None,
+                    track_id=None,
+                    reference_id=None,
+                    payment_method=None,
+                    amount=None,
+                    currency=None,
+                    failure_reason=None,
+                    raw=body or {},
+                )
+            raise PaymentProviderError(
+                f"MyFatoorah status lookup failed: {self._error_message(body or {})}",
+                code="MYFATOORAH_STATUS_FAILED",
+            )
         data = body.get("Data") or {}
         transactions = [t for t in (data.get("InvoiceTransactions") or []) if isinstance(t, Mapping)]
         invoice_status = _to_str(data.get("InvoiceStatus")).strip().lower()

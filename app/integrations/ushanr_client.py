@@ -90,18 +90,27 @@ class UshanrClient:
     ) -> str | None:
         """Get or create partner record in ushanr."""
         try:
+            clean_phone = str(phone or "").strip()
+            clean_email = str(email or "").strip()
+            clean_name = str(name or "").strip() or f"Customer {str(external_id)[:8]}"
             body = {
-                "company_id": company_id,
+                "company_id": str(company_id),
                 "external_id": str(external_id),
-                "name": name.strip() or f"Customer {external_id[:8]}",
-                "phone": phone.strip() or None,
-                "email": email.strip() or None,
+                "name": clean_name,
+                "phone": clean_phone,
+                "email": clean_email,
                 "partner_type": "customer",
+                "currency_code": "KWD",
             }
             resp = await self._client.post("/api/v1/internal/partners/ensure/", json=body)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 return data.get("partner_id")
+            logger.warning(
+                "ushanr_ensure_partner_non_200",
+                status_code=resp.status_code,
+                detail=resp.text[:300],
+            )
             return None
         except Exception as exc:
             logger.warning("ushanr_ensure_partner_failed", error=str(exc))
@@ -215,6 +224,12 @@ class UshanrClient:
                     "invoice_id": str(data.get("invoice_id") or ""),
                     "invoice_number": str(data.get("invoice_name") or ""),
                 }
+            logger.warning(
+                "ushanr_create_booking_invoice_non_200",
+                booking_id=str(booking.id),
+                status_code=resp.status_code,
+                detail=resp.text[:300],
+            )
             return None
         except Exception as exc:
             logger.warning("ushanr_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))
