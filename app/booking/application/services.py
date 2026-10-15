@@ -760,6 +760,8 @@ class BookingService:
         booking = await self._repo.get_by_id(booking_id, for_update=True)
         effective_changed_by = changed_by or created_by_user
         effective_changed_user_data = change_by_user_data or created_by_user_data
+        initial_status = booking.status
+        initial_payment_status = booking.payment_status
 
         # ── Update timing / therapist if provided ────────────────────────
         target_therapist_id = therapist_id or booking.therapist_id
@@ -1016,6 +1018,7 @@ class BookingService:
                 booking,
                 old_status,
                 status,
+                old_payment_status=initial_payment_status,
                 reason=reason,
                 source=source,
                 changed_by=effective_changed_by,
@@ -1074,11 +1077,12 @@ class BookingService:
                 current_status = BookingStatus(booking.status)
             except Exception:
                 current_status = None
-            if current_status in (BookingStatus.CONFIRMED, BookingStatus.PAYMENT_PENDING, BookingStatus.COMPLETED):
+            if current_status in (BookingStatus.CONFIRMED, BookingStatus.PAYMENT_PENDING, BookingStatus.COMPLETED, BookingStatus.CANCELLED):
                 await self._dispatch_status_event(
                     booking,
+                    initial_status,
                     current_status,
-                    current_status,
+                    old_payment_status=initial_payment_status,
                     reason=reason or "Booking updated",
                     source=source,
                     changed_by=effective_changed_by,
@@ -1587,6 +1591,7 @@ class BookingService:
         old_status: BookingStatus | str | None,
         new_status: BookingStatus | str,
         *,
+        old_payment_status: PaymentStatus | str | None = None,
         reason: str | None = None,
         source: str = "admin",
         changed_by: str | None = None,
@@ -1653,6 +1658,10 @@ class BookingService:
                     refund_number=refund_record.refund_number if refund_record else None,
                     refund_type=refund_record.refund_type if refund_record else None,
                     refund_method=refund_record.refund_method if refund_record else None,
+                    old_status=old_status_val,
+                    previous_status=old_status_val,
+                    old_payment_status=str(old_payment_status.value if hasattr(old_payment_status, "value") else old_payment_status) if old_payment_status else None,
+                    previous_payment_status=str(old_payment_status.value if hasattr(old_payment_status, "value") else old_payment_status) if old_payment_status else None,
                 )
             )
         elif new_status in (BookingStatus.NO_SHOW, "no_show"):

@@ -464,6 +464,10 @@ class BookingCancelledEvent(BaseEvent):
     refund_number: str | None = None
     refund_type: str | None = None
     refund_method: str | None = None
+    old_status: str | None = None
+    previous_status: str | None = None
+    old_payment_status: str | None = None
+    previous_payment_status: str | None = None
 
 
 @dataclass

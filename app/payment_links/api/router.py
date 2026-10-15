@@ -26,9 +26,10 @@ import uuid
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 
 from app.api.deps import AppSettings, DBSession, get_http_client
 from app.core.config import Settings
@@ -551,14 +552,47 @@ async def delete_payment_link(
     return _ok({"success": True, "deleted_id": str(link_id)})
 
 
+class CancelPaymentLinksByTargetRequest(BaseModel):
+    target_type: Literal["booking", "voucher", "gift_voucher", "product"] = "booking"
+    target_id: uuid.UUID
+
+
+@router.post("/cancel-by-target/", summary="Cancel payment links for a target with gateway and delete/cancel records")
+@router.post("/cancel-by-target", include_in_schema=False)
+async def cancel_payment_links_by_target(
+    body: CancelPaymentLinksByTargetRequest,
+    session: DBSession,
+    settings: AppSettings,
+    request: Request,
+) -> JSONResponse:
+    from app.core.security import require_app_token
+    await require_app_token(request, settings)
+    service = PaymentLinkService(session, settings, _gateway(None, settings))
+    count = await service.cancel_and_delete_links_for_target(body.target_type, body.target_id)
+    await session.commit()
+    return _ok({"success": True, "cancelled_count": count})
+
+
 @router.delete("/", summary="Delete payment links for a target (cancels with gateway and deletes records)")
 async def delete_payment_links_for_target(
     target_type: Annotated[Literal["booking", "voucher", "gift_voucher", "product"], Query()],
     target_id: Annotated[uuid.UUID, Query()],
     session: DBSession,
     settings: AppSettings,
-    _: Annotated[TokenPayload, Depends(require_permission("payment_links.cancel"))],
+    request: Request,
 ) -> JSONResponse:
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        from app.core.security import require_authenticated_user
+        user = await require_authenticated_user(request, settings=settings)
+        if not user.has_permission("payment_links.cancel"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "PERMISSION_DENIED", "message": "Permission 'payment_links.cancel' is required."},
+            )
+    else:
+        from app.core.security import require_app_token
+        await require_app_token(request, settings)
     service = PaymentLinkService(session, settings, _gateway(None, settings))
     count = await service.cancel_and_delete_links_for_target(target_type, target_id)
     await session.commit()
