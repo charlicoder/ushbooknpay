@@ -447,25 +447,21 @@ class PaymentLinkService:
         invoice_number = invoice_number or getattr(target, "invoice_number", None)
         if invoice_id and invoice_number:
             return invoice_id, invoice_number
+        found = None
         try:
             from app.integrations.ushanr_client import UshanrClient
 
             client = UshanrClient()
             try:
-                c_name, c_phone, c_email = self._payer_contact(target_type, target)
-                inv_data = await client.create_or_get_booking_invoice_data(
-                    booking=target,
-                    customer_name=c_name,
-                    customer_phone=c_phone or "",
-                    customer_email=c_email or "",
-                )
-                if inv_data:
+                # Only look up an already existing invoice; NEVER auto-create an invoice for an unpaid/pending booking
+                existing = await client.get_invoice_by_source("booking", str(target.id))
+                if existing and existing.get("invoice_name"):
                     found = {
-                        "invoice_id": inv_data.get("invoice_id"),
-                        "invoice_name": inv_data.get("invoice_number"),
+                        "invoice_id": existing.get("invoice_id"),
+                        "invoice_name": existing.get("invoice_name"),
                     }
-                    if inv_data.get("invoice_number") and not getattr(target, "invoice_number", None):
-                        target.invoice_number = inv_data["invoice_number"]
+                    if not getattr(target, "invoice_number", None):
+                        target.invoice_number = existing["invoice_name"]
                         self._session.add(target)
             finally:
                 await client.aclose()

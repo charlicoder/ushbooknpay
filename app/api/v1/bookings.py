@@ -949,7 +949,7 @@ async def create_booking(
                     detail=str(exc),
                 )
 
-    # ── Auto-create or fetch invoice from ushanr if booking is confirmed / paid ─
+    # ── Auto-create or fetch invoice from ushanr only when payment_status=success ─
     inv_id_res: str | None = None
     inv_num_res: str | None = getattr(booking, "invoice_number", None)
     is_voucher_redemption = (
@@ -958,9 +958,11 @@ async def create_booking(
         or body.voucher_id is not None
         or (body.payment_method or "").lower() in ("voucher", "gift_voucher")
     )
-    if not inv_num_res and not is_voucher_redemption and (
-        booking.status == BookingStatus.CONFIRMED.value
-        or booking.payment_status == PaymentStatus.SUCCESS.value
+    _booking_pstatus = str(booking.payment_status or "").strip().lower()
+    if (
+        not inv_num_res
+        and not is_voucher_redemption
+        and _booking_pstatus in (PaymentStatus.SUCCESS.value, "success", "paid")
     ):
         from app.integrations.ushanr_client import UshanrClient
         ushanr_c = UshanrClient()

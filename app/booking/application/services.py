@@ -1090,6 +1090,18 @@ class BookingService:
 
     async def _ensure_booking_invoice(self, booking: Booking) -> str | None:
         """Create or fetch invoice for booking from ushanr and link it to booking and payments."""
+        # Only create invoices when booking payment is successful
+        p_status = str(getattr(booking, "payment_status", "") or "").strip().lower()
+        if p_status not in (PaymentStatus.SUCCESS.value, "success", "paid"):
+            return None
+
+        # Skip invoice generation for gift voucher redemptions
+        b_type = str(getattr(booking, "booking_type", "") or "").strip().lower()
+        p_type = str(getattr(booking, "payment_type", "") or "").strip().lower()
+        p_method = str(getattr(booking, "payment_method", "") or "").strip().lower()
+        if b_type == "gift_voucher" or p_type == "gift_voucher" or p_method in ("voucher", "gift_voucher"):
+            return None
+
         if booking.invoice_number:
             try:
                 from app.payment.infrastructure.models import Payment
