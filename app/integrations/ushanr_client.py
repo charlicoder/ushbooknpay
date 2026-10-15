@@ -127,7 +127,11 @@ class UshanrClient:
         """
         Create (or retrieve if already exists) the ushanr invoice for a booking.
         Returns the invoice_name (e.g. INV/2026/10/00001) or None.
+        Only creates invoices when payment is successful (payment_status=success/paid).
         """
+        p_status = str(getattr(booking, "payment_status", "") or "").strip().lower()
+        if p_status not in ("paid", "success", "rewarded", "completed"):
+            return None
         data = await self.create_or_get_booking_invoice_data(
             booking=booking,
             customer_name=customer_name,
@@ -146,6 +150,9 @@ class UshanrClient:
         """
         Create (or retrieve if already exists) the ushanr invoice for a booking.
         Returns dict with {"invoice_id": str, "invoice_number": str} or None.
+
+        Invoices are ONLY created when payment has been made (payment_status=success/paid).
+        Unpaid or pending bookings never create an invoice.
         """
         # First check if invoice already exists
         existing = await self.get_invoice_by_source("booking", str(booking.id))
@@ -154,6 +161,18 @@ class UshanrClient:
                 "invoice_id": str(existing.get("invoice_id") or ""),
                 "invoice_number": str(existing.get("invoice_name") or ""),
             }
+
+        # Do not create an invoice if payment is not successful
+        p_status = str(getattr(booking, "payment_status", "") or "").strip().lower()
+        is_paid = p_status in ("paid", "success", "rewarded", "completed")
+        if not is_paid:
+            logger.info(
+                "ushanr_booking_invoice_skipped_unpaid",
+                booking_id=str(getattr(booking, "id", "")),
+                payment_status=p_status,
+                message="Invoice creation skipped because payment_status is not success/paid.",
+            )
+            return None
 
         # Check if ushanr invoicing is configured
         company_id = self._settings.USHANR_COMPANY_ID
@@ -193,12 +212,6 @@ class UshanrClient:
         if service_name:
             notes += f" — {service_name}"
 
-        p_status = str(getattr(booking, "payment_status", "") or "").lower()
-        # Paid state depends ONLY on the payment: a confirmed booking whose
-        # payment is still pending (pay-on-branch / unpaid payment link) must
-        # produce a posted, unpaid invoice.
-        is_paid = p_status in ("paid", "success", "rewarded", "completed")
-
         body = {
             "company_id": company_id,
             "partner_id": partner_id,
@@ -210,10 +223,10 @@ class UshanrClient:
             "currency_code": getattr(booking, "currency", "KWD") or "KWD",
             "notes": notes,
             "lines": lines,
-            "is_paid": is_paid,
-            "payment_status": p_status or "pending",
-            "amount_paid": float(total_amount) if is_paid else 0.0,
-            "payment_id": str(getattr(booking, "payment_id", None) or "") if is_paid else "",
+            "is_paid": True,
+            "payment_status": p_status or "success",
+            "amount_paid": float(total_amount),
+            "payment_id": str(getattr(booking, "payment_id", None) or ""),
         }
 
         try:
@@ -242,6 +255,7 @@ class UshanrClient:
         invoice_name: str | None = None,
         source_document_type: str | None = None,
         source_document_id: str | None = None,
+        source_document_ref: str | None = None,
         amount_paid: float | Decimal | None = None,
         payment_id: str | None = None,
     ) -> bool:
@@ -254,6 +268,8 @@ class UshanrClient:
         if source_document_type and source_document_id:
             body["source_document_type"] = str(source_document_type)
             body["source_document_id"] = str(source_document_id)
+        if source_document_ref:
+            body["source_document_ref"] = str(source_document_ref)
         if amount_paid is not None:
             body["amount_paid"] = float(amount_paid)
         if payment_id:
