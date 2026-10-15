@@ -170,6 +170,31 @@ class LoyaltyService:
                 account, _ = await self._repo.get_or_create_account(customer_id)
             return account
 
+        if booking_id:
+            from sqlalchemy import select as _select
+            from app.loyalty.domain.models import TransactionType as _TxnType
+            from app.loyalty.infrastructure.models import LoyaltyTransaction as _LoyaltyTxn
+
+            already = (
+                await self._session.execute(
+                    _select(_LoyaltyTxn.id).where(
+                        _LoyaltyTxn.customer_id == customer_id,
+                        _LoyaltyTxn.booking_id == booking_id,
+                        _LoyaltyTxn.transaction_type == _TxnType.EARN.value,
+                    ).limit(1)
+                )
+            ).first()
+            if already is not None:
+                logger.info(
+                    "loyalty_credit_skipped_already_credited",
+                    customer_id=str(customer_id),
+                    booking_id=str(booking_id),
+                )
+                account = await self._repo.get_account_by_customer(customer_id)
+                if account is None:
+                    account, _ = await self._repo.get_or_create_account(customer_id)
+                return account
+
         expiry = compute_expiry(self._settings.LOYALTY_POINTS_EXPIRY_DAYS)
         return await self._repo.credit_points(
             customer_id=customer_id,
