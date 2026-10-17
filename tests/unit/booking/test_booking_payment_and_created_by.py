@@ -489,7 +489,7 @@ def test_payment_status_history_model_and_schema_user_fields():
 async def test_cancel_booking_syncs_payment_status_and_records_history():
     """Verify that cancelling a booking with paid payment updates Payment to refunded and creates PaymentStatusHistory."""
     from app.booking.application.services import BookingService
-    from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+    from app.payment.infrastructure.models import Payment, PaymentStatusHistory, Refund
 
     booking_id = uuid.uuid4()
     customer_id = uuid.uuid4()
@@ -523,15 +523,29 @@ async def test_cancel_booking_syncs_payment_status_and_records_history():
     mock_payment.id = payment_id
     mock_payment.booking_id = booking_id
     mock_payment.status = "success"
+    mock_payment.total_amount = Decimal("50.000")
+    mock_payment.amount_refunded = Decimal("0.000")
+    mock_payment.currency = "KWD"
     mock_payment.payment_id = "PAY-123"
 
     mock_session = AsyncMock()
-    # When select(Payment) is executed
-    mock_scalars = MagicMock()
-    mock_scalars.all.return_value = [mock_payment]
-    mock_res = MagicMock()
-    mock_res.scalars.return_value = mock_scalars
-    mock_session.execute = AsyncMock(return_value=mock_res)
+    async def mock_exec(stmt):
+        stmt_str = str(stmt).lower()
+        mock_r = MagicMock()
+        if "from payments" in stmt_str:
+            mock_r.scalars.return_value.all.return_value = [mock_payment]
+            mock_r.scalars.return_value.first.return_value = mock_payment
+            mock_r.scalar_one_or_none.return_value = mock_payment
+        elif "count" in stmt_str:
+            mock_r.scalar_one.return_value = 0
+        else:
+            mock_r.scalars.return_value.first.return_value = None
+            mock_r.scalars.return_value.all.return_value = []
+            mock_r.scalar_one_or_none.return_value = None
+            mock_r.scalar_one.return_value = Decimal("0.000")
+        return mock_r
+
+    mock_session.execute = AsyncMock(side_effect=mock_exec)
     mock_session.flush = AsyncMock()
     added_objects = []
     mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
@@ -554,19 +568,19 @@ async def test_cancel_booking_syncs_payment_status_and_records_history():
         change_by_user_data={"id": str(customer_id), "name": "Jane"},
     )
 
+    # In the new architecture:
+    # 1. Booking is cancelled
+    # 2. payment_status stays "success" until staff completes the refund
+    # 3. Payment record stays "success" (not prematurely marked refunded)
+    # 4. A Refund row is created in "requested" status
     assert updated.status == "cancelled"
-    assert updated.payment_status == "refunded"
-    assert mock_payment.status == "refunded"
+    assert updated.payment_status == "success"
+    assert mock_payment.status == "success"
 
-    # Verify PaymentStatusHistory was added
-    history_records = [obj for obj in added_objects if isinstance(obj, PaymentStatusHistory)]
-    assert len(history_records) == 1
-    hist = history_records[0]
-    assert hist.payment_id == payment_id
-    assert hist.old_status == "success"
-    assert hist.new_status == "refunded"
-    assert hist.change_by_user == str(customer_id)
-    assert hist.change_by_user_data == {"id": str(customer_id), "name": "Jane"}
+    refunds = [obj for obj in added_objects if isinstance(obj, Refund)]
+    assert len(refunds) == 1
+    assert refunds[0].status == "requested"
+    assert refunds[0].refunded_amount == Decimal("50.000")
 
 
 @pytest.mark.asyncio
@@ -621,26 +635,23 @@ async def test_cancel_booking_creates_refund_record_and_dispatches_event():
     added_objects = []
     mock_session = AsyncMock()
 
-    # First execute: select(Payment) in _sync_booking_payment_status -> [mock_payment]
-    # Second execute: select(Refund) in _ensure_cancellation_refund -> None (first() -> None)
-    # Third execute: select(Payment) in _ensure_cancellation_refund -> [mock_payment]
-    # Fourth execute: generate_refund_number -> count
-    mock_res_payment = MagicMock()
-    mock_res_payment.scalars.return_value.all.return_value = [mock_payment]
-    mock_res_payment.scalars.return_value.first.return_value = mock_payment
+    async def mock_exec_cancel(stmt):
+        stmt_str = str(stmt).lower()
+        mock_r = MagicMock()
+        if "from payments" in stmt_str:
+            mock_r.scalars.return_value.all.return_value = [mock_payment]
+            mock_r.scalars.return_value.first.return_value = mock_payment
+            mock_r.scalar_one_or_none.return_value = mock_payment
+        elif "count" in stmt_str:
+            mock_r.scalar_one.return_value = 0
+        else:
+            mock_r.scalars.return_value.first.return_value = None
+            mock_r.scalars.return_value.all.return_value = []
+            mock_r.scalar_one_or_none.return_value = None
+            mock_r.scalar_one.return_value = Decimal("0.000")
+        return mock_r
 
-    mock_res_no_refund = MagicMock()
-    mock_res_no_refund.scalars.return_value.first.return_value = None
-
-    mock_res_count = MagicMock()
-    mock_res_count.scalar_one.return_value = 0
-
-    mock_session.execute = AsyncMock(side_effect=[
-        mock_res_payment,    # _sync_booking_payment_status
-        mock_res_no_refund,   # _ensure_cancellation_refund check existing
-        mock_res_payment,    # _ensure_cancellation_refund lookup payment
-        mock_res_count,      # generate_refund_number count
-    ])
+    mock_session.execute = AsyncMock(side_effect=mock_exec_cancel)
     mock_session.flush = AsyncMock()
     mock_session.add = MagicMock(side_effect=lambda obj: added_objects.append(obj))
 
@@ -665,7 +676,7 @@ async def test_cancel_booking_creates_refund_record_and_dispatches_event():
     )
 
     assert updated.status == "cancelled"
-    assert updated.payment_status == "refunded"
+    assert updated.payment_status == "success"
 
     # Verify Refund record was created and added to session
     refunds = [obj for obj in added_objects if isinstance(obj, Refund)]
@@ -673,7 +684,7 @@ async def test_cancel_booking_creates_refund_record_and_dispatches_event():
     refund = refunds[0]
     assert refund.booking_id == booking_id
     assert refund.refund_number.startswith("REF/")
-    assert refund.status == "completed"
+    assert refund.status == "requested"
     assert refund.cancellation_fee == Decimal("5.000")
     assert refund.refunded_amount == Decimal("55.000")
 

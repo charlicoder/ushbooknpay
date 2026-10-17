@@ -815,18 +815,23 @@ class BookingService:
         if payment_status is not None:
             # If cancelling a paid booking without refund, keep payments and payment status unchanged
             is_currently_paid = str(getattr(booking, "payment_status", "")).lower().strip() in ("paid", "success")
+            p_stat_val = str(payment_status.value if hasattr(payment_status, "value") else payment_status).lower().strip()
             is_cancelling_without_refund = (
                 is_currently_paid
                 and status in (BookingStatus.CANCELLED, "cancelled")
-                and str(payment_status.value).lower().strip() != "refunded"
+                and p_stat_val == "success"
             )
 
-            if not is_cancelling_without_refund:
-                booking.payment_status = payment_status.value
+            if is_cancelling_without_refund:
+                booking.payment_status = "success"
+            elif p_stat_val == "refund_requested":
+                booking.payment_status = "refund_requested"
+            else:
+                booking.payment_status = payment_status.value if hasattr(payment_status, "value") else str(payment_status)
                 try:
                     from app.payment.domain.value_objects import PaymentTransactionStatus
 
-                    p_stat_str = str(payment_status.value).lower().strip()
+                    p_stat_str = p_stat_val
                     if p_stat_str in ("refunded", "cancelled"):
                         target_status = (
                             PaymentTransactionStatus.REFUNDED.value
@@ -1013,48 +1018,22 @@ class BookingService:
                 correlation_id=correlation_id,
             )
 
-            # Dispatch SQS event
-            await self._dispatch_status_event(
-                booking,
-                old_status,
-                status,
-                old_payment_status=initial_payment_status,
-                reason=reason,
-                source=source,
-                changed_by=effective_changed_by,
-                change_by_user_data=effective_changed_user_data,
-            )
+            # Dispatch SQS event (suppress if source is ushnotice to prevent circular loops)
+            if str(source).lower() not in ("ushnotice", "notice", "system_sync"):
+                await self._dispatch_status_event(
+                    booking,
+                    old_status,
+                    status,
+                    old_payment_status=initial_payment_status,
+                    reason=reason,
+                    source=source,
+                    changed_by=effective_changed_by,
+                    change_by_user_data=effective_changed_user_data,
+                )
 
             # Sync appointment cache and cancel open payment links on cancellation
             if status in (BookingStatus.CANCELLED, "cancelled"):
-                try:
-                    from app.payment_links.infrastructure.models import PaymentLink, PaymentLinkStatus
-                    session = getattr(self._repo, "_session", None)
-                    if session is not None:
-                        stmt = (
-                            update(PaymentLink)
-                            .where(
-                                PaymentLink.target_type == "booking",
-                                PaymentLink.target_id == booking.id,
-                                PaymentLink.status.in_([
-                                    PaymentLinkStatus.PENDING.value,
-                                    PaymentLinkStatus.CREATED.value,
-                                    "pending",
-                                    "created",
-                                ]),
-                            )
-                            .values(
-                                status=PaymentLinkStatus.CANCELLED.value,
-                                failure_data={
-                                    "stage": "cancel_on_booking_cancellation",
-                                    "reason": "Booking cancelled",
-                                    "at": datetime.now(timezone.utc).isoformat(),
-                                },
-                            )
-                        )
-                        await session.execute(stmt)
-                except Exception as exc:
-                    logger.warning("cancel_open_payment_links_on_status_cancel_failed", error=str(exc))
+                await self._cancel_booking_payment_links(booking)
 
                 try:
                     ushauth = self._get_ushauth_client()
@@ -1077,7 +1056,13 @@ class BookingService:
                 current_status = BookingStatus(booking.status)
             except Exception:
                 current_status = None
-            if current_status in (BookingStatus.CONFIRMED, BookingStatus.PAYMENT_PENDING, BookingStatus.COMPLETED, BookingStatus.CANCELLED):
+            # Only dispatch status event for active bookings (CONFIRMED, PAYMENT_PENDING, COMPLETED),
+            # never re-dispatch if already CANCELLED, and never if the source is ushnotice.
+            is_internal_source = str(source).lower() in ("ushnotice", "notice", "system_sync")
+            if (
+                not is_internal_source
+                and current_status in (BookingStatus.CONFIRMED, BookingStatus.PAYMENT_PENDING, BookingStatus.COMPLETED)
+            ):
                 await self._dispatch_status_event(
                     booking,
                     initial_status,
@@ -1242,10 +1227,23 @@ class BookingService:
         cancellation_fee: Decimal | None = None,
         correlation_id: str | None = None,
     ) -> Booking:
-        """Cancel a booking and emit a cancellation event."""
+        """Cancel a booking and emit a cancellation event.
+
+        For paid bookings (payment_status in success/paid):
+        - Creates a Refund in ``requested`` status via RefundLifecycle.
+        - Does NOT change booking.payment_status (stays ``success``).
+        - Does NOT touch the Payment row status.
+        - Staff completes the refund from ushdesk (gateway/manual), which
+          transitions Refund to processing → completed and only then
+          sets booking.payment_status to refunded/partially_refunded.
+
+        For unpaid bookings:
+        - Sets payment_status to cancelled and syncs Payment rows.
+        """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
         machine = BookingStateMachine(BookingStatus(booking.status))
         old_status = BookingStatus(booking.status)
+        old_payment_status = booking.payment_status
 
         machine.transition_to(BookingStatus.CANCELLED)
         booking.status = BookingStatus.CANCELLED.value
@@ -1268,8 +1266,8 @@ class BookingService:
             correlation_id=correlation_id,
         )
 
-        is_paid = str(booking.payment_status).lower() in ("success", "paid")
-        is_refund_req = is_paid or (refund_amount is not None and refund_amount > 0)
+        is_paid = str(old_payment_status).lower() in ("success", "paid")
+        is_refund_req = bool(booking.payment_status == "refund_requested" or is_paid)
         fee_decimal = Decimal(str(cancellation_fee or "0.000"))
         calc_refundable = (
             refund_amount
@@ -1279,23 +1277,8 @@ class BookingService:
 
         refund_record = None
         if is_refund_req:
-            booking.payment_status = PaymentStatus.REFUNDED.value
-            await self._repo.update(booking)
-            try:
-                from app.payment.domain.value_objects import PaymentTransactionStatus
-
-                await self._sync_booking_payment_status(
-                    booking,
-                    PaymentTransactionStatus.REFUNDED.value,
-                    source=cancelled_by,
-                    reason=reason or "Booking cancelled - payment refunded",
-                    change_by_user=effective_user,
-                    change_by_user_data=change_by_user_data,
-                    correlation_id=correlation_id,
-                )
-            except Exception as exc:
-                logger.warning("sync_booking_payment_status_failed", error=str(exc))
-
+            # ── Paid booking: request refund (do NOT change payment_status yet) ──
+            # payment_status stays "success" until staff completes the refund.
             try:
                 refund_record = await self._ensure_cancellation_refund(
                     booking,
@@ -1313,6 +1296,7 @@ class BookingService:
             except Exception as exc:
                 logger.warning("ensure_cancellation_refund_failed", error=str(exc))
         elif not booking.payment_status or str(booking.payment_status).lower() in ("unpaid", "pending", "not_initiated"):
+            # ── Unpaid booking: mark payment as cancelled ─────────────────────
             booking.payment_status = PaymentStatus.CANCELLED.value
             await self._repo.update(booking)
             try:
@@ -1330,6 +1314,7 @@ class BookingService:
             except Exception as exc:
                 logger.warning("sync_booking_payment_status_failed", error=str(exc))
 
+        refund_status = refund_record.status if refund_record else None
         ev_data = _build_booking_event_data(booking)
         ev_data.pop("change_by_user", None)
         ev_data.pop("change_by_user_data", None)
@@ -1341,7 +1326,7 @@ class BookingService:
                 cancelled_by=cancelled_by,
                 change_by_user=str(effective_user),
                 change_by_user_data=change_by_user_data or {},
-                refund_issued=is_refund_req,
+                refund_issued=refund_record is not None,
                 refund_amount=str(refund_record.refunded_amount if refund_record else calc_refundable) if is_refund_req else None,
                 refund_required=is_refund_req,
                 refundable_amount=str(refund_record.refunded_amount if refund_record else calc_refundable) if is_refund_req else "0.000",
@@ -1350,28 +1335,61 @@ class BookingService:
                 refund_number=refund_record.refund_number if refund_record else None,
                 refund_type=refund_record.refund_type if refund_record else None,
                 refund_method=refund_record.refund_method if refund_record else None,
+                refund_status=refund_status,
+                old_status=old_status.value,
+                previous_status=old_status.value,
+                old_payment_status=old_payment_status,
+                previous_payment_status=old_payment_status,
             )
         )
 
-        # Sync appointment cache on cancellation
+        # Cancel payment links with gateway and clear payment_url
+        await self._cancel_booking_payment_links(booking)
+
+        # Delete appointment cache on cancellation (instead of updating to cancelled)
         try:
             ushauth = self._get_ushauth_client()
             if ushauth is not None:
-                cache_ps = (
-                    "refunded"
-                    if str(booking.payment_status).lower() in ("refunded", "success", "paid")
-                    else "cancelled"
-                )
-                await ushauth.update_appointment_cache_status_by_booking_id(
-                    booking_id=str(booking.id),
-                    new_status="cancelled",
-                    payment_status=cache_ps,
-                )
+                try:
+                    await ushauth.delete_appointment_cache_by_booking_id(
+                        booking_id=str(booking.id),
+                    )
+                except Exception:
+                    # Fallback to status update if delete endpoint not available
+                    cache_ps = (
+                        "refunded"
+                        if str(booking.payment_status).lower() in ("refunded",)
+                        else "cancelled"
+                    )
+                    await ushauth.update_appointment_cache_status_by_booking_id(
+                        booking_id=str(booking.id),
+                        new_status="cancelled",
+                        payment_status=cache_ps,
+                    )
         except Exception as exc:
-            logger.warning("sync_appointment_cache_on_cancel_booking_failed", error=str(exc))
+            logger.warning("delete_appointment_cache_on_cancel_booking_failed", error=str(exc))
 
         logger.info("booking_cancelled", booking_id=str(booking.id), reason=reason)
         return booking
+
+    async def _cancel_booking_payment_links(self, booking: Booking) -> None:
+        """Cancel payment links with gateway (e.g. MyFatoorah) and clear payment_url on booking."""
+        try:
+            from app.payment_links.application.link_service import PaymentLinkService
+            from app.payment_links import get_gateway
+            from app.api.deps import get_http_client
+            from app.core.config import get_settings
+
+            pl_settings = get_settings()
+            gateway = get_gateway(pl_settings.PAYMENT_LINK_DEFAULT_GATEWAY, get_http_client(), pl_settings)
+            session = getattr(self._repo, "_session", None) or getattr(self, "_session", None)
+            if session is not None:
+                pl_service = PaymentLinkService(session, pl_settings, gateway)
+                await pl_service.cancel_and_delete_links_for_target("booking", booking.id)
+                booking.payment_url = None
+                await self._repo.update(booking)
+        except Exception as exc:
+            logger.warning("cancel_booking_payment_links_failed", booking_id=str(booking.id), error=str(exc))
 
     # ── Use Case 5: Request Reschedule ─────────────────────────────────────
 
@@ -1623,23 +1641,10 @@ class BookingService:
             ev_cancel.pop("change_by_user", None)
             ev_cancel.pop("change_by_user_data", None)
 
-            # Ensure refund record exists if booking was paid
+            # Refund is required ONLY when payment_status is refund_requested (or already refunded)
+            raw_ps = str(booking.payment_status or "").lower().strip()
+            is_refund_req = raw_ps in ("refund_requested",)
             refund_record = None
-            is_paid = str(booking.payment_status).lower() in ("success", "paid", "refunded")
-            if is_paid:
-                try:
-                    refund_record = await self._ensure_cancellation_refund(
-                        booking,
-                        cancelled_by=source or "admin",
-                        reason=reason or "",
-                        change_by_user=str(changed_by or source or "admin"),
-                        change_by_user_data=change_by_user_data or {},
-                    )
-                    if refund_record:
-                        setattr(booking, "refund_number", refund_record.refund_number)
-                        setattr(booking, "refund_id", str(refund_record.id))
-                except Exception as exc:
-                    logger.warning("ensure_cancellation_refund_on_dispatch_failed", error=str(exc))
 
             await self._enqueue_event(
                 BookingCancelledEvent(
@@ -1649,21 +1654,23 @@ class BookingService:
                     cancelled_by=source or "admin",
                     change_by_user=str(changed_by or source or "admin"),
                     change_by_user_data=change_by_user_data or {},
-                    refund_issued=refund_record is not None,
-                    refund_amount=str(refund_record.refunded_amount) if refund_record else None,
-                    refund_required=is_paid,
-                    refundable_amount=str(refund_record.refunded_amount) if refund_record else "0.000",
-                    cancellation_fee=str(refund_record.cancellation_fee) if refund_record else "0.000",
-                    refund_id=str(refund_record.id) if refund_record else None,
-                    refund_number=refund_record.refund_number if refund_record else None,
-                    refund_type=refund_record.refund_type if refund_record else None,
-                    refund_method=refund_record.refund_method if refund_record else None,
+                    refund_issued=False,
+                    refund_amount=str(booking.total_amount) if is_refund_req else None,
+                    refund_required=is_refund_req,
+                    refundable_amount=str(booking.total_amount) if is_refund_req else "0.000",
+                    cancellation_fee="0.000",
+                    refund_id=None,
+                    refund_number=None,
+                    refund_type=None,
+                    refund_method=None,
+                    refund_status=None,
                     old_status=old_status_val,
                     previous_status=old_status_val,
-                    old_payment_status=str(old_payment_status.value if hasattr(old_payment_status, "value") else old_payment_status) if old_payment_status else None,
-                    previous_payment_status=str(old_payment_status.value if hasattr(old_payment_status, "value") else old_payment_status) if old_payment_status else None,
+                    old_payment_status=old_payment_status.value if hasattr(old_payment_status, "value") else str(old_payment_status or ""),
+                    previous_payment_status=old_payment_status.value if hasattr(old_payment_status, "value") else str(old_payment_status or ""),
                 )
             )
+            return
         elif new_status in (BookingStatus.NO_SHOW, "no_show"):
             await self._enqueue_event(
                 BookingNoShowEvent(
@@ -1726,171 +1733,71 @@ class BookingService:
         correlation_id: str | None = None,
     ) -> Any | None:
         """
-        Idempotently create and persist an auditable Refund record for a cancelled booking.
-        Guarantees that a Refund row (REF/YYYY/MM/NNNNNN) exists and payment.amount_refunded
-        is properly updated without modifying or deleting historical payment or booking records.
+        Idempotently create an auditable Refund record in ``requested`` status
+        for a cancelled paid booking via RefundLifecycle.
+
+        The refund is NOT completed here — it stays ``requested`` until staff
+        processes it from ushdesk (Gateway refund / Manual refund), which
+        transitions it through processing → completed.
+
+        Payment rows are NOT modified. booking.payment_status is NOT changed.
         """
-        async with _safe_begin_nested(self._session):
-            from app.payment.domain.value_objects import (
-                RefundMethod,
-                RefundStatus,
-                RefundType,
+        from app.payment.application.refund_lifecycle import (
+            RefundLifecycle,
+            cancellation_idempotency_key,
+        )
+
+        lifecycle = RefundLifecycle(self._session)
+        payment = await lifecycle.find_payment_for_booking(booking)
+
+        # Calculate refund amounts
+        total_amt = Decimal(
+            str(
+                (payment.total_amount if payment else None)
+                or getattr(booking, "total_amount", None)
+                or "0.000"
             )
-            from app.payment.infrastructure.models import Payment, Refund
-            from app.payment.infrastructure.repository import generate_refund_number
+        )
+        fee_dec = Decimal(str(cancellation_fee or "0.000"))
+        if refund_amount is not None:
+            net_refund_amt = max(Decimal("0.000"), Decimal(str(refund_amount)))
+        else:
+            net_refund_amt = max(Decimal("0.000"), total_amt - fee_dec)
 
-            # 1. Check if a Refund already exists for this booking
-            stmt = select(Refund).where(Refund.booking_id == booking.id)
-            res = await self._session.execute(stmt)
-            existing = res.scalars().first()
-            if existing:
-                return existing
+        effective_user = change_by_user or cancelled_by
+        user_data = change_by_user_data or {}
 
-            # 2. Find linked payment (if any)
-            payment_stmt = select(Payment).where(Payment.booking_id == booking.id)
-            p_res = await self._session.execute(payment_stmt)
-            payment = p_res.scalars().first()
-            if not payment and getattr(booking, "payment_id", None):
-                try:
-                    p_uuid = uuid.UUID(str(booking.payment_id))
-                    p_res2 = await self._session.execute(select(Payment).where(Payment.id == p_uuid))
-                    payment = p_res2.scalars().first()
-                except (ValueError, TypeError):
-                    p_res2 = await self._session.execute(
-                        select(Payment).where(Payment.payment_id == str(booking.payment_id))
-                    )
-                    payment = p_res2.scalars().first()
+        refund, created = await lifecycle.request(
+            booking,
+            payment=payment,
+            refund_amount=net_refund_amt,
+            cancellation_fee=fee_dec,
+            refund_type="manual",
+            refund_method=refund_method or "cash",
+            reason=reason or "Booking cancellation refund",
+            notes=f"Auto-generated on booking cancellation by {cancelled_by}",
+            idempotency_key=cancellation_idempotency_key(booking.id),
+            actor_id=str(effective_user) if effective_user else None,
+            actor_data=user_data,
+        )
 
-            # 3. Calculate refund amounts
-            total_amt = Decimal(
-                str(
-                    (payment.total_amount if payment else None)
-                    or getattr(booking, "total_amount", None)
-                    or "0.000"
-                )
-            )
-            fee_dec = Decimal(str(cancellation_fee or "0.000"))
-            if refund_amount is not None:
-                net_refund_amt = max(Decimal("0.000"), Decimal(str(refund_amount)))
-                requested_amt = net_refund_amt + fee_dec
-            else:
-                requested_amt = total_amt
-                net_refund_amt = max(Decimal("0.000"), requested_amt - fee_dec)
-
-            # Determine refund type
-            canc_actor = str(cancelled_by or "").lower()
-            if canc_actor in ("customer", "ushspa", "app", "mobile_app", "online"):
-                ref_type = RefundType.AUTOMATED.value
-            else:
-                ref_type = RefundType.MANUAL.value
-
-            # Determine refund method
-            if refund_method:
-                ref_method = RefundMethod.normalise(refund_method).value
-            elif ref_type == RefundType.AUTOMATED.value:
-                ref_method = RefundMethod.PAYMENT_GATEWAY.value
-            elif payment and getattr(payment, "payment_method", None):
-                ref_method = RefundMethod.normalise(payment.payment_method).value
-            else:
-                ref_method = RefundMethod.CASH.value
-
-            # 4. Generate sequential refund number
-            ref_number = await generate_refund_number(self._session)
-
-            effective_user = change_by_user or cancelled_by
-            user_data = change_by_user_data or {}
-
-            # 5. Create Refund record
-            from app.payment.application.refund_service import _now_kuwait
-
-            refund = Refund(
-                refund_number=ref_number,
-                booking_id=booking.id,
-                booking_data={
-                    "booking_number": getattr(booking, "booking_number", None),
-                    "status": booking.status,
-                    "appointment_start": (
-                        to_local_tz(booking.appointment_start).isoformat()
-                        if getattr(booking, "appointment_start", None)
-                        else None
-                    ),
-                    "service_id": str(booking.service_id) if booking.service_id else None,
-                    "branch_id": str(booking.branch_id) if booking.branch_id else None,
-                },
-                payment_id=payment.id if payment else None,
-                invoice_number=getattr(payment, "invoice_number", None) or getattr(booking, "invoice_number", None),
-                customer_id=booking.customer_id,
-                customer_data=booking.customer_data,
-                branch_id=booking.branch_id,
-                branch_data=booking.branch_data,
-                refund_type=ref_type,
-                refund_method=ref_method,
-                status=RefundStatus.COMPLETED.value,
-                requested_amount=requested_amt,
-                cancellation_fee=fee_dec,
-                refunded_amount=net_refund_amt,
-                currency=getattr(booking, "currency", None) or (payment.currency if payment else "KWD"),
-                reason=reason or "Booking cancellation refund",
-                notes=f"Auto-generated on booking cancellation by {cancelled_by}",
-                payment_gateway=getattr(payment, "payment_gateway", None) if payment else None,
-                gateway_transaction_id=getattr(payment, "transaction_id", None) if payment else None,
-                processed_by=str(effective_user) if effective_user else None,
-                processed_by_data=user_data,
-                processed_at=_now_kuwait(),
-            )
-            self._session.add(refund)
-
-            # Update payment amount_refunded
-            if payment:
-                payment.amount_refunded = (
-                    Decimal(str(payment.amount_refunded or "0.000")) + net_refund_amt
-                )
-
-            await self._session.flush()
-
-            # Emit BookingRefundCompletedEvent for downstream notifications
-            try:
-                from app.events.contracts import BookingRefundCompletedEvent
-
-                b_ref = getattr(booking, "booking_number", "") or str(booking.id)
-                await self._enqueue_event(
-                    BookingRefundCompletedEvent(
-                        refund_id=str(refund.id),
-                        refund_number=refund.refund_number,
-                        booking_id=str(booking.id),
-                        booking_number=getattr(booking, "booking_number", "") or "",
-                        booking_reference=b_ref,
-                        payment_id=str(payment.id) if payment else "",
-                        customer_id=str(booking.customer_id) if booking.customer_id else "",
-                        customer_name=_extract_customer_name(booking.customer_data),
-                        customer_phone=_extract_customer_phone(booking.customer_data),
-                        customer_email=_extract_customer_email(booking.customer_data),
-                        branch_id=str(booking.branch_id) if booking.branch_id else "",
-                        service_id=str(booking.service_id) if booking.service_id else "",
-                        refund_type=refund.refund_type,
-                        refund_method=refund.refund_method,
-                        status=refund.status,
-                        requested_amount=str(refund.requested_amount),
-                        cancellation_fee=str(refund.cancellation_fee),
-                        refund_amount=str(refund.refunded_amount),
-                        currency=refund.currency,
-                        reason=refund.reason or "",
-                        notes=refund.notes or "",
-                        processed_by=str(refund.processed_by or ""),
-                        processed_by_data=refund.processed_by_data or {},
-                    )
-                )
-            except Exception as ev_exc:
-                logger.warning("emit_booking_refund_completed_event_failed", error=str(ev_exc))
-
+        if created:
             logger.info(
-                "cancellation_refund_recorded",
+                "cancellation_refund_requested",
                 booking_id=str(booking.id),
                 refund_number=refund.refund_number,
                 amount=str(net_refund_amt),
-                refund_type=ref_type,
+                status=refund.status,
             )
-            return refund
+        else:
+            logger.info(
+                "cancellation_refund_already_exists",
+                booking_id=str(booking.id),
+                refund_number=refund.refund_number,
+                status=refund.status,
+            )
+
+        return refund
 
     async def _sync_booking_payment_status(
         self,

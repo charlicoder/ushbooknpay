@@ -685,3 +685,53 @@ class RefundListResponse(BaseModel):
 
     model_config = {"extra": "allow"}
 
+
+class CreateRefundRequestSchema(BaseModel):
+    """Request payload for creating a refund request record (status=requested)."""
+
+    booking_id: uuid.UUID | None = None
+    payment_id: str | None = None
+    invoice_id: str | None = None
+    invoice_number: str | None = None
+    refund_amount: Decimal | None = None
+    cancellation_fee: Decimal = Field(default=Decimal("0.000"), ge=0)
+    reason: str | None = None
+    notes: str | None = None
+    change_by_user: str | None = None
+    change_by_user_data: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class ApproveRefundRequestSchema(BaseModel):
+    """Request payload for approving a refund request."""
+
+    refund_method: str = Field(default="loyalty_points", description="loyalty_points or money")
+    approved_amount: Decimal = Field(..., gt=0, description="Approved amount (money) or points")
+    notes: str | None = None
+    change_by_user: str | None = None
+    change_by_user_data: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class RejectRefundRequestSchema(BaseModel):
+    """Request payload for rejecting a refund request."""
+
+    reason: str | None = None
+    change_by_user: str | None = None
+    change_by_user_data: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class ProcessRefundRequestSchema(BaseModel):
+    """Request payload for executing an approved refund."""
+
+    notes: str | None = None
+    change_by_user: str | None = None
+    change_by_user_data: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
+

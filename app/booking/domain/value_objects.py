@@ -50,6 +50,7 @@ class PaymentStatus(str, Enum):
     REFUNDED = "refunded"
     REWARDED = "rewarded"
     PARTIALLY_REFUNDED = "partially_refunded"
+    REFUND_REQUESTED = "refund_requested"
 
 
 class BookingType(str, Enum):

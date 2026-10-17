@@ -161,6 +161,8 @@ class RefundMethod(str, Enum):
     CASH = "cash"
     CARD = "card"
     BANK_TRANSFER = "bank_transfer"
+    LOYALTY_POINTS = "loyalty_points"
+    MONEY = "money"
     OTHER = "other"
 
     @classmethod
@@ -184,6 +186,10 @@ class RefundMethod(str, Enum):
             "bank_transfer": cls.BANK_TRANSFER,
             "bank": cls.BANK_TRANSFER,
             "transfer": cls.BANK_TRANSFER,
+            "loyalty_points": cls.LOYALTY_POINTS,
+            "loyalty": cls.LOYALTY_POINTS,
+            "points": cls.LOYALTY_POINTS,
+            "money": cls.MONEY,
             "other": cls.OTHER,
         }
         return mapping.get(v, cls.OTHER)
@@ -193,6 +199,8 @@ class RefundStatus(str, Enum):
     """Refund transaction lifecycle states."""
 
     REQUESTED = "requested"
+    APPROVED = "approved"
+    REJECTED = "rejected"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"

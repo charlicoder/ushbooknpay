@@ -49,9 +49,17 @@ logger = get_logger(__name__)
 
 _KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
 
+# Provider refund statuses that represent a *settled* refund (provider confirmation).
+# Anything else (e.g. MyFatoorah MakeRefund acceptance, Tap INITIATED/PENDING) means
+# the refund is still processing and waits for the webhook / staff confirmation.
+_PROVIDER_FINAL_REFUND_STATUSES = frozenset({"REFUNDED", "SUCCEEDED", "COMPLETED", "SUCCESS"})
+
 
 def _now_kuwait() -> datetime:
     return datetime.now(timezone.utc)
+
+
+from app.payment.application.refund_lifecycle import RefundLifecycle, _dec  # noqa: E402
 
 
 class RefundService:
@@ -120,6 +128,68 @@ class RefundService:
             return get_gateway("myfatoorah", self._http, self._settings)
         return TapProvider(http_client=self._http, settings=self._settings)
 
+    async def _resolve_refund_to_execute(
+        self,
+        booking: Booking,
+        payment: Payment | None,
+        *,
+        net_amount: Decimal | None,
+        cancellation_fee: Decimal,
+        refund_type: str,
+        refund_method: str,
+        reason: str | None,
+        notes: str | None,
+        actor_id: str,
+        actor_data: dict[str, Any] | None,
+    ) -> Refund:
+        """
+        Reuse the booking's open *requested* refund (e.g. the one created on cancellation)
+        instead of creating a duplicate; otherwise request a new (partial) refund.
+        """
+        lifecycle = RefundLifecycle(self._session)
+        open_refund = await lifecycle.find_open_refund(booking.id)
+        if open_refund is not None:
+            if open_refund.status == RefundStatus.PROCESSING.value:
+                raise ValidationError(
+                    f"Refund {open_refund.refund_number} is already being processed by the payment provider. "
+                    "Wait for the provider confirmation."
+                )
+            if net_amount is not None and (
+                abs(_dec(open_refund.refunded_amount) - net_amount) > Decimal("0.0005")
+                or abs(_dec(open_refund.cancellation_fee) - cancellation_fee) > Decimal("0.0005")
+            ):
+                await lifecycle.update_requested_amounts(
+                    open_refund, payment, refund_amount=net_amount, cancellation_fee=cancellation_fee
+                )
+            open_refund.refund_type = refund_type
+            open_refund.refund_method = refund_method
+            if reason:
+                open_refund.reason = reason
+            if notes:
+                open_refund.notes = notes
+            return open_refund
+
+        if net_amount is None:
+            if payment is None:
+                raise ValidationError("No payment record found for this booking.")
+            net_amount = max(
+                Decimal("0.000"),
+                Decimal(str(payment.total_amount)) - await lifecycle.committed_total(payment) - cancellation_fee,
+            )
+        refund, _ = await lifecycle.request(
+            booking,
+            payment=payment,
+            refund_amount=net_amount,
+            cancellation_fee=cancellation_fee,
+            refund_type=refund_type,
+            refund_method=refund_method,
+            reason=reason,
+            notes=notes,
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
+        return refund
+
     async def record_manual_refund(
         self,
         booking_id: uuid.UUID,
@@ -130,6 +200,11 @@ class RefundService:
         """
         Record a staff-assisted manual refund executed outside the automated payment gateway
         (e.g. cash, card at branch, or bank transfer).
+
+        The staff member's confirmation that the money was handed back IS the provider
+        confirmation for manual refunds, so the refund is completed immediately. If the
+        booking already has an open requested refund (created on cancellation) it is
+        completed instead of creating a duplicate.
         """
         booking = await self._get_booking(booking_id)
         payment = await self._get_payment_for_booking(booking)
@@ -143,94 +218,40 @@ class RefundService:
         if cancellation_fee > requested_amount:
             raise ValidationError("Cancellation fee cannot exceed requested refund amount.")
 
-        refunded_amount = requested_amount - cancellation_fee
-
-        # If payment exists, validate that we don't exceed remaining payment total
-        if payment:
-            already_refunded = Decimal(str(payment.amount_refunded or "0.000"))
-            total_amt = Decimal(str(payment.total_amount))
-            if (already_refunded + refunded_amount) > total_amt:
-                raise ValidationError(
-                    f"Refund amount {refunded_amount} exceeds available refundable balance "
-                    f"({total_amt - already_refunded} KWD)."
-                )
-
-        # Generate unique sequential refund number (e.g. REF/2026/10/000001)
-        refund_number = await generate_refund_number(self._session)
-
-        # Process user info
-        effective_user_id = req.change_by_user or current_user_id
+        effective_user_id = str(req.change_by_user or current_user_id)
         effective_user_data = req.change_by_user_data or current_user_data or {}
 
-        # Create Refund record
-        refund = Refund(
-            refund_number=refund_number,
-            booking_id=booking.id,
-            booking_data={
-                "booking_number": getattr(booking, "booking_number", None),
-                "status": booking.status,
-                "appointment_start": _to_local_tz(booking.appointment_start).isoformat() if getattr(booking, "appointment_start", None) else None,
-                "service_id": str(booking.service_id) if booking.service_id else None,
-                "branch_id": str(booking.branch_id) if booking.branch_id else None,
-            },
-            payment_id=payment.id if payment else None,
-            invoice_number=getattr(payment, "invoice_number", None) or getattr(booking, "invoice_number", None),
-            customer_id=booking.customer_id,
-            customer_data=booking.customer_data,
-            branch_id=booking.branch_id,
-            branch_data=booking.branch_data,
+        refund = await self._resolve_refund_to_execute(
+            booking,
+            payment,
+            net_amount=requested_amount - cancellation_fee,
+            cancellation_fee=cancellation_fee,
             refund_type=RefundType.MANUAL.value,
             refund_method=RefundMethod.normalise(req.refund_method).value,
-            status=RefundStatus.COMPLETED.value,
-            requested_amount=requested_amount,
-            cancellation_fee=cancellation_fee,
-            refunded_amount=refunded_amount,
-            currency=booking.currency or (payment.currency if payment else "KWD"),
             reason=req.reason or "Manual staff refund",
             notes=req.notes,
-            customer_confirmation=req.customer_confirmation,
-            reference_number=req.reference_number,
-            payment_gateway=None,
-            gateway_transaction_id=None,
-            gateway_refund_id=None,
-            processed_by=str(effective_user_id),
-            processed_by_data=effective_user_data,
-            processed_at=_now_kuwait(),
+            actor_id=effective_user_id,
+            actor_data=effective_user_data,
         )
+        refund.customer_confirmation = req.customer_confirmation or refund.customer_confirmation
+        refund.reference_number = req.reference_number or refund.reference_number
+        refund.processed_by = effective_user_id
+        refund.processed_by_data = effective_user_data
+        refund.processed_at = _now_kuwait()
 
-        self._session.add(refund)
-
-        # Update payment refund counter and record status history (without destroying payment!)
-        if payment:
-            old_payment_status = payment.status
-            payment.amount_refunded = Decimal(str(payment.amount_refunded or "0.000")) + refunded_amount
-            if payment.amount_refunded >= Decimal(str(payment.total_amount)):
-                payment.status = PaymentTransactionStatus.REFUNDED.value
-            else:
-                payment.status = PaymentTransactionStatus.PARTIALLY_REFUNDED.value
-
-            history = PaymentStatusHistory(
-                payment_id=payment.id,
-                old_status=old_payment_status,
-                new_status=payment.status,
-                source="ushdesk",
-                reason=f"Manual refund recorded: {refund_number} ({req.refund_method})",
-                change_by_user=str(effective_user_id),
-                change_by_user_data=effective_user_data,
-                correlation_id=refund_number,
-            )
-            self._session.add(history)
-
-        # Update booking payment_status & status
-        if str(booking.payment_status).lower() in ("paid", "success"):
-            booking.payment_status = "refunded" if (not payment or payment.status == PaymentTransactionStatus.REFUNDED.value) else "partially_refunded"
-            booking.status = "refunded"
+        await RefundLifecycle(self._session).complete(
+            refund,
+            source="ushdesk_manual_refund",
+            provider_reference=req.reference_number,
+            actor_id=effective_user_id,
+            actor_data=effective_user_data,
+            publish_event=False,
+        )
         if req.notes:
-            booking.internal_notes = (f"{booking.internal_notes or ''}\n[Refund {refund_number}]: {req.notes}").strip()
-
+            booking.internal_notes = (f"{booking.internal_notes or ''}\n[Refund {refund.refund_number}]: {req.notes}").strip()
         await self._session.flush()
 
-        # Emit BookingRefundCompletedEvent to SQS for downstream services
+        # Emit SQS event for downstream orchestration
         await self._publish_refund_event(booking, refund, payment)
 
         logger.info(
@@ -238,7 +259,7 @@ class RefundService:
             refund_id=str(refund.id),
             refund_number=refund.refund_number,
             booking_id=str(booking.id),
-            amount=str(refunded_amount),
+            amount=str(refund.refunded_amount),
             method=refund.refund_method,
         )
         return refund
@@ -251,34 +272,30 @@ class RefundService:
         current_user_data: dict[str, Any] | None = None,
     ) -> Refund:
         """
-        Process an automated refund via payment gateway (Tap or MyFatoorah).
-        Only marks refund as COMPLETED once the gateway approves the refund.
+        Submit an automated refund to the payment gateway (Tap or MyFatoorah).
+
+        The gateway's acceptance only moves the refund to ``processing``. It becomes
+        ``completed`` when the provider confirms it (MyFatoorah ``REFUNDED`` webhook,
+        or an immediate final status from the provider response).
         """
         booking = await self._get_booking(booking_id)
         payment = await self._get_payment_for_booking(booking)
         if not payment:
             raise ValidationError("No payment record found for this booking to process a gateway refund.")
 
-        already_refunded = Decimal(str(payment.amount_refunded or "0.000"))
-        remaining_balance = Decimal(str(payment.total_amount)) - already_refunded
-        if remaining_balance <= 0:
-            raise ValidationError("Payment has already been fully refunded.")
-
-        requested_amount = Decimal(str(req.refund_amount)) if req.refund_amount is not None else remaining_balance
         cancellation_fee = Decimal(str(req.cancellation_fee or "0.000"))
-
-        if requested_amount <= 0:
-            raise ValidationError("Refund amount must be greater than zero.")
-        if requested_amount > remaining_balance:
-            raise ValidationError(
-                f"Requested refund amount {requested_amount} exceeds remaining balance {remaining_balance}."
-            )
-        if cancellation_fee < 0 or cancellation_fee > requested_amount:
+        if cancellation_fee < 0:
             raise ValidationError("Invalid cancellation fee.")
-
-        refunded_amount = requested_amount - cancellation_fee
-        if refunded_amount <= 0:
-            raise ValidationError("Net refunded amount after cancellation fee must be greater than zero.")
+        net_amount: Decimal | None = None
+        if req.refund_amount is not None:
+            requested_amount = Decimal(str(req.refund_amount))
+            if requested_amount <= 0:
+                raise ValidationError("Refund amount must be greater than zero.")
+            if cancellation_fee > requested_amount:
+                raise ValidationError("Invalid cancellation fee.")
+            net_amount = requested_amount - cancellation_fee
+            if net_amount <= 0:
+                raise ValidationError("Net refunded amount after cancellation fee must be greater than zero.")
 
         # Identify external gateway transaction id
         if "fatoorah" in str(payment.payment_provider or "").lower():
@@ -288,18 +305,30 @@ class RefundService:
         if not gateway_payment_id:
             raise ValidationError("Payment lacks external gateway reference required for automated refund.")
 
-        effective_user_id = req.change_by_user or current_user_id
+        effective_user_id = str(req.change_by_user or current_user_id)
         effective_user_data = req.change_by_user_data or current_user_data or {}
 
-        # Execute refund with gateway provider
+        refund = await self._resolve_refund_to_execute(
+            booking,
+            payment,
+            net_amount=net_amount,
+            cancellation_fee=cancellation_fee,
+            refund_type=RefundType.AUTOMATED.value,
+            refund_method=RefundMethod.PAYMENT_GATEWAY.value,
+            reason=req.reason or "Booking cancellation refund",
+            notes=req.notes,
+            actor_id=effective_user_id,
+            actor_data=effective_user_data,
+        )
+        refund.payment_gateway = payment.payment_gateway or payment.payment_provider
+        refund.gateway_transaction_id = payment.transaction_id
+
         provider = self._resolve_gateway_provider(payment)
         gateway_req = RefundRequest(
             provider_payment_id=gateway_payment_id,
-            amount=refunded_amount,
-            reason=req.reason or "Booking cancellation refund",
+            amount=Decimal(str(refund.refunded_amount)),
+            reason=refund.reason or "Booking cancellation refund",
         )
-
-        refund_number = await generate_refund_number(self._session)
 
         try:
             gateway_res = await provider.refund_payment(gateway_req)
@@ -308,32 +337,10 @@ class RefundService:
                 "gateway_refund_failed_exception",
                 booking_id=str(booking.id),
                 payment_id=str(payment.id),
+                refund_number=refund.refund_number,
                 error=str(exc),
             )
-            # Record failed refund record for audit
-            failed_refund = Refund(
-                refund_number=refund_number,
-                booking_id=booking.id,
-                payment_id=payment.id,
-                customer_id=booking.customer_id,
-                branch_id=booking.branch_id,
-                refund_type=RefundType.AUTOMATED.value,
-                refund_method=RefundMethod.PAYMENT_GATEWAY.value,
-                status=RefundStatus.FAILED.value,
-                requested_amount=requested_amount,
-                cancellation_fee=cancellation_fee,
-                refunded_amount=refunded_amount,
-                currency=payment.currency,
-                reason=req.reason,
-                notes=f"Gateway execution failed: {exc}",
-                payment_gateway=payment.payment_gateway or payment.payment_provider,
-                gateway_transaction_id=payment.transaction_id,
-                processed_by=str(effective_user_id),
-                processed_by_data=effective_user_data,
-                processed_at=_now_kuwait(),
-            )
-            self._session.add(failed_refund)
-            await self._session.flush()
+            # Refund stays `requested` (nothing left the account) so staff can retry.
             raise ValidationError(f"Payment gateway refund failed: {exc}")
 
         if not gateway_res.is_successful:
@@ -341,107 +348,99 @@ class RefundService:
                 "gateway_refund_rejected",
                 booking_id=str(booking.id),
                 payment_id=str(payment.id),
+                refund_number=refund.refund_number,
                 reason=gateway_res.failure_reason,
             )
-            failed_refund = Refund(
-                refund_number=refund_number,
-                booking_id=booking.id,
-                payment_id=payment.id,
-                customer_id=booking.customer_id,
-                branch_id=booking.branch_id,
-                refund_type=RefundType.AUTOMATED.value,
-                refund_method=RefundMethod.PAYMENT_GATEWAY.value,
-                status=RefundStatus.FAILED.value,
-                requested_amount=requested_amount,
-                cancellation_fee=cancellation_fee,
-                refunded_amount=refunded_amount,
-                currency=payment.currency,
-                reason=req.reason,
-                notes=f"Gateway rejected: {gateway_res.failure_reason}",
-                payment_gateway=payment.payment_gateway or payment.payment_provider,
-                gateway_transaction_id=payment.transaction_id,
-                gateway_response=gateway_res.raw_response,
-                processed_by=str(effective_user_id),
-                processed_by_data=effective_user_data,
-                processed_at=_now_kuwait(),
-            )
-            self._session.add(failed_refund)
-            await self._session.flush()
             raise ValidationError(f"Gateway refund declined: {gateway_res.failure_reason}")
 
-        # Gateway Succeeded: Create completed Refund record
-        refund = Refund(
-            refund_number=refund_number,
-            booking_id=booking.id,
-            booking_data={
-                "booking_number": getattr(booking, "booking_number", None),
-                "status": booking.status,
-                "appointment_start": _to_local_tz(booking.appointment_start).isoformat() if getattr(booking, "appointment_start", None) else None,
-                "service_id": str(booking.service_id) if booking.service_id else None,
-                "branch_id": str(booking.branch_id) if booking.branch_id else None,
-            },
-            payment_id=payment.id,
-            invoice_number=payment.invoice_number or getattr(booking, "invoice_number", None),
-            customer_id=booking.customer_id,
-            customer_data=booking.customer_data,
-            branch_id=booking.branch_id,
-            branch_data=booking.branch_data,
-            refund_type=RefundType.AUTOMATED.value,
-            refund_method=RefundMethod.PAYMENT_GATEWAY.value,
-            status=RefundStatus.COMPLETED.value,
-            requested_amount=requested_amount,
-            cancellation_fee=cancellation_fee,
-            refunded_amount=refunded_amount,
-            currency=payment.currency,
-            reason=req.reason or "Automated gateway refund",
-            notes=req.notes,
-            payment_gateway=payment.payment_gateway or payment.payment_provider,
-            gateway_transaction_id=payment.transaction_id,
-            gateway_refund_id=gateway_res.provider_refund_id,
+        lifecycle = RefundLifecycle(self._session)
+        await lifecycle.mark_processing(
+            refund,
+            provider_refund_id=gateway_res.provider_refund_id,
             gateway_response=gateway_res.raw_response,
-            processed_by=str(effective_user_id),
-            processed_by_data=effective_user_data,
-            processed_at=_now_kuwait(),
+            actor_id=effective_user_id,
+            actor_data=effective_user_data,
         )
-        self._session.add(refund)
 
-        # Update payment record
-        old_payment_status = payment.status
-        payment.amount_refunded = Decimal(str(payment.amount_refunded or "0.000")) + refunded_amount
-        if payment.amount_refunded >= Decimal(str(payment.total_amount)):
-            payment.status = PaymentTransactionStatus.REFUNDED.value
-        else:
-            payment.status = PaymentTransactionStatus.PARTIALLY_REFUNDED.value
-
-        history = PaymentStatusHistory(
-            payment_id=payment.id,
-            old_status=old_payment_status,
-            new_status=payment.status,
-            source="gateway_refund",
-            reason=f"Gateway refund processed: {refund_number} (Gateway Refund ID: {gateway_res.provider_refund_id})",
-            provider_reference=gateway_res.provider_refund_id,
-            change_by_user=str(effective_user_id),
-            change_by_user_data=effective_user_data,
-            correlation_id=refund_number,
-        )
-        self._session.add(history)
-
-        # Update booking payment_status & status
-        booking.payment_status = "refunded" if payment.status == PaymentTransactionStatus.REFUNDED.value else "partially_refunded"
-        booking.status = "refunded"
-
+        # Gateway refund requests are asynchronous operations: the gateway accepts
+        # the request for processing, and the refund record remains in `processing`
+        # until confirmed via webhook or manual reconciliation.
         await self._session.flush()
-
-        # Emit SQS event for orchestration
-        await self._publish_refund_event(booking, refund, payment)
-
         logger.info(
-            "gateway_refund_completed",
+            "gateway_refund_submitted",
             refund_id=str(refund.id),
             refund_number=refund.refund_number,
             gateway_refund_id=refund.gateway_refund_id,
-            amount=str(refunded_amount),
+            status=refund.status,
+            amount=str(refund.refunded_amount),
         )
+        return refund
+
+    async def confirm_refund(
+        self,
+        refund_id: uuid.UUID,
+        *,
+        provider_reference: str | None,
+        notes: str | None,
+        actor_id: str,
+        actor_data: dict[str, Any] | None = None,
+    ) -> Refund:
+        """
+        Staff confirmation that a ``processing`` refund was settled by the provider
+        (fallback when the provider webhook is unavailable). Idempotent.
+        """
+        refund = (
+            await self._session.execute(select(Refund).where(Refund.id == refund_id).with_for_update())
+        ).scalar_one_or_none()
+        if not refund:
+            raise NotFoundError(f"Refund {refund_id} not found.")
+        if notes:
+            refund.notes = (f"{refund.notes or ''}\n{notes}").strip()
+        await RefundLifecycle(self._session).complete(
+            refund,
+            source="ushdesk_refund_confirmation",
+            provider_reference=provider_reference,
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
+        await self._session.flush()
+        return refund
+
+    async def link_credit_note(
+        self,
+        refund_id: uuid.UUID | None,
+        *,
+        booking_id: uuid.UUID | None = None,
+        refund_number: str | None = None,
+        credit_note_number: str | None,
+        credit_note_id: str | None = None,
+    ) -> Refund | None:
+        """Link the ushanr credit note to its refund (credit note → refund relationship). Idempotent."""
+        stmt = select(Refund)
+        if refund_id:
+            stmt = stmt.where(Refund.id == refund_id)
+        elif refund_number:
+            stmt = stmt.where(Refund.refund_number == refund_number)
+        elif booking_id:
+            stmt = stmt.where(Refund.booking_id == booking_id).order_by(Refund.created_at.desc())
+        else:
+            raise ValidationError("refund_id, refund_number or booking_id is required.")
+        refund = (await self._session.execute(stmt.limit(1).with_for_update())).scalars().first()
+        if refund is None:
+            return None
+        if credit_note_number and refund.credit_note_number not in (None, "", credit_note_number):
+            logger.warning(
+                "refund_credit_note_link_conflict",
+                refund_number=refund.refund_number,
+                existing=refund.credit_note_number,
+                incoming=credit_note_number,
+            )
+            return refund
+        if credit_note_number:
+            refund.credit_note_number = credit_note_number
+        if credit_note_id:
+            refund.credit_note_id = str(credit_note_id)
+        await self._session.flush()
         return refund
 
     async def _publish_refund_event(
@@ -503,6 +502,270 @@ class RefundService:
             logger.info("refund_event_published", refund_number=refund.refund_number)
         except Exception as exc:
             logger.warning("refund_event_publish_failed", refund_number=refund.refund_number, error=str(exc))
+
+    async def create_refund_request(
+        self,
+        *,
+        booking_id: uuid.UUID,
+        payment_id: str | None = None,
+        invoice_id: str | None = None,
+        invoice_number: str | None = None,
+        refund_amount: Decimal | None = None,
+        cancellation_fee: Decimal = Decimal("0.000"),
+        reason: str | None = None,
+        notes: str | None = None,
+        actor_id: str | None = None,
+        actor_data: dict[str, Any] | None = None,
+    ) -> tuple[Refund, bool]:
+        """Create a refund record in requested status on booking cancellation."""
+        booking = await self._get_booking(booking_id)
+        payment = None
+        if payment_id:
+            try:
+                p_uuid = uuid.UUID(str(payment_id))
+                stmt = select(Payment).where(Payment.id == p_uuid)
+                payment = (await self._session.execute(stmt)).scalar_one_or_none()
+            except (ValueError, TypeError):
+                stmt = select(Payment).where(Payment.payment_id == str(payment_id))
+                payment = (await self._session.execute(stmt)).scalar_one_or_none()
+        if not payment:
+            payment = await self._get_payment_for_booking(booking)
+
+        tot_amt = Decimal(str((payment.total_amount if payment else None) or booking.total_amount or "0.000"))
+        fee_dec = Decimal(str(cancellation_fee or "0.000"))
+        if refund_amount is not None:
+            net_amt = Decimal(str(refund_amount))
+        else:
+            net_amt = max(Decimal("0.000"), tot_amt - fee_dec)
+
+        from app.payment.application.refund_lifecycle import cancellation_idempotency_key
+        lifecycle = RefundLifecycle(self._session)
+        refund, created = await lifecycle.request(
+            booking,
+            payment=payment,
+            refund_amount=net_amt,
+            cancellation_fee=fee_dec,
+            refund_type=RefundType.MANUAL.value,
+            refund_method=RefundMethod.OTHER.value,
+            reason=reason or "Booking cancellation refund requested",
+            notes=notes or f"Refund requested on cancellation of booking {booking.booking_number or booking.id}",
+            idempotency_key=cancellation_idempotency_key(booking.id),
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
+        if invoice_number and not refund.invoice_number:
+            refund.invoice_number = invoice_number
+        if invoice_id and not getattr(refund, "credit_note_id", None):
+            refund.credit_note_id = str(invoice_id)
+        if payment and not refund.payment_id:
+            refund.payment_id = payment.id
+        await self._session.flush()
+        return refund, created
+
+    async def approve_refund(
+        self,
+        refund_id: uuid.UUID,
+        *,
+        refund_method: str,
+        approved_amount: Decimal,
+        notes: str | None = None,
+        actor_id: str | None = None,
+        actor_data: dict[str, Any] | None = None,
+    ) -> Refund:
+        """Approve a requested refund with refund method (money or loyalty_points) and approved amount."""
+        refund = await self.get_refund_by_id(refund_id)
+        lifecycle = RefundLifecycle(self._session)
+        refund = await lifecycle.approve(
+            refund,
+            refund_method=refund_method,
+            approved_amount=approved_amount,
+            notes=notes,
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
+        await self._session.flush()
+
+        # Publish BookingRefundApprovedEvent
+        try:
+            booking = await self._get_booking(refund.booking_id) if refund.booking_id else None
+            payment = await self._get_payment_for_booking(booking) if booking else None
+            from app.events.contracts import BookingRefundApprovedEvent
+            event = BookingRefundApprovedEvent(
+                refund_id=str(refund.id),
+                refund_number=refund.refund_number,
+                booking_id=str(refund.booking_id or ""),
+                booking_number=getattr(booking, "booking_number", None) or "",
+                booking_reference=str(getattr(booking, "booking_number", None) or (refund.booking_id or "")),
+                payment_id=str(refund.payment_id or (payment.id if payment else "")),
+                customer_id=str(refund.customer_id or ""),
+                branch_id=str(refund.branch_id or ""),
+                refund_type=refund.refund_type,
+                refund_method=refund.refund_method,
+                status=refund.status,
+                requested_amount=str(refund.requested_amount),
+                cancellation_fee=str(refund.cancellation_fee),
+                refund_amount=str(refund.refunded_amount),
+                approved_amount=str(refund.refunded_amount),
+                currency=refund.currency,
+                reason=refund.reason or "",
+                notes=refund.notes or "",
+                processed_by=refund.processed_by or "",
+                processed_by_data=refund.processed_by_data or {},
+                processed_at=_to_local_tz(refund.processed_at).isoformat() if refund.processed_at else "",
+                created_at=_to_local_tz(refund.created_at).isoformat() if refund.created_at else "",
+                invoice_number=refund.invoice_number or getattr(payment, "invoice_number", "") or (booking.invoice_number if booking else ""),
+                invoice_id=getattr(refund, "credit_note_id", "") or "",
+            )
+            sqs = get_sqs_client()
+            import asyncio
+            asyncio.create_task(sqs.publish_event(event))
+            logger.info("refund_approved_event_published", refund_number=refund.refund_number)
+        except Exception as exc:
+            logger.warning("refund_approved_event_publish_failed", refund_number=refund.refund_number, error=str(exc))
+
+        return refund
+
+    async def reject_refund(
+        self,
+        refund_id: uuid.UUID,
+        *,
+        reason: str | None = None,
+        actor_id: str | None = None,
+        actor_data: dict[str, Any] | None = None,
+    ) -> Refund:
+        """Reject a requested refund."""
+        refund = await self.get_refund_by_id(refund_id)
+        lifecycle = RefundLifecycle(self._session)
+        refund = await lifecycle.reject(
+            refund,
+            reason=reason,
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
+        await self._session.flush()
+        return refund
+
+    async def process_refund(
+        self,
+        refund_id: uuid.UUID,
+        *,
+        actor_id: str | None = None,
+        actor_data: dict[str, Any] | None = None,
+    ) -> Refund:
+        """Process an approved refund (via payment provider for money or loyalty adjustment)."""
+        refund = await self.get_refund_by_id(refund_id)
+        if refund.status != RefundStatus.APPROVED.value:
+            raise ValidationError(f"Refund {refund.refund_number} is not in approved status ({refund.status}).")
+
+        booking = await self._get_booking(refund.booking_id) if refund.booking_id else None
+        payment = await self._get_payment_for_booking(booking) if booking else None
+        effective_user_id = str(actor_id or refund.processed_by or "staff")
+        effective_user_data = actor_data or refund.processed_by_data or {}
+
+        lifecycle = RefundLifecycle(self._session)
+
+        # ── Case A: Loyalty Points ─────────────────────────────────────
+        if refund.refund_method == RefundMethod.LOYALTY_POINTS.value or str(refund.refund_method).lower() in ("loyalty_points", "loyalty", "points"):
+            from app.loyalty.application.services import LoyaltyService
+            loyalty_svc = LoyaltyService(self._session)
+            pts = int(Decimal(str(refund.refunded_amount or 0)))
+            if pts > 0 and refund.customer_id:
+                try:
+                    await loyalty_svc.adjust_points(
+                        customer_id=refund.customer_id,
+                        delta=pts,
+                        description=f"Refund {refund.refund_number} approved as loyalty points",
+                        created_by=effective_user_id,
+                    )
+                except Exception as exc:
+                    logger.error("loyalty_credit_on_refund_process_failed", refund_number=refund.refund_number, error=str(exc))
+                    raise ValidationError(f"Failed to credit loyalty points: {exc}")
+
+            refund, _ = await lifecycle.complete(
+                refund,
+                source="loyalty_point_refund",
+                actor_id=effective_user_id,
+                actor_data=effective_user_data,
+                publish_event=True,
+            )
+            if booking:
+                booking.status = "cancelled"
+                booking.payment_status = "success"
+                await self._session.flush()
+
+            logger.info("loyalty_refund_processed", refund_number=refund.refund_number, points=pts)
+            return refund
+
+        # ── Case B: Money (Provider Gateway / Counter) ───────────────────
+        # Determine gateway/provider
+        if payment and (payment.payment_gateway or payment.payment_provider):
+            gateway_name = str(payment.payment_gateway or payment.payment_provider).lower()
+        elif booking and (booking.payment_gateway or booking.payment_provider):
+            gateway_name = str(booking.payment_gateway or booking.payment_provider).lower()
+        else:
+            gateway_name = "manual"
+
+        provider_ref = None
+        gateway_raw_res = None
+
+        if payment and ("fatoorah" in gateway_name or "tap" in gateway_name or "gateway" in str(refund.refund_method).lower()):
+            if "fatoorah" in gateway_name:
+                gateway_payment_id = payment.invoice_id or payment.payment_id or payment.transaction_id
+            else:
+                gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id
+
+            if gateway_payment_id:
+                provider = self._resolve_gateway_provider(payment)
+                gateway_req = RefundRequest(
+                    provider_payment_id=str(gateway_payment_id),
+                    amount=Decimal(str(refund.refunded_amount)),
+                    reason=refund.reason or "Booking cancellation refund",
+                )
+                try:
+                    gateway_res = await provider.refund_payment(gateway_req)
+                    if not gateway_res.is_successful:
+                        raise ValidationError(f"Gateway refund declined: {gateway_res.failure_reason}")
+                    provider_ref = gateway_res.provider_refund_id
+                    gateway_raw_res = gateway_res.raw_response
+                except Exception as exc:
+                    logger.error("gateway_refund_failed", refund_number=refund.refund_number, error=str(exc))
+                    raise ValidationError(f"Payment provider refund failed: {exc}")
+
+        # Complete refund in lifecycle
+        refund, _ = await lifecycle.complete(
+            refund,
+            source="money_refund_process",
+            provider_reference=provider_ref,
+            gateway_response=gateway_raw_res,
+            actor_id=effective_user_id,
+            actor_data=effective_user_data,
+            publish_event=True,
+        )
+
+        # Update credit note status in ushanr (record outbound refund payment)
+        if booking:
+            try:
+                from app.integrations.ushanr_client import UshanrClient
+                ushanr = UshanrClient()
+                await ushanr.create_credit_note(
+                    source_document_type="booking",
+                    source_document_id=str(booking.id),
+                    refund_amount=refund.refunded_amount,
+                    cancellation_fee=refund.cancellation_fee,
+                    refund_method=refund.refund_method,
+                    refund_number=refund.refund_number,
+                    branch_id=str(booking.branch_id) if booking.branch_id else None,
+                    processed_by=effective_user_id,
+                    record_refund_payment=True,
+                    notes=f"Processed refund {refund.refund_number} for booking {booking.booking_number or booking.id}",
+                )
+                await ushanr.aclose()
+            except Exception as u_exc:
+                logger.warning("credit_note_status_update_failed", refund_number=refund.refund_number, error=str(u_exc))
+
+        await self._session.flush()
+        logger.info("money_refund_processed", refund_number=refund.refund_number, amount=str(refund.refunded_amount))
+        return refund
 
     async def get_booking_refunds(self, booking_id: uuid.UUID) -> list[Refund]:
         stmt = select(Refund).where(Refund.booking_id == booking_id).order_by(Refund.created_at.desc())

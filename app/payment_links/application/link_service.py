@@ -377,7 +377,24 @@ class PaymentLinkService:
                 )
             ).scalar_one_or_none()
             if booking:
+                existing_pdata = dict(booking.payment_data or {})
+                cancelled_invoices = list(existing_pdata.get("cancelled_invoice_ids", []))
+                for link in links:
+                    if link.gateway_invoice_id and str(link.gateway_invoice_id) not in cancelled_invoices:
+                        cancelled_invoices.append(str(link.gateway_invoice_id))
+
+                gw_inv = existing_pdata.get("gateway_invoice_id") or existing_pdata.get("invoice_id")
+                if gw_inv and str(gw_inv) not in cancelled_invoices:
+                    cancelled_invoices.append(str(gw_inv))
+                    try:
+                        await self._gateway.cancel_link(str(gw_inv))
+                    except Exception as exc:
+                        logger.info("gateway_cancel_link_failed", invoice_id=str(gw_inv), error=str(exc))
+
                 booking.payment_url = None
+                existing_pdata["cancelled_invoice_ids"] = cancelled_invoices
+                existing_pdata["payment_link_cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                booking.payment_data = existing_pdata
 
         await self._session.flush()
         logger.info("payment_links_deleted_for_target", target_type=canonical, target_id=str(target_id), count=count)

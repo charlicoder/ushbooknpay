@@ -557,6 +557,16 @@ class USHAuthClient:
             payload["payment_status"] = str(payment_status)
         return await self._post("/api/v1/update-appointment-cache-status-by-booking-id/", json_data=payload)
 
+    async def delete_appointment_cache_by_booking_id(self, booking_id: str) -> dict[str, Any]:
+        """
+        Delete appointment cache record(s) for a booking (frees the slot immediately).
+        POST /api/v1/delete-appointment-cache-by-booking-id/
+        """
+        return await self._post(
+            "/api/v1/delete-appointment-cache-by-booking-id/",
+            json_data={"booking_id": str(booking_id)},
+        )
+
     async def update_appointment_cache_by_booking_id(
         self,
         booking_id: str,

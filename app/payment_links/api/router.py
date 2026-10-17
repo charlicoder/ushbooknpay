@@ -158,11 +158,50 @@ async def gateway_webhook(
                 )
             else:
                 logger.warning("gateway_webhook_link_not_found", gateway=gateway, lookup_key=lookup_key)
+                try:
+                    from app.booking.infrastructure.models import Booking
+                    from app.payment.domain.gateway_protocol import RefundRequest
+                    candidate_inv = str(getattr(state, "invoice_id", None) or lookup_key)
+                    booking_stmt = (
+                        select(Booking)
+                        .where(
+                            Booking.payment_data["cancelled_invoice_ids"].astext.contains(candidate_inv)
+                            | (Booking.payment_data["gateway_invoice_id"].astext == candidate_inv)
+                        )
+                        .limit(1)
+                    )
+                    found_booking = (await session.execute(booking_stmt)).scalar_one_or_none()
+                    if found_booking:
+                        target_booking_id = str(found_booking.id)
+                        if state and getattr(state, "status", None) == GatewayPaymentStatus.PAID:
+                            logger.info("gateway_webhook_auto_refunding_cancelled_booking", booking_id=target_booking_id, invoice_id=candidate_inv)
+                            try:
+                                await gw.refund_payment(
+                                    RefundRequest(
+                                        provider_payment_id=candidate_inv,
+                                        amount=Decimal(str(state.amount)),
+                                        currency=str(state.currency or "KWD"),
+                                        reason="Automatic refund: booking was cancelled",
+                                    )
+                                )
+                            except Exception as ref_exc:
+                                logger.error("gateway_webhook_auto_refund_failed", error=str(ref_exc))
+                            settlement_outcome = "auto_refunded_cancelled_booking"
+                            error_msg = "This booking has been cancelled and this payment link is no longer valid. Your payment has been automatically refunded."
+                except Exception as b_exc:
+                    logger.warning("gateway_webhook_check_cancelled_booking_failed", error=str(b_exc))
         except Exception as exc:
             error_msg = str(exc)
             logger.error("gateway_webhook_callback_error", gateway=gateway, lookup_key=lookup_key, error=str(exc))
 
-        is_paid = state is not None and getattr(state, "status", None) == GatewayPaymentStatus.PAID
+        is_paid = (
+            state is not None
+            and getattr(state, "status", None) == GatewayPaymentStatus.PAID
+            and settlement_outcome not in ("failure_recorded", "auto_refunded_cancelled_booking")
+        )
+        if settlement_outcome in ("failure_recorded", "auto_refunded_cancelled_booking") and not error_msg:
+            error_msg = "This booking has been cancelled and this payment link is no longer valid. Your payment has been automatically refunded."
+
         target_redirect_base = (
             getattr(settings, "MYFATOORAH_SUCCESS_URL", "")
             if is_paid

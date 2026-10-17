@@ -286,11 +286,12 @@ async def test_gateway_refund_workflow():
 
         assert refund.refund_type == RefundType.AUTOMATED.value
         assert refund.refund_method == RefundMethod.PAYMENT_GATEWAY.value
-        assert refund.status == RefundStatus.COMPLETED.value
+        assert refund.status == RefundStatus.PROCESSING.value
         assert refund.gateway_refund_id == "ref_tap_987654"
         assert refund.payment_gateway == "TAP"
-        assert payment.amount_refunded == Decimal("60.000")
-        assert payment.status == PaymentTransactionStatus.REFUNDED.value
+        # Payment remains unchanged while refund is processing
+        assert payment.amount_refunded == Decimal("0.000")
+        assert payment.status == PaymentTransactionStatus.SUCCESS.value
 
 
 @pytest.mark.asyncio
@@ -427,4 +428,230 @@ async def test_list_all_refunds_endpoint():
     assert data["meta"]["pagination"]["count"] == 1
     assert data["meta"]["pagination"]["total_pages"] == 1
     assert data["analytics"]["total_refunded_amount"] == "60.000"
+
+
+@pytest.mark.asyncio
+async def test_create_and_approve_and_process_loyalty_refund():
+    booking_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    payment_id = uuid.uuid4()
+
+    booking = Booking(
+        id=booking_id,
+        booking_number="BOK/2026/10/000099",
+        customer_id=customer_id,
+        customer_data={"name": "Sara Ahmed", "phone": "+96599887766"},
+        branch_id=branch_id,
+        total_amount=Decimal("30.000"),
+        currency="KWD",
+        status="cancelled",
+        payment_status="refund_requested",
+    )
+
+    payment = Payment(
+        id=payment_id,
+        payment_number="PMT/2026/10/000099",
+        booking_id=booking_id,
+        customer_id=customer_id,
+        total_amount=Decimal("30.000"),
+        amount_refunded=Decimal("0.000"),
+        currency="KWD",
+        status=PaymentTransactionStatus.SUCCESS.value,
+        payment_method="knet",
+    )
+
+    mock_session = AsyncMock()
+
+    refund_holder = {}
+
+    async def mock_execute(stmt):
+        mock_res = MagicMock()
+        stmt_str = str(stmt).lower()
+        if "from refunds" in stmt_str:
+            r = refund_holder.get("refund")
+            mock_res.scalar_one_or_none.return_value = r
+            mock_res.scalars.return_value.first.return_value = r
+            mock_res.scalars.return_value.all.return_value = [r] if r else []
+        elif "from bookings" in stmt_str:
+            mock_res.scalar_one_or_none.return_value = booking
+        elif "from payments" in stmt_str:
+            mock_res.scalar_one_or_none.return_value = payment
+            mock_res.scalars.return_value.first.return_value = payment
+            mock_res.scalars.return_value.all.return_value = [payment]
+        elif "count" in stmt_str:
+            mock_res.scalar_one.return_value = 1
+        return mock_res
+
+    mock_session.execute.side_effect = mock_execute
+
+    service = RefundService(session=mock_session)
+
+    # 1. Create refund request
+    refund, created = await service.create_refund_request(
+        booking_id=booking_id,
+        payment_id=payment_id,
+        invoice_id="INV-99",
+        invoice_number="INV/2026/10/000099",
+        refund_amount=Decimal("30.000"),
+        reason="Customer cancellation with refund",
+        actor_id="user-1",
+        actor_data={"name": "Manager"},
+    )
+    assert created is True
+    assert refund.status == RefundStatus.REQUESTED.value
+    assert refund.requested_amount == Decimal("30.000")
+    refund_holder["refund"] = refund
+
+    # 2. Approve refund with loyalty points
+    with patch("app.payment.application.refund_service.get_sqs_client") as mock_sqs_factory:
+        mock_sqs = MagicMock()
+        mock_sqs.publish_event = AsyncMock()
+        mock_sqs_factory.return_value = mock_sqs
+
+        approved_refund = await service.approve_refund(
+            refund.id,
+            refund_method="loyalty_points",
+            approved_amount=Decimal("30.000"),
+            notes="Approved 30 loyalty points",
+            actor_id="finance-1",
+            actor_data={"name": "Finance Manager", "role": "Finance Manager"},
+        )
+        assert approved_refund.status == RefundStatus.APPROVED.value
+        assert approved_refund.refund_method == "loyalty_points"
+        assert approved_refund.refunded_amount == Decimal("30.000")
+
+    # 3. Process refund
+    with patch("app.loyalty.application.services.LoyaltyService.adjust_points", new_callable=AsyncMock) as mock_loyalty, \
+         patch.object(service, "_publish_refund_event", new_callable=AsyncMock):
+        processed_refund = await service.process_refund(
+            refund.id,
+            actor_id="manager-1",
+            actor_data={"name": "Branch Manager"},
+        )
+        assert processed_refund.status == RefundStatus.COMPLETED.value
+        assert mock_loyalty.called
+        # Verify booking payment_status set back to success and status cancelled
+        assert booking.status == "cancelled"
+        assert booking.payment_status == "success"
+        # Payment amount unchanged
+        assert payment.total_amount == Decimal("30.000")
+
+
+@pytest.mark.asyncio
+async def test_create_and_approve_and_process_money_refund():
+    booking_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    branch_id = uuid.uuid4()
+    payment_id = uuid.uuid4()
+
+    booking = Booking(
+        id=booking_id,
+        booking_number="BOK/2026/10/000100",
+        customer_id=customer_id,
+        customer_data={"name": "Noor Al-Hassan", "phone": "+96599223344"},
+        branch_id=branch_id,
+        total_amount=Decimal("50.000"),
+        currency="KWD",
+        status="cancelled",
+        payment_status="refund_requested",
+    )
+
+    payment = Payment(
+        id=payment_id,
+        payment_number="PMT/2026/10/000100",
+        booking_id=booking_id,
+        customer_id=customer_id,
+        total_amount=Decimal("50.000"),
+        amount_refunded=Decimal("0.000"),
+        currency="KWD",
+        status=PaymentTransactionStatus.SUCCESS.value,
+        payment_method="knet",
+    )
+
+    mock_session = AsyncMock()
+    refund_holder = {}
+
+    async def mock_execute(stmt):
+        mock_res = MagicMock()
+        stmt_str = str(stmt).lower()
+        if "from refunds" in stmt_str:
+            r = refund_holder.get("refund")
+            mock_res.scalar_one_or_none.return_value = r
+            mock_res.scalars.return_value.first.return_value = r
+            mock_res.scalars.return_value.all.return_value = [r] if r else []
+        elif "from bookings" in stmt_str:
+            mock_res.scalar_one_or_none.return_value = booking
+        elif "from payments" in stmt_str:
+            mock_res.scalar_one_or_none.return_value = payment
+            mock_res.scalars.return_value.first.return_value = payment
+            mock_res.scalars.return_value.all.return_value = [payment]
+        elif "count" in stmt_str:
+            mock_res.scalar_one.return_value = 2
+        return mock_res
+
+    mock_session.execute.side_effect = mock_execute
+
+    service = RefundService(session=mock_session)
+
+    # 1. Create refund request
+    refund, created = await service.create_refund_request(
+        booking_id=booking_id,
+        payment_id=payment_id,
+        invoice_id="INV-100",
+        invoice_number="INV/2026/10/000100",
+        refund_amount=Decimal("50.000"),
+        reason="Customer cancellation with refund",
+        actor_id="user-1",
+        actor_data={"name": "Manager"},
+    )
+    assert created is True
+    assert refund.status == RefundStatus.REQUESTED.value
+    refund_holder["refund"] = refund
+
+    # 2. Approve refund with money
+    with patch("app.payment.application.refund_service.get_sqs_client") as mock_sqs_factory:
+        mock_sqs = MagicMock()
+        mock_sqs.publish_event = AsyncMock()
+        mock_sqs_factory.return_value = mock_sqs
+
+        approved_refund = await service.approve_refund(
+            refund.id,
+            refund_method="money",
+            approved_amount=Decimal("50.000"),
+            notes="Approved 50.000 KWD cash return",
+            actor_id="finance-1",
+            actor_data={"name": "Finance Manager", "role": "Finance Manager"},
+        )
+        assert approved_refund.status == RefundStatus.APPROVED.value
+        assert approved_refund.refund_method == "money"
+        assert approved_refund.refunded_amount == Decimal("50.000")
+
+    # Simulate ushnotice linking credit note:
+    await service.link_credit_note(refund.id, credit_note_number="RINV/2026/10/000100", credit_note_id="CN-100")
+    assert refund.credit_note_number == "RINV/2026/10/000100"
+
+    # 3. Process refund (Money return)
+    with patch.object(service, "_resolve_gateway_provider", create=True) as mock_provider_resolver, \
+         patch.object(service, "_publish_refund_event", new_callable=AsyncMock):
+        mock_provider = MagicMock()
+        mock_provider.refund_payment = AsyncMock(
+            return_value=MagicMock(is_successful=True, provider_refund_id="GTW-REF-100", raw_response={})
+        )
+        mock_provider_resolver.return_value = mock_provider
+
+        processed_refund = await service.process_refund(
+            refund.id,
+            actor_id="manager-1",
+            actor_data={"name": "Branch Manager"},
+        )
+        assert processed_refund.status == RefundStatus.COMPLETED.value
+        # Booking status cancelled, payment_status refunded
+        assert booking.status == "cancelled"
+        assert booking.payment_status == "refunded"
+        # Payment original total unchanged, refunded amount updated
+        assert payment.total_amount == Decimal("50.000")
+        assert payment.amount_refunded == Decimal("50.000")
+
+
 

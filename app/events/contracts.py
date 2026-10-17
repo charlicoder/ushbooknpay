@@ -468,6 +468,8 @@ class BookingCancelledEvent(BaseEvent):
     previous_status: str | None = None
     old_payment_status: str | None = None
     previous_payment_status: str | None = None
+    # Refund lifecycle status of the cancellation refund: requested | processing | completed | failed
+    refund_status: str | None = None
 
 
 @dataclass
@@ -510,9 +512,51 @@ class BookingRefundCompletedEvent(BaseEvent):
     processed_by_data: dict[str, Any] = field(default_factory=dict)
     processed_at: str = ""
     created_at: str = ""
+    completed_at: str = ""
+    invoice_number: str = ""
+    credit_note_number: str = ""
+    payment_total_amount: str = "0.000"
+    payment_amount_refunded: str = "0.000"
+    booking_payment_status: str = ""
+    is_fully_refunded: bool = False
 
 
 RefundCompletedEvent = BookingRefundCompletedEvent
+
+
+@dataclass
+class BookingRefundApprovedEvent(BaseEvent):
+    """Fired when a refund request is approved by staff."""
+
+    event_name: str = field(default="Booking.RefundApproved", init=False)
+    event_type: str = field(default="refund.approved", init=False)
+    refund_id: str = ""
+    refund_number: str = ""
+    booking_id: str = ""
+    booking_number: str = ""
+    booking_reference: str = ""
+    payment_id: str = ""
+    customer_id: str = ""
+    branch_id: str = ""
+    refund_type: str = "manual"
+    refund_method: str = "loyalty_points"  # money | loyalty_points
+    status: str = "approved"
+    requested_amount: str = "0.000"
+    cancellation_fee: str = "0.000"
+    refund_amount: str = "0.000"
+    approved_amount: str = "0.000"
+    currency: str = "KWD"
+    reason: str = ""
+    notes: str = ""
+    processed_by: str = ""
+    processed_by_data: dict[str, Any] = field(default_factory=dict)
+    processed_at: str = ""
+    created_at: str = ""
+    invoice_number: str = ""
+    invoice_id: str = ""
+
+
+RefundApprovedEvent = BookingRefundApprovedEvent
 
 
 

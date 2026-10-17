@@ -223,6 +223,20 @@ class Settings(BaseSettings):
     # Default country dial code used when a customer phone has no explicit prefix
     MYFATOORAH_DEFAULT_COUNTRY_CODE: str = "+965"
 
+    @field_validator("MYFATOORAH_BASE_URL", mode="before")
+    @classmethod
+    def validate_myfatoorah_base_url(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.split("#")[0].strip()
+        return v or "https://apitest.myfatoorah.com"
+
+    @field_validator("MYFATOORAH_API_KEY", mode="before")
+    @classmethod
+    def validate_myfatoorah_api_key(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.split("#")[0].strip()
+        return v
+
     # ── Payment links (provider-agnostic) ────────────────────────────────
     PAYMENT_LINK_DEFAULT_GATEWAY: str = "myfatoorah"
     PAYMENT_LINK_EXPIRY_MINUTES: int = Field(default=60, ge=5, le=10080)

@@ -235,13 +235,37 @@ class PaymentSettlementService:
                 await self._settle_voucher(link, now)
         except (BookingStateError, ValidationError) as exc:
             # Customer paid but the booking/voucher can no longer be activated
-            # (e.g. cancelled/expired meanwhile). Keep the money trail and flag
-            # for staff — raising would make the gateway retry forever.
+            # (e.g. cancelled/expired meanwhile). Automatically refund via gateway
+            # so the customer is not charged for a cancelled booking.
             logger.error("payment_received_but_entity_not_activatable", link_id=str(link.id), error=str(exc))
+            link.status = PaymentLinkStatus.REFUNDED.value
+            refund_err = None
+            try:
+                from app.payment.domain.gateway_protocol import RefundRequest
+                from app.payment_links import get_gateway
+                from app.api.deps import get_http_client
+                gw = get_gateway(link.gateway, get_http_client(), self._settings)
+                inv_key = link.gateway_invoice_id or link.gateway_payment_id or str(state.invoice_id or state.payment_id or "")
+                if inv_key:
+                    await gw.refund_payment(
+                        RefundRequest(
+                            provider_payment_id=inv_key,
+                            amount=Decimal(str(state.amount or link.amount)),
+                            currency=str(state.currency or link.currency or "KWD"),
+                            reason="Automatic refund: booking was cancelled",
+                        )
+                    )
+                    logger.info("payment_link_auto_refunded_cancelled_booking", link_id=str(link.id), invoice_id=inv_key)
+            except Exception as r_exc:
+                refund_err = str(r_exc)
+                logger.error("payment_link_auto_refund_failed", link_id=str(link.id), error=refund_err)
+
             link.meta = {
                 **(link.meta or {}),
-                "needs_attention": f"Payment received but target not activatable: {exc}",
+                "needs_attention": f"Payment received but target not activatable: {exc}" + (f" (auto-refund error: {refund_err})" if refund_err else " (auto-refunded)"),
             }
+            await self._session.flush()
+            return SettlementOutcome.FAILURE_RECORDED
 
         await self._session.flush()
         return SettlementOutcome.SETTLED

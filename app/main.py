@@ -108,6 +108,17 @@ async def lifespan(app: FastAPI):
                 )
             except Exception as col_exc:
                 logger.debug("ensure_amount_refunded_column_note", error=str(col_exc))
+            for _ddl in (
+                "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(150);",
+                "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS credit_note_id VARCHAR(64);",
+                "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;",
+                "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS failure_reason TEXT;",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_refunds_idempotency_key ON refunds (idempotency_key);",
+            ):
+                try:
+                    await conn.execute(sa.text(_ddl))
+                except Exception as col_exc:
+                    logger.debug("ensure_refund_lifecycle_column_note", error=str(col_exc))
         logger.info("database_schema_initialized")
     except Exception as exc:
         logger.warning("database_schema_init_warning", error=str(exc))

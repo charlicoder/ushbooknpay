@@ -317,6 +317,13 @@ class Refund(Base):
     credit_note_number: Mapped[str | None] = mapped_column(
         String(100), nullable=True, index=True
     )
+    # ushanr credit note UUID this refund settles (credit note → refund linkage)
+    credit_note_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Idempotency key — prevents duplicate refunds on retried API calls / events
+    # (e.g. "booking-cancel:<booking_id>" for the cancellation refund).
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(150), nullable=True, unique=True
+    )
 
     # ── Participants & Location ───────────────────────────────────────────
     customer_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -382,6 +389,9 @@ class Refund(Base):
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=_now_kuwait
     )
+    # Set only when the provider (or staff, for manual refunds) confirms the money was returned
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False

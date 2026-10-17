@@ -384,18 +384,34 @@ class MyFatoorahGateway(PaymentLinkGateway):
         val = str(gateway_invoice_id).strip()
         payload = {"Key": val, "KeyType": "InvoiceId", "InvoiceId": val}
         body: dict[str, Any] = {}
+        logger.info("myfatoorah_cancel_link_request", gateway_invoice_id=val)
+
+        # 1. Try /v2/CancelInvoice
         try:
-            logger.info("myfatoorah_cancel_link_request", gateway_invoice_id=val)
-            # Try /v2/CancelInvoice
             body = await self._post("v2/CancelInvoice", payload)
+            if isinstance(body, dict) and body.get("IsSuccess"):
+                return body
         except Exception as exc:
             logger.info("myfatoorah_cancel_invoice_endpoint_notice", error=str(exc))
-            try:
-                # Fallback attempt /v2/CancelPayment
-                body = await self._post("v2/CancelPayment", payload)
-            except Exception as exc2:
-                logger.info("myfatoorah_cancel_payment_endpoint_notice", error=str(exc2))
-                body = {"IsSuccess": False, "Message": str(exc2)}
+
+        # 2. Try /v2/CancelPayment
+        try:
+            body = await self._post("v2/CancelPayment", payload)
+            if isinstance(body, dict) and body.get("IsSuccess"):
+                return body
+        except Exception as exc2:
+            logger.info("myfatoorah_cancel_payment_endpoint_notice", error=str(exc2))
+
+        # 3. Try /v2/UpdatePaymentStatus with Release (releases held/authorized invoice transactions)
+        try:
+            release_payload = {"Operation": "Release", "Key": val, "KeyType": "InvoiceId"}
+            body = await self._post("v2/UpdatePaymentStatus", release_payload)
+            if isinstance(body, dict) and body.get("IsSuccess"):
+                return body
+        except Exception as exc3:
+            logger.info("myfatoorah_release_payment_endpoint_notice", error=str(exc3))
+            body = {"IsSuccess": False, "Message": str(exc3)}
+
         return body
 
     # ── WebhookHandler ──────────────────────────────────────────────────

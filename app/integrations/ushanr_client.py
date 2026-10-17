@@ -281,6 +281,49 @@ class UshanrClient:
             logger.debug("ushanr_mark_invoice_paid_failed", error=str(exc))
             return False
 
+    async def create_credit_note(
+        self,
+        *,
+        source_document_type: str,
+        source_document_id: str,
+        cancellation_fee: Decimal | float | None = None,
+        refund_amount: Decimal | float | None = None,
+        refund_method: str | None = None,
+        refund_number: str | None = None,
+        branch_id: str | None = None,
+        processed_by: str | None = None,
+        record_refund_payment: bool = False,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Create or update credit note in ushanr (e.g. on refund approval or completion)."""
+        company_id = self._settings.USHANR_COMPANY_ID
+        journal_id = self._settings.USHANR_AR_JOURNAL_ID
+        if not (company_id and journal_id):
+            return None
+        body = {
+            "company_id": company_id,
+            "journal_id": journal_id,
+            "source_document_type": source_document_type,
+            "source_document_id": str(source_document_id),
+            "cancellation_date": local_now().date().isoformat(),
+            "cancellation_fee": float(cancellation_fee) if cancellation_fee is not None else None,
+            "refund_amount": float(refund_amount) if refund_amount is not None else None,
+            "refund_method": refund_method or "cash",
+            "refund_number": refund_number,
+            "branch_id": str(branch_id) if branch_id else None,
+            "processed_by": processed_by or "ushbooknpay",
+            "record_refund_payment": record_refund_payment,
+            "notes": notes,
+        }
+        try:
+            resp = await self._client.post("/api/v1/internal/credit-note/", json=body)
+            if resp.status_code in (200, 201):
+                return resp.json()
+            return None
+        except Exception as exc:
+            logger.warning("ushanr_create_credit_note_failed", error=str(exc))
+            return None
+
     async def aclose(self) -> None:
         try:
             await self._client.aclose()
