@@ -998,6 +998,19 @@ def test_voucher_gift_from_support():
     assert update_req.gift_from == "Aunt Emily"
 
 
+def test_generate_secret_code_alphanumeric():
+    """Verify _generate_secret_code produces 6 uppercase alphanumeric characters with letters and digits."""
+    from app.voucher.infrastructure.models import _generate_secret_code
+    for _ in range(50):
+        code = _generate_secret_code()
+        assert len(code) == 6
+        assert code.isalnum()
+        assert code.isupper() or any(c.isdigit() for c in code)
+        assert any(c.isupper() for c in code)
+        assert any(c.isdigit() for c in code)
+
+
+
 
 
 

@@ -72,10 +72,18 @@ def _default_expire_date(days: int = 60) -> datetime:
     return datetime.now(tz=timezone.utc) + timedelta(days=days)
 
 
+import string
+
+_SECRET_CODE_CHARS = string.ascii_uppercase + string.digits
+
+
 def _generate_secret_code() -> str:
-    """Generate a cryptographically random 6-digit numeric code."""
-    # secrets.randbelow ensures uniform distribution without modulo bias
-    return f"{secrets.randbelow(1_000_000):06d}"
+    """Generate a cryptographically random 6-character uppercase alphanumeric code (Capital Alphabet + digits)."""
+    while True:
+        code = "".join(secrets.choice(_SECRET_CODE_CHARS) for _ in range(6))
+        # Ensure it contains at least one letter and at least one digit
+        if any(c.isalpha() for c in code) and any(c.isdigit() for c in code):
+            return code
 
 
 def _generate_public_token() -> str:

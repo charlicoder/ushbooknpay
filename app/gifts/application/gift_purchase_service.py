@@ -1,6 +1,7 @@
 import uuid
 import secrets
 import hashlib
+import string
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.gifts.infrastructure.models import GiftVoucherPurchase, GiftVoucherPurchaseItem, GiftVoucherRecipient, GiftVoucherStatusHistory
@@ -25,7 +26,11 @@ class GiftPurchaseService:
         from decimal import Decimal
         total_amount = Decimal("10.000") # mock
 
-        secret_code_plaintext = f"{secrets.randbelow(1_000_000):06d}"
+        chars = string.ascii_uppercase + string.digits
+        while True:
+            secret_code_plaintext = "".join(secrets.choice(chars) for _ in range(6))
+            if any(c.isalpha() for c in secret_code_plaintext) and any(c.isdigit() for c in secret_code_plaintext):
+                break
         secret_code_hash = hashlib.sha256(secret_code_plaintext.encode()).hexdigest()
 
         purchase = GiftVoucherPurchase(

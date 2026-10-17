@@ -1,15 +1,21 @@
-__pycache__
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache
-.coverage
-htmlcov
-.mypy_cache
-.ruff_cache
-.git
-.gitignore
+# Secrets and environment files
 .env
-.venv
-venv
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node.js
+node_modules/
+
+# Local development files
+.DS_Store
 *.log
