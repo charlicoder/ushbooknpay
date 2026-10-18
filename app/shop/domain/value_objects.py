@@ -33,6 +33,7 @@ class ShopPaymentThrough(str, Enum):
     """Payment channels for shop orders."""
 
     USHSPA = "ushspa"
+    USHWEB = "ushweb"
     USHDESK = "ushdesk"
     OTHER = "other"
 
@@ -45,6 +46,8 @@ class ShopPaymentThrough(str, Enum):
             "ushspa": cls.USHSPA.value,
             "app": cls.USHSPA.value,
             "mobile": cls.USHSPA.value,
+            "ushweb": cls.USHWEB.value,
+            "web": cls.USHWEB.value,
             "ushdesk": cls.USHDESK.value,
             "desk": cls.USHDESK.value,
             "pos": cls.USHDESK.value,

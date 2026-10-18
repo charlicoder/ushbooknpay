@@ -61,25 +61,25 @@ class CreateGiftVoucherRequest(BaseModel):
     service_id: uuid.UUID | None = Field(
         default=None, description="Optional UUID of the service being gifted."
     )
-    service_data: dict[str, Any] = Field(
+    service_data: dict[str, Any] | None = Field(
         default_factory=dict,
         description="Snapshot of service metadata (name, category, etc.).",
     )
     branch_id: uuid.UUID | None = Field(
         default=None, description="UUID of the branch where the service will be rendered."
     )
-    branch_data: dict[str, Any] = Field(
+    branch_data: dict[str, Any] | None = Field(
         default_factory=dict, description="Snapshot of branch metadata."
     )
     service_arrangement_id: uuid.UUID | None = Field(
         default=None, description="UUID of the service arrangement (room/package)."
     )
-    service_arrangement_data: dict[str, Any] = Field(
+    service_arrangement_data: dict[str, Any] | None = Field(
         default_factory=dict, description="Snapshot of arrangement metadata."
     )
 
     # ── Add-ons & timing ──────────────────────────────────────────────
-    addons: list[dict[str, Any]] = Field(
+    addons: list[dict[str, Any]] | None = Field(
         default_factory=list,
         description='Add-on snapshots: [{"addon_id": "...", "name": "...", "price": "0.000", "duration": 30}]',
     )
@@ -265,6 +265,21 @@ class CreateGiftVoucherRequest(BaseModel):
         if v == "" or (isinstance(v, str) and not v.strip()):
             return None
         return v
+
+    @field_validator(
+        "service_data",
+        "branch_data",
+        "service_arrangement_data",
+        mode="before",
+    )
+    @classmethod
+    def normalise_dict_fields(cls, v: Any) -> dict[str, Any]:
+        return v if isinstance(v, dict) else {}
+
+    @field_validator("addons", mode="before")
+    @classmethod
+    def normalise_addons(cls, v: Any) -> list[dict[str, Any]]:
+        return v if isinstance(v, list) else []
 
     @field_validator("currency")
     @classmethod

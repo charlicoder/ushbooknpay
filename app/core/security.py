@@ -455,6 +455,37 @@ async def require_authenticated_user(
     return payload
 
 
+async def get_optional_authenticated_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    settings: Settings = Depends(get_settings),
+) -> TokenPayload | None:
+    """
+    FastAPI dependency: validates USHSPA_TOKEN and optionally validates user token
+    if Bearer token is provided. Returns TokenPayload if user token is valid, else None.
+    """
+    # 1. Validate application token
+    app_token = _get_ushspa_token(request)
+    try:
+        verify_ushspa_token(app_token, settings)
+    except AuthorizationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=exc.message,
+        )
+
+    # 2. Extract Bearer token if provided
+    if credentials is None or not credentials.credentials:
+        return None
+
+    # 3. Validate user token with ushauth service
+    try:
+        payload = await validate_user_with_ushauth(credentials.credentials, settings)
+        return payload
+    except AuthenticationError:
+        return None
+
+
 async def require_internal_token(
     request: Request,
     settings: Settings = Depends(get_settings),

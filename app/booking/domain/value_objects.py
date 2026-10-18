@@ -138,6 +138,7 @@ class BookingPaymentThrough(str, Enum):
     """Sales/Payment channel for bookings."""
 
     USHSPA = "ushspa"
+    USHWEB = "ushweb"
     USHDESK = "ushdesk"
     OTHER = "other"
 
@@ -149,6 +150,8 @@ class BookingPaymentThrough(str, Enum):
         mapping = {
             "ushspa": cls.USHSPA,
             "app": cls.USHSPA,
+            "ushweb": cls.USHWEB,
+            "web": cls.USHWEB,
             "ushdesk": cls.USHDESK,
             "desk": cls.USHDESK,
             "pos": cls.USHDESK,

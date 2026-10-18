@@ -57,6 +57,7 @@ class PaymentThrough(str, Enum):
     """Channel through which payment was processed."""
 
     USHSPA = "ushspa"
+    USHWEB = "ushweb"
     USHDESK = "ushdesk"
     DESK = "desk"
     OTHER = "other"
@@ -69,6 +70,8 @@ class PaymentThrough(str, Enum):
         mapping = {
             "ushspa": cls.USHSPA,
             "app": cls.USHSPA,
+            "ushweb": cls.USHWEB,
+            "web": cls.USHWEB,
             "ushdesk": cls.USHDESK,
             "desk": cls.USHDESK,
             "pos": cls.USHDESK,

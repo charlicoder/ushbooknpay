@@ -26,6 +26,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import get_db_session
 from app.core.security import (
     TokenPayload,
+    get_optional_authenticated_user,
     require_app_token,
     require_authenticated_user,
     require_employee_user,
@@ -62,6 +63,7 @@ async def close_http_client() -> None:
 DBSession = Annotated[AsyncSession, Depends(get_db_session)]
 RedisClient = Annotated[Any, Depends(get_redis_dep)]
 CurrentUser = Annotated[TokenPayload, Depends(require_authenticated_user)]
+OptionalUser = Annotated[TokenPayload | None, Depends(get_optional_authenticated_user)]
 RequireAppToken = Annotated[None, Depends(require_app_token)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 

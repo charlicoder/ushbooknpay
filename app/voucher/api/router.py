@@ -36,7 +36,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.api.deps import AppSettings, CurrentUser, DBSession, RequireAppToken
+from app.api.deps import AppSettings, CurrentUser, DBSession, OptionalUser, RequireAppToken
 from app.clients import ushauth as ushauth_client
 from app.common.pagination import make_paginated_response
 from app.core.config import Settings, get_settings
@@ -336,18 +336,23 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
 )
 async def create_gift_voucher(
     body: CreateGiftVoucherRequest,
-    current_user: CurrentUser,
+    current_user: OptionalUser,
     session: DBSession,
 ) -> JSONResponse:
-    """Create a new gift voucher for the authenticated customer."""
-    # created_by is automatically set to the authenticated API requester
-    created_by = uuid.UUID(current_user.sub)
-    sender_id = body.sender_id or created_by
+    """Create a new gift voucher for the customer or guest."""
     settings = get_settings()
 
-    # Build sender_data from both body-supplied data and JWT profile
+    created_by: uuid.UUID | None = None
+    if current_user:
+        created_by = uuid.UUID(current_user.sub)
+        sender_id = body.sender_id or created_by
+    else:
+        created_by = body.created_by or body.sender_id
+        sender_id = body.sender_id
+
+    # Build sender_data from body-supplied data and JWT profile (if present)
     sender_data: dict[str, Any] = body.sender_data.model_dump()
-    if sender_id == created_by:
+    if current_user and sender_id == created_by:
         if not sender_data.get("name"):
             full_name = " ".join(
                 filter(None, [current_user.first_name, current_user.last_name])
@@ -359,6 +364,29 @@ async def create_gift_voucher(
         if not sender_data.get("language_preference"):
             sender_data["language_preference"] = getattr(current_user, "language_preference", None) or "en"
     else:
+        # Check if sender phone is provided to resolve or create sender customer in ushauth
+        sender_phone = sender_data.get("phone_number")
+        if sender_phone and not sender_id:
+            try:
+                sender_name_hint = sender_data.get("name", "")
+                sender_customer = await ushauth_client.get_or_create_customer(
+                    phone_number=sender_phone,
+                    full_name=sender_name_hint,
+                    without_password=True,
+                    settings=settings,
+                )
+                if sender_customer.get("id"):
+                    sender_id = uuid.UUID(str(sender_customer["id"]))
+                    created_by = created_by or sender_id
+                    if not sender_data.get("name"):
+                        sender_data["name"] = sender_customer.get("name", "") or sender_name_hint
+            except Exception as s_exc:
+                logger.warning("sender_resolve_ushauth_failed", phone=sender_phone, error=str(s_exc))
+
+        if not sender_id:
+            sender_id = uuid.uuid4()
+            created_by = created_by or sender_id
+
         if not sender_data.get("language_preference"):
             sender_data["language_preference"] = "en"
 

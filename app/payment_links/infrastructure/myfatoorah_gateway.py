@@ -521,3 +521,4 @@ class MyFatoorahGateway(PaymentLinkGateway):
 
 
 register_gateway(MyFatoorahGateway.name, lambda http, settings: MyFatoorahGateway(http, settings))
+register_gateway("knet", lambda http, settings: MyFatoorahGateway(http, settings))

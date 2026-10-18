@@ -124,17 +124,19 @@ class VoucherPaymentThrough(str, Enum):
     """
     Channel through which the voucher was sold.
 
-    ushspa  — sold via the USHSPA mobile app or web platform
+    ushspa  — sold via the USHSPA mobile app
+    ushweb  — sold via the USHSPA web platform
     desk    — sold at the spa reception / front desk (cash/POS)
     """
 
     USHSPA = "ushspa"
+    USHWEB = "ushweb"
     DESK = "desk"
 
     @classmethod
     def normalise(cls, val: str | None) -> str | None:
         """
-        Normalise payment_through string to canonical value ('ushspa' or 'desk').
+        Normalise payment_through string to canonical value ('ushspa', 'ushweb', or 'desk').
         Handles case insensitivity ('DESK' -> 'desk') and common aliases ('app' -> 'ushspa').
         """
         if not val or not str(val).strip():
@@ -142,8 +144,9 @@ class VoucherPaymentThrough(str, Enum):
         cleaned = str(val).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
         lookup = {
             "ushspa": cls.USHSPA.value,
+            "ushweb": cls.USHWEB.value,
             "app": cls.USHSPA.value,
-            "web": cls.USHSPA.value,
+            "web": cls.USHWEB.value,
             "desk": cls.DESK.value,
             "pos": cls.DESK.value,
             "reception": cls.DESK.value,
