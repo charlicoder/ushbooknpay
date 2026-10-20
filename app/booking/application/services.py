@@ -81,6 +81,7 @@ from app.core.exceptions import (
     BookingNotFoundError,
     DoubleBookingError,
     TherapistNotAvailableError,
+    ValidationError,
 )
 from app.core.logging import get_logger
 from app.events.contracts import (
@@ -1241,6 +1242,12 @@ class BookingService:
         - Sets payment_status to cancelled and syncs Payment rows.
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
+        if (
+            str(getattr(booking, "booking_type", "")).lower() == "loyalty"
+            and getattr(booking, "loyalty_data", None) is not None
+            and bool(getattr(booking, "loyalty_data", None))
+        ):
+            raise ValidationError("Bookings made using loyalty points cannot be cancelled or refunded.")
         machine = BookingStateMachine(BookingStatus(booking.status))
         old_status = BookingStatus(booking.status)
         old_payment_status = booking.payment_status

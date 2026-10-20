@@ -1142,5 +1142,29 @@ async def test_cancel_confirmed_booking_with_pending_payment_does_not_create_pay
     assert len(payment_records) == 0, f"Expected 0 Payment records, found {len(payment_records)}"
 
 
+@pytest.mark.asyncio
+async def test_cancel_loyalty_booking_raises_validation_error():
+    """Verify that attempting to cancel a booking with loyalty points raises ValidationError."""
+    from app.booking.application.services import BookingService
+    from app.core.exceptions import ValidationError
+
+    booking_id = uuid.uuid4()
+    mock_booking = MagicMock(spec=Booking)
+    mock_booking.id = booking_id
+    mock_booking.booking_type = "loyalty"
+    mock_booking.loyalty_data = {"points_cost": 50}
+    mock_booking.status = "confirmed"
+
+    mock_repo = AsyncMock()
+    mock_repo.get_by_id = AsyncMock(return_value=mock_booking)
+
+    service = BookingService(session=AsyncMock())
+    service._repo = mock_repo
+
+    with pytest.raises(ValidationError, match="Bookings made using loyalty points cannot be cancelled or refunded"):
+        await service.cancel_booking(booking_id=booking_id, reason="Customer request")
+
+
+
 
 

@@ -600,6 +600,12 @@ async def create_payment(
                 existing_payment.payment_method = body.payment_method
             if status_str and existing_payment.status != "success":
                 existing_payment.status = status_str
+            if body.invoice_number and not existing_payment.invoice_number:
+                existing_payment.invoice_number = body.invoice_number
+            if invoice_id and not existing_payment.invoice_id:
+                existing_payment.invoice_id = invoice_id
+            if invoice_value is not None and not existing_payment.invoice_value:
+                existing_payment.invoice_value = invoice_value
             if body.created_by_user and not existing_payment.created_by_user:
                 existing_payment.created_by_user = _safe_str(body.created_by_user)
             if body.created_by_user_data and not existing_payment.created_by_user_data:
