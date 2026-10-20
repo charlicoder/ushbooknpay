@@ -690,7 +690,7 @@ class RefundService:
             )
             if booking:
                 booking.status = "cancelled"
-                booking.payment_status = "success"
+                booking.payment_status = "refunded_with_points"
                 await self._session.flush()
 
             logger.info("loyalty_refund_processed", refund_number=refund.refund_number, points=pts)

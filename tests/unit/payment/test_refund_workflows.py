@@ -520,6 +520,7 @@ async def test_create_and_approve_and_process_loyalty_refund():
         assert approved_refund.status == RefundStatus.APPROVED.value
         assert approved_refund.refund_method == "loyalty_points"
         assert approved_refund.refunded_amount == Decimal("30.000")
+        assert booking.payment_status == "refunded_with_points"
 
     # 3. Process refund
     with patch("app.loyalty.application.services.LoyaltyService.adjust_points", new_callable=AsyncMock) as mock_loyalty, \
@@ -531,9 +532,9 @@ async def test_create_and_approve_and_process_loyalty_refund():
         )
         assert processed_refund.status == RefundStatus.COMPLETED.value
         assert mock_loyalty.called
-        # Verify booking payment_status set back to success and status cancelled
+        # Verify booking payment_status set to refunded_with_points and status cancelled
         assert booking.status == "cancelled"
-        assert booking.payment_status == "success"
+        assert booking.payment_status == "refunded_with_points"
         # Payment amount unchanged
         assert payment.total_amount == Decimal("30.000")
 

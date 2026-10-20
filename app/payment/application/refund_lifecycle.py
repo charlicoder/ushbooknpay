@@ -53,7 +53,7 @@ OPEN_STATUSES = (
     RefundStatus.APPROVED.value,
     RefundStatus.PROCESSING.value,
 )
-PAID_PAYMENT_STATUSES = ("success", "paid", "partially_refunded", "refunded")
+PAID_PAYMENT_STATUSES = ("success", "paid", "partially_refunded", "refunded", "refunded_with_points")
 
 
 def cancellation_idempotency_key(booking_id: Any) -> str:
@@ -339,6 +339,10 @@ class RefundLifecycle:
             refund.processed_by = str(actor_id)
             refund.processed_by_data = actor_data or refund.processed_by_data
         refund.processed_at = _now()
+        if norm_method == RefundMethod.LOYALTY_POINTS.value:
+            booking = await self._booking_of(refund)
+            if booking is not None:
+                booking.payment_status = "refunded_with_points"
         await self._session.flush()
         logger.info(
             "refund_approved",
@@ -475,7 +479,7 @@ class RefundLifecycle:
             )
         if booking is not None:
             if is_loyalty:
-                booking.payment_status = "success"
+                booking.payment_status = "refunded_with_points"
                 booking.status = "cancelled"
             else:
                 booking.payment_status = "refunded" if (fully or payment is None) else "partially_refunded"
