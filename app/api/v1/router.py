@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import availability, bookings, payments, refunds
+from app.api.v1 import (
+    availability,
+    bookings,
+    customer_analytics,
+    payments,
+    refunds,
+    therapist_analytics,
+)
 from app.gifts.api.router import router as gifts_router
 from app.loyalty.api.router import router as loyalty_router
 from app.payment_links.api.router import router as payment_links_router
@@ -23,6 +30,8 @@ api_router = APIRouter(prefix="/api/v1")
 
 api_router.include_router(availability.router)
 api_router.include_router(bookings.router)
+api_router.include_router(customer_analytics.router)
+api_router.include_router(therapist_analytics.router)
 api_router.include_router(payments.router)
 api_router.include_router(refunds.router)
 api_router.include_router(payment_links_router)
