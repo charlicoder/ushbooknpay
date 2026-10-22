@@ -352,6 +352,9 @@ async def create_gift_voucher(
 
     # Build sender_data from body-supplied data and JWT profile (if present)
     sender_data: dict[str, Any] = body.sender_data.model_dump()
+    if body.gift_from and body.gift_from.strip():
+        sender_data["name"] = body.gift_from.strip()
+
     if current_user and sender_id == created_by:
         if not sender_data.get("name"):
             full_name = " ".join(
@@ -368,7 +371,7 @@ async def create_gift_voucher(
         sender_phone = sender_data.get("phone_number")
         if sender_phone and not sender_id:
             try:
-                sender_name_hint = sender_data.get("name", "")
+                sender_name_hint = (sender_data.get("name") or "").strip()
                 sender_customer = await ushauth_client.get_or_create_customer(
                     phone_number=sender_phone,
                     full_name=sender_name_hint,
@@ -379,7 +382,7 @@ async def create_gift_voucher(
                     sender_id = uuid.UUID(str(sender_customer["id"]))
                     created_by = created_by or sender_id
                     if not sender_data.get("name"):
-                        sender_data["name"] = sender_customer.get("name", "") or sender_name_hint
+                        sender_data["name"] = sender_name_hint or sender_customer.get("name", "")
             except Exception as s_exc:
                 logger.warning("sender_resolve_ushauth_failed", phone=sender_phone, error=str(s_exc))
 
@@ -389,6 +392,10 @@ async def create_gift_voucher(
 
         if not sender_data.get("language_preference"):
             sender_data["language_preference"] = "en"
+
+    # Re-verify gift_from takes precedence as sender name if supplied
+    if body.gift_from and body.gift_from.strip():
+        sender_data["name"] = body.gift_from.strip()
 
     # ── Resolve recipient via ushauth get-or-create ──────────────────────
     # When recipient_phone is supplied, call ushauth to look up or create
@@ -401,7 +408,7 @@ async def create_gift_voucher(
     if body.recipient_phone:
         try:
             # Use name already in recipient_data as full_name hint
-            full_name_hint = recipient_data.get("name", "")
+            full_name_hint = (recipient_data.get("name") or "").strip()
             customer = await ushauth_client.get_or_create_customer(
                 phone_number=body.recipient_phone,
                 full_name=full_name_hint,
@@ -413,10 +420,10 @@ async def create_gift_voucher(
             if customer.get("id"):
                 recipient_id = uuid.UUID(str(customer["id"]))
             # Merge ushauth profile into recipient_data; caller-supplied
-            # fields take precedence only for "name" when already set.
+            # fields from the form take precedence over server data for name.
             merged: dict[str, Any] = {
                 "id": str(customer.get("id", "")),
-                "name": customer.get("name", "") or full_name_hint,
+                "name": full_name_hint or customer.get("name", ""),
                 "phone_number": customer.get("phone_number", body.recipient_phone),
                 "email": customer.get("email") or recipient_data.get("email", ""),
                 "avatar": customer.get("avatar"),
@@ -1454,7 +1461,7 @@ async def update_gift_voucher(
         try:
             settings = get_settings()
             rec_data = updates.get("recipient_data") or {}
-            full_name_hint = rec_data.get("name", "") if isinstance(rec_data, dict) else ""
+            full_name_hint = (rec_data.get("name") or "").strip() if isinstance(rec_data, dict) else ""
             customer = await ushauth_client.get_or_create_customer(
                 phone_number=updates["recipient_phone"],
                 full_name=full_name_hint,
@@ -1467,7 +1474,7 @@ async def update_gift_voucher(
             if isinstance(rec_data, dict):
                 merged = {
                     "id": str(customer.get("id", "")),
-                    "name": customer.get("name", "") or full_name_hint,
+                    "name": full_name_hint or customer.get("name", ""),
                     "phone_number": customer.get("phone_number", updates["recipient_phone"]),
                     "email": customer.get("email") or rec_data.get("email", ""),
                     "avatar": customer.get("avatar"),

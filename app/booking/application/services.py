@@ -1539,7 +1539,24 @@ class BookingService:
     ) -> Booking:
         b = await self._repo.get_by_id(booking_id, load_history=load_history)
         try:
-            from app.payment.infrastructure.models import Refund
+            from app.payment.infrastructure.models import Payment, Refund
+            p_stmt = (
+                select(Payment.payment_number, Payment.id, Payment.invoice_number, Payment.invoice_id)
+                .where(Payment.booking_id == booking_id)
+                .order_by(Payment.created_at.desc())
+            )
+            p_res = await self._session.execute(p_stmt)
+            p_row = p_res.first()
+            if p_row:
+                if p_row[0] and not getattr(b, "payment_number", None):
+                    setattr(b, "payment_number", p_row[0])
+                if p_row[1] and not getattr(b, "payment_id", None):
+                    setattr(b, "payment_id", str(p_row[1]))
+                if p_row[2] and not getattr(b, "invoice_number", None):
+                    setattr(b, "invoice_number", p_row[2])
+                if p_row[3] and not getattr(b, "invoice_id", None):
+                    setattr(b, "invoice_id", str(p_row[3]))
+
             stmt = select(Refund.refund_number, Refund.id).where(Refund.booking_id == booking_id)
             res = await self._session.execute(stmt)
             r_row = res.first()
