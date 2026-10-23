@@ -11,10 +11,40 @@ if required secrets are absent.
 from __future__ import annotations
 
 from functools import lru_cache
+import os
+import socket
 from typing import Literal
 
 from pydantic import AnyUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+@lru_cache(maxsize=1)
+def _can_resolve_host_docker_internal() -> bool:
+    try:
+        socket.gethostbyname("host.docker.internal")
+        return True
+    except Exception:
+        return False
+
+
+def _normalize_docker_hostname(v: str) -> str:
+    """Resolve host.docker.internal <-> localhost depending on whether we are in Docker."""
+    if not v or not isinstance(v, str):
+        return v
+    is_container = os.path.exists("/.dockerenv") or bool(os.environ.get("IN_DOCKER"))
+    if is_container:
+        if ("localhost" in v or "127.0.0.1" in v) and _can_resolve_host_docker_internal():
+            v = (
+                v.replace("@localhost:", "@host.docker.internal:")
+                .replace("@127.0.0.1:", "@host.docker.internal:")
+                .replace("//localhost:", "//host.docker.internal:")
+                .replace("//127.0.0.1:", "//host.docker.internal:")
+            )
+    else:
+        if "host.docker.internal" in v and not _can_resolve_host_docker_internal():
+            v = v.replace("host.docker.internal", "localhost")
+    return v
 
 
 class Settings(BaseSettings):
@@ -67,26 +97,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATABASE_URL must use the 'postgresql+asyncpg://' scheme for async support."
             )
+        return _normalize_docker_hostname(v)
 
-        import os
-        is_container = os.path.exists("/.dockerenv") or bool(os.environ.get("IN_DOCKER"))
-
-        if is_container:
-            if "@localhost:" in v or "@127.0.0.1:" in v:
-                try:
-                    import socket
-                    socket.gethostbyname("host.docker.internal")
-                    v = v.replace("@localhost:", "@host.docker.internal:").replace("@127.0.0.1:", "@host.docker.internal:")
-                except Exception:
-                    pass
-        else:
-            if "host.docker.internal" in v:
-                try:
-                    import socket
-                    socket.gethostbyname("host.docker.internal")
-                except Exception:
-                    v = v.replace("host.docker.internal", "localhost")
-        return v
+    @field_validator(
+        "REDIS_URL",
+        "API_GATEWAY_BASE_URL",
+        "USHAUTH_DIRECT_URL",
+        "USHANR_BASE_URL",
+        mode="after",
+    )
+    @classmethod
+    def normalize_service_urls(cls, v: str) -> str:
+        return _normalize_docker_hostname(v)
 
     # ── 4. Redis ─────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"

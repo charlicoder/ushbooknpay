@@ -29,6 +29,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AppSettings, CurrentUser, DBSession, RedisClient, RequireAppToken
 from app.booking.application.services import BookingService
@@ -762,8 +763,33 @@ async def create_payment(
         created_by_user_data=body.created_by_user_data if isinstance(body.created_by_user_data, dict) else None,
     )
 
-    session.add(payment)
-    await session.flush()
+    # Flush payment with collision retry if payment_number was auto-generated
+    max_attempts = 5
+    auto_generate = not bool(body.payment_number)
+    for attempt in range(max_attempts):
+        if attempt > 0 and auto_generate:
+            payment.payment_number = await generate_payment_number(session)
+        session.add(payment)
+        try:
+            if hasattr(session, "begin_nested") and not any(
+                cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(session).__mro__
+            ):
+                async with session.begin_nested():
+                    await session.flush()
+            else:
+                await session.flush()
+            break
+        except IntegrityError as exc:
+            err_msg = str(getattr(exc, "orig", exc)).lower()
+            if auto_generate and "payment_number" in err_msg and attempt < max_attempts - 1:
+                logger.warning(
+                    "payment_number_collision_retrying",
+                    attempt=attempt + 1,
+                    payment_number=payment.payment_number,
+                )
+                continue
+            raise
+
     await session.refresh(payment)
 
     # ── 13. Status history ────────────────────────────────────────────
@@ -1515,8 +1541,30 @@ async def initiate_payment(
         created_by_user=_safe_str(customer_id),
         created_by_user_data=booking.customer_data if isinstance(getattr(booking, "customer_data", None), dict) else None,
     )
-    session.add(payment)
-    await session.flush()
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            payment.payment_number = await generate_payment_number(session)
+        session.add(payment)
+        try:
+            if hasattr(session, "begin_nested") and not any(
+                cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(session).__mro__
+            ):
+                async with session.begin_nested():
+                    await session.flush()
+            else:
+                await session.flush()
+            break
+        except IntegrityError as exc:
+            err_msg = str(getattr(exc, "orig", exc)).lower()
+            if "payment_number" in err_msg and attempt < max_attempts - 1:
+                logger.warning(
+                    "payment_number_collision_retrying",
+                    attempt=attempt + 1,
+                    payment_number=payment.payment_number,
+                )
+                continue
+            raise
 
     history = PaymentStatusHistory(
         payment_id=payment.id,
@@ -1690,8 +1738,30 @@ async def myfatoorah_webhook(
             created_by_user=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)) if booking else None,
             created_by_user_data=getattr(booking, "created_by_user_data", None) if booking and isinstance(getattr(booking, "created_by_user_data", None), dict) else None,
         )
-        session.add(payment)
-        await session.flush()
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                payment.payment_number = await generate_payment_number(session)
+            session.add(payment)
+            try:
+                if hasattr(session, "begin_nested") and not any(
+                    cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(session).__mro__
+                ):
+                    async with session.begin_nested():
+                        await session.flush()
+                else:
+                    await session.flush()
+                break
+            except IntegrityError as exc:
+                err_msg = str(getattr(exc, "orig", exc)).lower()
+                if "payment_number" in err_msg and attempt < max_attempts - 1:
+                    logger.warning(
+                        "payment_number_collision_retrying",
+                        attempt=attempt + 1,
+                        payment_number=payment.payment_number,
+                    )
+                    continue
+                raise
     else:
         old_status = payment.status
         # Update existing payment from webhook

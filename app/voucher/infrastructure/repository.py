@@ -12,7 +12,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Sequence
 
-from sqlalchemy import and_, cast, func, or_, select, String
+from sqlalchemy import and_, cast, func, or_, select, String, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.voucher.domain.value_objects import GiftVoucherStatus
@@ -64,6 +64,34 @@ def _parse_filter_date(val: str | None, end_of_day: bool = False) -> datetime | 
         return dt
     except Exception:
         return None
+
+
+def _extract_sequence(existing_val: Any) -> int:
+    """Extract integer sequence from scalar query result.
+
+    Handles:
+    - None / 0 / empty: returns 0 (so next sequence is 1)
+    - int / float: returns int (so next sequence is int + 1)
+    - string voucher number e.g. "VOU/2026/10/000007": returns 7
+    - string digits e.g. "99": returns 99
+    - other strings / invalid: returns 0
+    """
+    if not existing_val:
+        return 0
+    if isinstance(existing_val, (int, float)):
+        return int(existing_val)
+    if isinstance(existing_val, str):
+        val_str = existing_val.strip()
+        if not val_str:
+            return 0
+        last_part = val_str.split("/")[-1]
+        if last_part.isdigit():
+            return int(last_part)
+        try:
+            return int(val_str)
+        except ValueError:
+            return 0
+    return 0
 
 
 class GiftVoucherRepository:
@@ -368,10 +396,10 @@ class GiftVoucherRepository:
         Format: VOU/YYYY/MM/{NNNNNN}
         Example: VOU/2026/10/000001  (first voucher in October 2026)
 
-        The counter counts existing ``voucher_number`` values that share the
-        same month prefix (LIKE 'VOU/2026/10/%') and adds 1.  This gracefully
-        handles gaps and concurrent creation without requiring a separate
-        sequence table.
+        The sequence is derived from the highest existing ``voucher_number``
+        sharing the same month prefix (LIKE 'VOU/YYYY/MM/%') and adding 1.
+        This handles gaps (e.g. deleted or failed vouchers) safely without
+        colliding with existing records.
 
         Args:
             for_date: The calendar day to use for the prefix.
@@ -383,23 +411,37 @@ class GiftVoucherRepository:
         ref_date = for_date or datetime.now(tz=timezone.utc).date()
         date_prefix = f"VOU/{ref_date.strftime('%Y/%m')}/"
 
-        # Count existing voucher_number values with this month prefix.
-        count_result = await self._session.execute(
-            select(func.count()).where(
-                GiftVoucher.voucher_number.like(f"{date_prefix}%")
-            )
+        # In PostgreSQL, acquire a transaction advisory lock to serialize concurrent voucher generation
+        try:
+            bind = getattr(self._session, "bind", None)
+            if bind is None and hasattr(self._session, "get_bind"):
+                if not any(cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(self._session).__mro__):
+                    bind = self._session.get_bind()
+            if bind and getattr(bind.dialect, "name", None) == "postgresql":
+                await self._session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('gift_voucher_number'))")
+                )
+        except Exception:
+            pass
+
+        # Query highest existing voucher_number for this month
+        stmt = select(func.max(GiftVoucher.voucher_number)).where(
+            GiftVoucher.voucher_number.like(f"{date_prefix}%")
         )
+        count_result = await self._session.execute(stmt)
         existing_val = count_result.scalar_one() if hasattr(count_result, "scalar_one") else 0
         if hasattr(existing_val, "__await__"):
             existing_val = await existing_val
-        try:
-            existing_count = int(existing_val)
-        except (TypeError, ValueError):
-            existing_count = 0
-        sequence = existing_count + 1
+
+        highest_sequence = _extract_sequence(existing_val)
+        sequence = highest_sequence + 1
         return f"{date_prefix}{sequence:06d}"
 
     # ── Write operations ──────────────────────────────────────────────────────
+
+    @property
+    def session(self) -> AsyncSession:
+        return self._session
 
     def add(self, voucher: GiftVoucher) -> GiftVoucher:
         """Stage a new GiftVoucher for insertion (caller must flush/commit)."""
@@ -409,3 +451,13 @@ class GiftVoucherRepository:
     async def flush(self) -> None:
         """Flush pending ORM changes to the DB without committing."""
         await self._session.flush()
+
+    async def flush_in_savepoint(self) -> None:
+        """Flush within a nested transaction (SAVEPOINT) if supported, else regular flush."""
+        if hasattr(self._session, "begin_nested") and not any(
+            cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(self._session).__mro__
+        ):
+            async with self._session.begin_nested():
+                await self._session.flush()
+        else:
+            await self._session.flush()

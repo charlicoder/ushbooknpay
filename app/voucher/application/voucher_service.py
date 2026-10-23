@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, ValidationError
@@ -208,13 +209,26 @@ class GiftVoucherService:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
             voucher.redeemed_by = created_by
 
-        # ── Assign auto-generated voucher number ─────────────────────────────
-        voucher.voucher_number = await self._repo.generate_voucher_number(
-            for_date=datetime.now(tz=timezone.utc).date()
-        )
-
-        self._repo.add(voucher)
-        await self._repo.flush()
+        # ── Assign auto-generated voucher number (with retry on collision) ──
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            voucher.voucher_number = await self._repo.generate_voucher_number(
+                for_date=datetime.now(tz=timezone.utc).date()
+            )
+            self._repo.add(voucher)
+            try:
+                await self._repo.flush()
+                break
+            except IntegrityError as exc:
+                err_msg = str(getattr(exc, "orig", exc)).lower()
+                if "voucher_number" in err_msg and attempt < max_attempts - 1:
+                    logger.warning(
+                        "voucher_number_collision_retrying",
+                        attempt=attempt + 1,
+                        voucher_number=voucher.voucher_number,
+                    )
+                    continue
+                raise
 
         logger.info(
             "gift_voucher_created",

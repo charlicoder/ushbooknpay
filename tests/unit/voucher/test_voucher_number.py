@@ -100,3 +100,53 @@ async def test_generate_voucher_number_handles_none_or_invalid():
     voucher_num = await repo.generate_voucher_number(for_date=date(2026, 10, 6))
 
     assert voucher_num == "VOU/2026/10/000001"
+
+
+@pytest.mark.asyncio
+async def test_generate_voucher_number_extracts_from_highest_voucher_string():
+    """Verify that when max(voucher_number) returns 'VOU/2026/10/000007', next is 'VOU/2026/10/000008'."""
+    session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one.return_value = "VOU/2026/10/000007"
+    session.execute.return_value = mock_result
+
+    repo = GiftVoucherRepository(session)
+    voucher_num = await repo.generate_voucher_number(for_date=date(2026, 10, 23))
+
+    assert voucher_num == "VOU/2026/10/000008"
+
+
+@pytest.mark.asyncio
+async def test_create_voucher_retries_on_unique_violation():
+    """Verify that create_voucher catches UniqueViolation on voucher_number and retries."""
+    import uuid
+    from decimal import Decimal
+    from sqlalchemy.exc import IntegrityError
+    from app.voucher.application.voucher_service import GiftVoucherService
+
+    mock_session = AsyncMock()
+    svc = GiftVoucherService(mock_session)
+
+    # First call generates 000007, second call generates 000008
+    svc._repo.generate_voucher_number = AsyncMock(
+        side_effect=["VOU/2026/10/000007", "VOU/2026/10/000008"]
+    )
+    svc._repo.add = MagicMock()
+
+    # First flush raises IntegrityError simulating duplicate voucher_number, second succeeds
+    orig_exc = Exception('duplicate key value violates unique constraint "uq_gift_vouchers_voucher_number"')
+    integrity_error = IntegrityError("INSERT INTO gift_vouchers", params={}, orig=orig_exc)
+    svc._repo.flush = AsyncMock(side_effect=[integrity_error, None])
+
+    voucher = await svc.create_voucher(
+        service_id=None,
+        service_data=None,
+        total_amount=Decimal("25.000"),
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Fahad"},
+    )
+
+    assert voucher.voucher_number == "VOU/2026/10/000008"
+    assert svc._repo.generate_voucher_number.call_count == 2
+    assert svc._repo.flush.call_count == 2
+

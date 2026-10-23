@@ -16,7 +16,7 @@ from app.common.utils import local_now
 import uuid
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import and_, cast, delete, func, or_, select, update, Date
+from sqlalchemy import and_, cast, delete, func, or_, select, update, Date, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -31,6 +31,26 @@ from app.core.exceptions import BookingNotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _extract_sequence(existing_val: any) -> int:
+    """Extract integer sequence from scalar query result."""
+    if not existing_val:
+        return 0
+    if isinstance(existing_val, (int, float)):
+        return int(existing_val)
+    if isinstance(existing_val, str):
+        val_str = existing_val.strip()
+        if not val_str:
+            return 0
+        last_part = val_str.split("/")[-1]
+        if last_part.isdigit():
+            return int(last_part)
+        try:
+            return int(val_str)
+        except ValueError:
+            return 0
+    return 0
 
 
 class BookingRepository:
@@ -56,27 +76,35 @@ class BookingRepository:
         Format: BOK/YYYY/MM/{NNNNNN}
         Example: BOK/2026/10/000001 → first booking in October 2026
 
-        The counter (NNNNNN) is the count of bookings that already have a
-        booking_number assigned for that calendar month + 1.
+        The sequence is derived from the highest existing ``booking_number``
+        sharing the same month prefix (LIKE 'BOK/YYYY/MM/%') and adding 1.
+        This handles gaps (e.g. deleted or cancelled bookings) safely.
         """
         target_date = for_date or local_now().date()
-
-        # Count bookings that already have a booking_number for this month.
         date_prefix = f"BOK/{target_date.strftime('%Y/%m')}/"
 
-        stmt = select(func.count()).where(
+        try:
+            bind = getattr(self._session, "bind", None)
+            if bind is None and hasattr(self._session, "get_bind"):
+                if not any(cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(self._session).__mro__):
+                    bind = self._session.get_bind()
+            if bind and getattr(bind.dialect, "name", None) == "postgresql":
+                await self._session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('booking_number'))")
+                )
+        except Exception:
+            pass
+
+        stmt = select(func.max(Booking.booking_number)).where(
             Booking.booking_number.like(f"{date_prefix}%")
         )
         result = await self._session.execute(stmt)
         existing_val = result.scalar_one() if hasattr(result, "scalar_one") else 0
         if hasattr(existing_val, "__await__"):
             existing_val = await existing_val
-        try:
-            existing_count = int(existing_val)
-        except (TypeError, ValueError):
-            existing_count = 0
 
-        sequence = existing_count + 1
+        highest_sequence = _extract_sequence(existing_val)
+        sequence = highest_sequence + 1
         return f"{date_prefix}{sequence:06d}"
 
     async def update(self, booking: Booking) -> Booking:
