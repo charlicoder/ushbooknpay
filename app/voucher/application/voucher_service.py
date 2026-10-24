@@ -152,6 +152,36 @@ class GiftVoucherService:
         Returns:
             The newly created, flushed GiftVoucher ORM instance.
         """
+        # ── Sender phone is mandatory ────────────────────────────────────────
+        sender_phone = str((sender_data or {}).get("phone_number") or "").strip()
+        sender_digits = "".join(ch for ch in sender_phone if ch.isdigit())
+        if not sender_digits or not (8 <= len(sender_digits) <= 15) or any(
+            ch not in "+0123456789 -()" for ch in sender_phone
+        ):
+            raise ValidationError(
+                "Sender phone number is required and must be a valid phone number "
+                "(digits only, 8–15 digits)."
+            )
+
+        # ── Normalise total_duration = service + add-ons + extra time ────────
+        def _to_int(value: Any) -> int:
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return 0
+
+        _svc = service_data or {}
+        _computed_duration = (
+            (_to_int(_svc.get("duration_minutes")) or _to_int(_svc.get("duration")))
+            + sum(
+                (_to_int(a.get("duration_minutes")) or _to_int(a.get("duration")))
+                for a in (addons or [])
+                if isinstance(a, dict)
+            )
+            + _to_int(extra_time)
+        )
+        total_duration = max(_to_int(total_duration), _computed_duration)
+
         initial_status = status or GiftVoucherStatus.CREATED.value
         category = GiftCategory.normalise(gift_category)
         payment_provider = VoucherPaymentProvider.normalise(payment_provider)
