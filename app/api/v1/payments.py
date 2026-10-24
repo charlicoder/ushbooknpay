@@ -28,7 +28,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import AppSettings, CurrentUser, DBSession, RedisClient, RequireAppToken
@@ -907,6 +907,8 @@ async def list_payments(
     created_by_filter: str | None = Query(default=None, alias="created_by"),
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
     search: str | None = Query(
         default=None,
         description="Search by payment_number, payment_id, transaction_id, invoice_id, reference_id, track_id, voucher_number, recipient_phone.",
@@ -934,7 +936,25 @@ async def list_payments(
     if recipient_id and isinstance(recipient_id, (uuid.UUID, str)):
         conditions.append(Payment.recipient_id == (uuid.UUID(str(recipient_id)) if isinstance(recipient_id, str) else recipient_id))
     if status_filter and isinstance(status_filter, str):
-        conditions.append(Payment.status == status_filter)
+        s_norm = status_filter.strip().lower()
+        if s_norm == "pending":
+            conditions.append(
+                or_(
+                    Payment.status.in_(["pending", "payment_pending", "initiated"]),
+                    Payment.status.ilike("%pending%"),
+                )
+            )
+        elif s_norm in ("success", "paid"):
+            conditions.append(
+                or_(
+                    Payment.status.in_(["success", "paid"]),
+                    Payment.paid_at.isnot(None),
+                    Payment.status.ilike("%success%"),
+                    Payment.status.ilike("%paid%"),
+                )
+            )
+        else:
+            conditions.append(func.lower(Payment.status) == s_norm)
     if payment_provider_filter and isinstance(payment_provider_filter, str):
         conditions.append(Payment.payment_provider == PaymentProvider.normalise(payment_provider_filter).value)
     if payment_through_filter and isinstance(payment_through_filter, str):
@@ -959,10 +979,12 @@ async def list_payments(
     )
     if effective_creator:
         conditions.append(Payment.created_by_user == str(effective_creator))
-    if from_date and isinstance(from_date, datetime):
-        conditions.append(Payment.created_at >= from_date)
-    if to_date and isinstance(to_date, datetime):
-        conditions.append(Payment.created_at <= to_date)
+    effective_from = from_date or date_from
+    effective_to = to_date or date_to
+    if effective_from and isinstance(effective_from, datetime):
+        conditions.append(Payment.created_at >= effective_from)
+    if effective_to and isinstance(effective_to, datetime):
+        conditions.append(Payment.created_at <= effective_to)
     if search and isinstance(search, str):
         search_pattern = f"%{search.strip()}%"
         conditions.append(
@@ -985,9 +1007,32 @@ async def list_payments(
         count_stmt = count_stmt.where(*conditions)
     total_count = (await session.execute(count_stmt)).scalar_one()
 
-    # Aggregate financial metrics
+    # Aggregate financial metrics across full filtered set
+    is_success_expr = or_(
+        Payment.status.in_(["success", "paid"]),
+        Payment.paid_at.isnot(None),
+        Payment.status.ilike("%success%"),
+        Payment.status.ilike("%paid%"),
+    )
+    is_paid_expr = or_(
+        Payment.status == "paid",
+        Payment.paid_at.isnot(None),
+        Payment.status.ilike("%paid%"),
+    )
+    is_pending_expr = or_(
+        Payment.status.in_(["pending", "payment_pending", "initiated"]),
+        Payment.status.ilike("%pending%"),
+        Payment.status.ilike("%initiated%"),
+    )
+
     sum_stmt = select(
         func.coalesce(func.sum(Payment.total_amount), Decimal("0.000")).label("total_volume"),
+        func.coalesce(func.sum(case((is_success_expr, Payment.total_amount), else_=Decimal("0.000"))), Decimal("0.000")).label("successful_volume"),
+        func.coalesce(func.sum(case((is_paid_expr, Payment.total_amount), else_=Decimal("0.000"))), Decimal("0.000")).label("paid_volume"),
+        func.coalesce(func.sum(case((is_pending_expr, Payment.total_amount), else_=Decimal("0.000"))), Decimal("0.000")).label("pending_volume"),
+        func.count(case((is_success_expr, 1))).label("success_count"),
+        func.count(case((is_paid_expr, 1))).label("paid_count"),
+        func.count(case((is_pending_expr, 1))).label("pending_count"),
     )
     if conditions:
         sum_stmt = sum_stmt.where(*conditions)
@@ -1019,7 +1064,14 @@ async def list_payments(
 
     out = paginated.model_dump(mode="json")
     out["analytics"] = {
-        "total_volume": str(agg_res.total_volume),
+        "total_volume": str(getattr(agg_res, "total_volume", "0.000")),
+        "successful_volume": str(getattr(agg_res, "successful_volume", "0.000")),
+        "paid_volume": str(getattr(agg_res, "paid_volume", "0.000")),
+        "pending_volume": str(getattr(agg_res, "pending_volume", "0.000")),
+        "total_count": total_count,
+        "success_count": int(getattr(agg_res, "success_count", 0)),
+        "paid_count": int(getattr(agg_res, "paid_count", 0)),
+        "pending_count": int(getattr(agg_res, "pending_count", 0)),
     }
 
     return JSONResponse(content=out)

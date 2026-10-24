@@ -845,7 +845,11 @@ class RefundService:
             conditions.append(Refund.refund_method == refund_method.lower().strip())
 
         if status and isinstance(status, str):
-            conditions.append(Refund.status == status.lower().strip())
+            st = status.lower().strip()
+            if st == "pending":
+                conditions.append(or_(Refund.status == "pending", Refund.status.ilike("%pending%")))
+            else:
+                conditions.append(Refund.status == st)
 
         if refund_number and isinstance(refund_number, str):
             conditions.append(Refund.refund_number.ilike(f"%{refund_number.strip()}%"))
