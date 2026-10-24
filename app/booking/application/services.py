@@ -36,6 +36,19 @@ from app.booking.domain.rules import (
     assert_booking_is_reschedulable,
     assert_reschedule_window,
 )
+from app.booking.domain.services_snapshot import (
+    MAX_SERVICES_PER_BOOKING,
+    build_service_entry,
+    cache_services_payload,
+    effective_points,
+    entry_arrangement_name,
+    entry_service_name,
+    get_booking_services,
+    joined_service_name,
+    primary_fields,
+    total_services_duration,
+    total_services_price,
+)
 from app.booking.domain.state_machine import BookingStateMachine
 
 
@@ -164,9 +177,21 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
 
     # Always ensure is_eligible_for_loyalty is present inside service_data so
     _raw_service_dict = booking.service_data or {}
-    is_eligible_for_loyalty: bool = False if is_loyalty_redemption else bool(_raw_service_dict.get("is_eligible_for_loyalty"))
-    loyalty_points: int = 0 if is_loyalty_redemption else int(_raw_service_dict.get("loyalty_points") or 0)
-    price_in_points: int = int(_raw_service_dict.get("price_in_points") or 0)
+    service_entries = get_booking_services(booking)
+    is_multi_service = len(service_entries) > 1
+    is_eligible_for_loyalty: bool = False if is_loyalty_redemption else (
+        any(bool((e.get("service_data") or {}).get("is_eligible_for_loyalty")) for e in service_entries)
+        if is_multi_service
+        else bool(_raw_service_dict.get("is_eligible_for_loyalty"))
+    )
+    if is_multi_service:
+        # Aggregate over all booked services (arrangement override wins per service).
+        _pts = [effective_points(e) for e in service_entries]
+        loyalty_points: int = 0 if is_loyalty_redemption else sum(p[0] for p in _pts)
+        price_in_points: int = sum(p[1] for p in _pts)
+    else:
+        loyalty_points = 0 if is_loyalty_redemption else int(_raw_service_dict.get("loyalty_points") or 0)
+        price_in_points = int(_raw_service_dict.get("price_in_points") or 0)
     service_dict = {
         **_raw_service_dict,
         "is_eligible_for_loyalty": is_eligible_for_loyalty,
@@ -211,11 +236,23 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         or branch_dict.get("branch_name")
         or ""
     )
-    service_name = str(
-        service_dict.get("name")
-        or service_dict.get("service_name")
-        or ""
+    service_name = (
+        joined_service_name(service_entries)
+        if is_multi_service
+        else str(
+            service_dict.get("name")
+            or service_dict.get("service_name")
+            or ""
+        )
     )
+    services_event = [
+        {
+            **e,
+            "service_name": entry_service_name(e),
+            "service_arrangement_name": entry_arrangement_name(e),
+        }
+        for e in service_entries
+    ]
     arr_name = str(
         arr_dict.get("arrangement_name")
         or arr_dict.get("room_name")
@@ -263,6 +300,9 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "service_arrangement_id": str(booking.service_arrangement_id) if booking.service_arrangement_id else "",
         "service_arrangement_name": arr_name,
         "service_arrangement_data": arr_dict,
+        # Multi-service: full ordered list. The flat service_* fields above always
+        # describe the primary service (services[0]) for backward compatibility.
+        "services": services_event,
         "therapist_id": str(booking.therapist_id) if booking.therapist_id else "",
         "therapist_name": therapist_name,
         "therapist_data": therapist_dict,
@@ -309,10 +349,12 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         # Loyalty points fields — included in every booking event so consumers
         # (ushnotice / future loyalty processors) can award/charge points without
         # making an extra API call back to ushauth.
-        "loyalty_points": 0 if is_loyalty_redemption else int(_raw_service_dict.get("loyalty_points") or 0),
-        "arrangement_loyalty_points": None if is_loyalty_redemption else arr_dict.get("loyalty_points"),  # None = use service level
-        "price_in_points": int(_raw_service_dict.get("price_in_points") or 0),
-        "arrangement_price_in_points": arr_dict.get("price_in_points"),  # None = use service level
+        # Multi-service bookings carry the already-aggregated totals and no
+        # arrangement override (None = use the value above).
+        "loyalty_points": loyalty_points,
+        "arrangement_loyalty_points": None if (is_loyalty_redemption or is_multi_service) else arr_dict.get("loyalty_points"),  # None = use service level
+        "price_in_points": price_in_points,
+        "arrangement_price_in_points": None if is_multi_service else arr_dict.get("price_in_points"),  # None = use service level
         "created_at": _to_local_tz(booking.created_at).isoformat() if getattr(booking, "created_at", None) else "",
         "updated_at": _to_local_tz(booking.updated_at).isoformat() if getattr(booking, "updated_at", None) else "",
         "created_by": str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None) or ""),
@@ -463,6 +505,12 @@ class BookingService:
                 booking.service_arrangement_data = updated_arr
 
             if modified:
+                # Keep services[0] in sync with the refreshed legacy snapshot
+                entries = [dict(e) for e in get_booking_services(booking)]
+                if entries:
+                    entries[0]["service_data"] = booking.service_data or {}
+                    entries[0]["service_arrangement_data"] = booking.service_arrangement_data or {}
+                    booking.services = entries
                 await self._repo.update(booking)
                 logger.info(
                     "booking_loyalty_details_refreshed_from_db",
@@ -496,7 +544,8 @@ class BookingService:
         customer_data: dict | None = None,
         branch_id: uuid.UUID | None = None,
         branch_data: dict | None = None,
-        service_id: uuid.UUID,
+        services: list[dict] | None = None,
+        service_id: uuid.UUID | None = None,
         service_data: dict | None = None,
         service_arrangement_id: uuid.UUID | None = None,
         service_arrangement_data: dict | None = None,
@@ -541,7 +590,30 @@ class BookingService:
         Performs double-booking detection with row-level locking.
         Creates a temporary hold for the appointment slot (unless already confirmed).
         Writes a BookingCreatedEvent (and BookingConfirmedEvent if confirmed) to SQS within the same flow.
+
+        ``services`` is the ordered list of service entries (same branch + therapist);
+        the legacy single-service arguments are accepted for backward compatibility and
+        wrapped into a one-item list. The legacy columns mirror ``services[0]``.
         """
+        if not services:
+            if service_id is None:
+                raise ValueError("create_booking requires 'services' or 'service_id'.")
+            services = [
+                build_service_entry(
+                    service_id=service_id,
+                    service_data=service_data,
+                    service_arrangement_id=service_arrangement_id,
+                    service_arrangement_data=service_arrangement_data,
+                    base_price=base_price,
+                    duration_minutes=duration_minutes,
+                )
+            ]
+        elif len(services) > MAX_SERVICES_PER_BOOKING:
+            raise ValueError(f"A booking can contain at most {MAX_SERVICES_PER_BOOKING} services.")
+        primary = primary_fields(services)
+        service_id = primary["service_id"]
+        service_arrangement_id = primary["service_arrangement_id"]
+
         # ── Idempotency check ────────────────────────────────────────────
         if idempotency_key:
             existing = await self._repo.get_by_idempotency_key(idempotency_key)
@@ -567,10 +639,11 @@ class BookingService:
             customer_data=customer_data or {},
             branch_id=branch_id,
             branch_data=branch_data or {},
+            services=services,
             service_id=service_id,
-            service_data=service_data or {},
+            service_data=primary["service_data"],
             service_arrangement_id=service_arrangement_id,
-            service_arrangement_data=service_arrangement_data or {},
+            service_arrangement_data=primary["service_arrangement_data"],
             therapist_id=therapist_id,
             therapist_data=therapist_data or {},
             appointment_date=local_midnight(appointment_start),
@@ -677,7 +750,8 @@ class BookingService:
                     branch_id=str(booking.branch_id),
                     branch_name=str(branch_dict.get("name") or ""),
                     service_id=str(booking.service_id),
-                    service_name=str(service_dict.get("name") or ""),
+                    service_name=joined_service_name(services) or str(service_dict.get("name") or ""),
+                    services=cache_services_payload(services),
                     therapist_id=str(booking.therapist_id),
                     therapist_name=str(therapist_dict.get("name") or therapist_dict.get("full_name") or ""),
                     appointment_start=to_local_tz(booking.appointment_start).isoformat(),
@@ -733,6 +807,7 @@ class BookingService:
         branch_data: dict | None = None,
         service_arrangement_id: uuid.UUID | None = None,
         service_arrangement_data: dict | None = None,
+        services: list[dict] | None = None,
         appointment_start: datetime | None = None,
         extra_minutes: int | None = None,
         customer_notes: str | None = None,
@@ -764,6 +839,21 @@ class BookingService:
         initial_status = booking.status
         initial_payment_status = booking.payment_status
 
+        # ── Replace the booked services (multi-service) ──────────────────
+        if services is not None:
+            if not services or len(services) > MAX_SERVICES_PER_BOOKING:
+                raise ValueError(
+                    f"A booking must contain between 1 and {MAX_SERVICES_PER_BOOKING} services."
+                )
+            _primary = primary_fields(services)
+            booking.services = services
+            booking.service_id = _primary["service_id"]
+            booking.service_data = _primary["service_data"]
+            booking.service_arrangement_id = _primary["service_arrangement_id"]
+            booking.service_arrangement_data = _primary["service_arrangement_data"]
+            booking.duration_minutes = total_services_duration(services) or booking.duration_minutes
+            booking.base_price = total_services_price(services)
+
         # ── Update timing / therapist if provided ────────────────────────
         target_therapist_id = therapist_id or booking.therapist_id
         target_start = to_local_tz(appointment_start or booking.appointment_start)
@@ -773,7 +863,12 @@ class BookingService:
         eff_total_duration = total_duration if isinstance(total_duration, int) else (booking.duration_minutes + target_extra + target_addons_dur)
         target_end = target_start + timedelta(minutes=eff_total_duration)
 
-        if therapist_id is not None or appointment_start is not None or extra_minutes is not None:
+        if (
+            therapist_id is not None
+            or appointment_start is not None
+            or extra_minutes is not None
+            or services is not None
+        ):
             # Check overlap against other bookings
             is_conflicting = await self._repo.check_therapist_overlap(
                 target_therapist_id,
@@ -805,6 +900,17 @@ class BookingService:
             booking.service_arrangement_id = service_arrangement_id
         if service_arrangement_data is not None:
             booking.service_arrangement_data = service_arrangement_data
+        if services is None and (
+            service_arrangement_id is not None or service_arrangement_data is not None
+        ):
+            # Arrangement updates apply to the primary service: mirror into services[0]
+            _entries = [dict(e) for e in get_booking_services(booking)]
+            if _entries:
+                if service_arrangement_id is not None:
+                    _entries[0]["service_arrangement_id"] = str(service_arrangement_id)
+                if service_arrangement_data is not None:
+                    _entries[0]["service_arrangement_data"] = service_arrangement_data
+                booking.services = _entries
 
         # ── Notes ────────────────────────────────────────────────────────
         if customer_notes is not None:

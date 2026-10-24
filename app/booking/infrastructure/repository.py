@@ -179,7 +179,7 @@ class BookingRepository:
         Query bookings with multi-parameter filtering and pagination.
         """
         from datetime import date
-        from sqlalchemy import cast, Date, func
+        from sqlalchemy import Date, Text, cast, func
 
         stmt = select(Booking)
         conditions = []
@@ -201,11 +201,28 @@ class BookingRepository:
         if therapist_id:
             conditions.append(Booking.therapist_id == therapist_id)
 
-        if service_id:
-            conditions.append(Booking.service_id == service_id)
-
-        if service_arrangement_id:
-            conditions.append(Booking.service_arrangement_id == service_arrangement_id)
+        # Multi-service: match any booked service via JSONB containment (``@>``),
+        # served by the GIN index ix_bookings_services_gin. When both filters are
+        # supplied they must match the *same* service entry.
+        if service_id and service_arrangement_id:
+            conditions.append(
+                Booking.services.contains(
+                    [
+                        {
+                            "service_id": str(service_id),
+                            "service_arrangement_id": str(service_arrangement_id),
+                        }
+                    ]
+                )
+            )
+        elif service_id:
+            conditions.append(Booking.services.contains([{"service_id": str(service_id)}]))
+        elif service_arrangement_id:
+            conditions.append(
+                Booking.services.contains(
+                    [{"service_arrangement_id": str(service_arrangement_id)}]
+                )
+            )
 
         if date_str:
             try:
@@ -252,6 +269,8 @@ class BookingRepository:
                     Booking.customer_data["phone_number"].astext.ilike(s),
                     Booking.branch_data["branch_name"].astext.ilike(s),
                     Booking.service_data["service_name"].astext.ilike(s),
+                    # all booked services (names of secondary services live here)
+                    cast(Booking.services, Text).ilike(s),
                     Booking.therapist_data["therapist_name"].astext.ilike(s),
                 )
             )

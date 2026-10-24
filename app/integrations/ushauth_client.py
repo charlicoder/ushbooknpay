@@ -502,10 +502,13 @@ class USHAuthClient:
         service_name: str | None = None,
         service_arrangement_name: str | None = None,
         therapist_name: str | None = None,
+        services: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """
         Create appointment cache records in ushauth (ush_spa_appointment_cache).
+        ``services`` (optional) lists every service of a multi-service booking; the flat
+        service_id / service_arrangement_id describe the primary service.
         POST /api/v1/create-appointment-cache/
         """
         payload: dict[str, Any] = {
@@ -536,6 +539,8 @@ class USHAuthClient:
             payload["service_arrangement_name"] = str(service_arrangement_name)
         if therapist_name:
             payload["therapist_name"] = str(therapist_name)
+        if services:
+            payload["services"] = services
 
         return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
 

@@ -13,6 +13,7 @@ Convention:
 from __future__ import annotations
 
 from app.common.utils import LocalDateTime
+import json
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -21,6 +22,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+from app.booking.domain.services_snapshot import MAX_SERVICES_PER_BOOKING
 from app.booking.domain.value_objects import (
     BookingPaymentGateway,
     BookingPaymentProvider,
@@ -39,6 +41,80 @@ class AddonSchema(BaseModel):
     addon_id: str
     name: str
     price: str
+
+
+_MAX_SNAPSHOT_BYTES = 32_768  # per snapshot dict (service_data / service_arrangement_data)
+
+
+def _check_snapshot_size(value: dict[str, Any] | None, field: str) -> dict[str, Any] | None:
+    """Reject oversized snapshot dicts to avoid JSONB bloat / abuse."""
+    if value is None:
+        return value
+    if len(json.dumps(value, default=str)) > _MAX_SNAPSHOT_BYTES:
+        raise ValueError(f"{field} is too large (max {_MAX_SNAPSHOT_BYTES} bytes).")
+    return value
+
+
+class BookingServiceItem(BaseModel):
+    """
+    One service inside a (multi-service) booking request.
+
+    All services of a booking share the booking's branch and therapist.
+    """
+
+    service_id: uuid.UUID | None = Field(default=None, alias="serviceId")
+    service_name: str | None = Field(default=None, alias="serviceName", max_length=255)
+    service_category: str | None = Field(default=None, alias="serviceCategory", max_length=255)
+    service_data: dict[str, Any] | None = Field(default=None, alias="serviceData")
+    service_arrangement_id: uuid.UUID | None = Field(default=None, alias="serviceArrangementId")
+    arrangement_name: str | None = Field(default=None, alias="arrangementName", max_length=255)
+    arrangement_type: str | None = Field(default=None, alias="arrangementType", max_length=100)
+    room_name: str | None = Field(default=None, alias="roomName", max_length=255)
+    service_arrangement_data: dict[str, Any] | None = Field(
+        default=None, alias="serviceArrangementData"
+    )
+    base_price: str | Decimal | float | None = Field(default=None, alias="basePrice")
+    base_duration: int | None = Field(default=None, alias="baseDuration", ge=0, le=1440)
+    is_eligible_for_loyalty: bool = Field(default=False, alias="isEligibleForLoyalty")
+    loyalty_points: int = Field(default=0, alias="loyaltyPoints", ge=0)
+    arrangement_loyalty_points: int | None = Field(
+        default=None, alias="arrangementLoyaltyPoints", ge=0
+    )
+    price_in_points: int = Field(default=0, alias="priceInPoints", ge=0)
+    arrangement_price_in_points: int | None = Field(
+        default=None, alias="arrangementPriceInPoints", ge=0
+    )
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    @field_validator("service_id", "service_arrangement_id", mode="before")
+    @classmethod
+    def _empty_uuid_to_none(cls, v: Any) -> Any:
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
+    @field_validator("service_data")
+    @classmethod
+    def _limit_service_data(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_snapshot_size(v, "service_data")
+
+    @field_validator("service_arrangement_data")
+    @classmethod
+    def _limit_arrangement_data(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return _check_snapshot_size(v, "service_arrangement_data")
+
+
+class BookingServiceResponse(BaseModel):
+    """One service entry in booking responses (mirrors ``bookings.services``)."""
+
+    service_id: str
+    service_data: dict[str, Any] | None = None
+    service_arrangement_id: str | None = None
+    service_arrangement_data: dict[str, Any] | None = None
+    base_price: str | None = None
+    duration_minutes: int = 0
+    position: int = 0
 
 
 class PricingBreakdownSchema(BaseModel):
@@ -88,6 +164,19 @@ class CreateBookingRequest(BaseModel):
     )
 
     # Service info
+    # Multi-service bookings: list of services sharing the same branch + therapist.
+    # When omitted, the legacy flat fields below (service_id, service_arrangement_id,
+    # service_data, ...) are wrapped into a single-item list for backward compatibility.
+    services: list[BookingServiceItem] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_SERVICES_PER_BOOKING,
+        description=(
+            "Services to book together (same branch and therapist). "
+            "Each item carries service_id, service_arrangement_id, service_data, "
+            "service_arrangement_data, etc."
+        ),
+    )
     service_id: uuid.UUID | None = Field(default=None, alias="serviceId")
     service_name: str | None = Field(default=None, alias="serviceName")
     service_category: str | None = Field(default=None, alias="serviceCategory")
@@ -395,6 +484,73 @@ class CreateBookingRequest(BaseModel):
         return BookingPaymentThrough.normalise(str(v)).value
 
     @model_validator(mode="after")
+    def normalize_services(self) -> "CreateBookingRequest":
+        """
+        Keep ``services`` and the legacy flat single-service fields in sync.
+
+        * ``services`` absent  → wrap the legacy flat fields into a 1-item list.
+        * ``services`` present → validate it (ids required, no duplicates) and
+          back-fill any empty legacy flat field from ``services[0]`` so code that
+          still reads ``body.service_id`` etc. keeps working.
+        """
+        if not self.services:
+            self.services = [
+                BookingServiceItem(
+                    service_id=self.service_id,
+                    service_name=self.service_name,
+                    service_category=self.service_category,
+                    service_data=self.service_data,
+                    service_arrangement_id=self.service_arrangement_id,
+                    arrangement_name=self.arrangement_name,
+                    arrangement_type=self.arrangement_type,
+                    room_name=self.room_name,
+                    service_arrangement_data=self.service_arrangement_data,
+                    base_price=self.base_price,
+                    base_duration=self.base_duration,
+                    is_eligible_for_loyalty=self.is_eligible_for_loyalty,
+                    loyalty_points=self.loyalty_points,
+                    arrangement_loyalty_points=self.arrangement_loyalty_points,
+                    price_in_points=self.price_in_points,
+                    arrangement_price_in_points=self.arrangement_price_in_points,
+                )
+            ]
+            return self
+
+        seen: set[tuple[uuid.UUID, uuid.UUID | None]] = set()
+        for idx, item in enumerate(self.services):
+            if item.service_id is None:
+                raise ValueError(f"services[{idx}].service_id is required.")
+            key = (item.service_id, item.service_arrangement_id)
+            if key in seen:
+                raise ValueError(
+                    f"services[{idx}] duplicates another service/arrangement pair."
+                )
+            seen.add(key)
+
+        first = self.services[0]
+        for flat, val in (
+            ("service_id", first.service_id),
+            ("service_name", first.service_name),
+            ("service_category", first.service_category),
+            ("service_data", first.service_data),
+            ("service_arrangement_id", first.service_arrangement_id),
+            ("arrangement_name", first.arrangement_name),
+            ("arrangement_type", first.arrangement_type),
+            ("room_name", first.room_name),
+            ("service_arrangement_data", first.service_arrangement_data),
+            ("base_price", first.base_price),
+            ("base_duration", first.base_duration),
+            ("arrangement_loyalty_points", first.arrangement_loyalty_points),
+            ("arrangement_price_in_points", first.arrangement_price_in_points),
+        ):
+            if val is not None:
+                setattr(self, flat, val)
+        self.is_eligible_for_loyalty = first.is_eligible_for_loyalty
+        self.loyalty_points = first.loyalty_points
+        self.price_in_points = first.price_in_points
+        return self
+
+    @model_validator(mode="after")
     def sync_created_by_fields(self) -> "CreateBookingRequest":
         user_val = self.change_by_user or self.created_by_user or self.created_by
         if user_val:
@@ -507,12 +663,18 @@ class UpdateBookingRequest(BaseModel):
     service_arrangement_id: uuid.UUID | None = Field(
         default=None,
         alias="serviceArrangementId",
-        description="Updated room/arrangement ID",
+        description="Updated room/arrangement ID (applies to the primary service, services[0])",
     )
     service_arrangement_data: dict[str, Any] | None = Field(
         default=None,
         alias="serviceArrangementData",
-        description="Snapshot of updated room/arrangement data",
+        description="Snapshot of updated room/arrangement data (applies to services[0])",
+    )
+    services: list[BookingServiceItem] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_SERVICES_PER_BOOKING,
+        description="Replace the full list of booked services (same branch and therapist).",
     )
     appointment_date: str | None = Field(
         default=None,
@@ -915,6 +1077,7 @@ class BookingListItem(BaseModel):
     service_data: dict[str, Any] | None = None
     service_arrangement_id: str | None = None
     service_arrangement_data: dict[str, Any] | None = None
+    services: list[BookingServiceResponse] = Field(default_factory=list)
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
     appointment_date: str | None = None
@@ -991,6 +1154,7 @@ class BookingDetailResponse(BaseModel):
     service_data: dict[str, Any] | None = None
     service_arrangement_id: str | None = None
     service_arrangement_data: dict[str, Any] | None = None
+    services: list[BookingServiceResponse] = Field(default_factory=list)
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
     appointment_date: str | None = None
@@ -1068,6 +1232,7 @@ class CreateBookingDataResponse(BaseModel):
     booking_id: str
     booking_number: str | None = None
     customer_id: str
+    services: list[BookingServiceResponse] = Field(default_factory=list)
     final_amount: str
     status: str
     payment_status: str | None = None

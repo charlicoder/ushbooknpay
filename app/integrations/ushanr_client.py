@@ -193,8 +193,15 @@ class UshanrClient:
             return None
 
         # Build lines
-        service_data = getattr(booking, "service_data", None) or {}
-        service_name = service_data.get("name") or "Spa Service"
+        from app.booking.domain.services_snapshot import (
+            entry_service_name,
+            get_booking_services,
+            joined_service_name,
+            total_services_price,
+        )
+
+        service_entries = get_booking_services(booking)
+        service_name = joined_service_name(service_entries) or "Spa Service"
         total_amount = Decimal(str(getattr(booking, "total_amount", 0) or 0))
 
         lines = [
@@ -206,6 +213,34 @@ class UshanrClient:
                 "discount": 0.0,
             }
         ]
+
+        # Multi-service booking: one invoice line per service, plus one line for the
+        # remainder (add-ons, extra minutes, fees) so the lines always sum to the total.
+        # Falls back to the single total line if the prices don't reconcile.
+        if len(service_entries) > 1:
+            services_sum = total_services_price(service_entries)
+            remainder = total_amount - services_sum
+            if services_sum > 0 and remainder >= 0:
+                lines = [
+                    {
+                        "account_id": revenue_acct,
+                        "name": entry_service_name(e) or "Spa Service",
+                        "quantity": 1.0,
+                        "unit_price": float(Decimal(str(e.get("base_price") or 0))),
+                        "discount": 0.0,
+                    }
+                    for e in service_entries
+                ]
+                if remainder > 0:
+                    lines.append(
+                        {
+                            "account_id": revenue_acct,
+                            "name": "Add-ons & extras",
+                            "quantity": 1.0,
+                            "unit_price": float(remainder),
+                            "discount": 0.0,
+                        }
+                    )
 
         booking_number = getattr(booking, "booking_number", None) or ""
         notes = f"Booking {booking_number or booking.id}"

@@ -23,6 +23,11 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
+from app.booking.domain.services_snapshot import (
+    get_booking_services,
+    joined_service_name,
+    total_services_price,
+)
 from app.api.deps import DBSession, OptionalUser
 from app.booking.infrastructure.models import Booking
 from app.payment.infrastructure.models import Payment
@@ -365,17 +370,42 @@ async def get_therapist_analytics(
                     clients_map[c_key]["last_visit"] = appt_time
 
         # Service breakdown
-        s_id = str(b.service_id) if b.service_id else None
-        s_name = "Service"
-        if isinstance(b.service_data, dict):
-            s_name = b.service_data.get("name") or b.service_data.get("title") or "Service"
-        s_key = s_id or s_name
-        service_map[s_key]["name"] = s_name
-        service_map[s_key]["service_id"] = s_id
-        if is_not_cancelled:
-            service_map[s_key]["count"] += 1
-            service_map[s_key]["minutes"] += (b.duration_minutes or 0) + (b.extra_minutes or 0)
-            service_map[s_key]["revenue"] += float(b.total_amount or 0)
+        # (multi-service: every booked service is counted; the first one carries the
+        #  extra minutes and the non-service remainder so booking totals stay exact)
+        _entries = get_booking_services(b)
+        if len(_entries) <= 1:
+            _entries = [
+                {
+                    "service_id": str(b.service_id) if b.service_id else None,
+                    "service_data": b.service_data if isinstance(b.service_data, dict) else {},
+                    "duration_minutes": b.duration_minutes or 0,
+                    "base_price": None,
+                }
+            ]
+            _single = True
+        else:
+            _single = False
+        _services_sum = float(total_services_price(_entries)) if not _single else 0.0
+        for _idx, _e in enumerate(_entries):
+            s_id = _e.get("service_id") or None
+            _sd = _e.get("service_data") or {}
+            s_name = _sd.get("name") or _sd.get("title") or "Service"
+            s_key = s_id or s_name
+            service_map[s_key]["name"] = s_name
+            service_map[s_key]["service_id"] = s_id
+            if is_not_cancelled:
+                service_map[s_key]["count"] += 1
+                if _single:
+                    service_map[s_key]["minutes"] += (b.duration_minutes or 0) + (b.extra_minutes or 0)
+                    service_map[s_key]["revenue"] += float(b.total_amount or 0)
+                else:
+                    service_map[s_key]["minutes"] += int(_e.get("duration_minutes") or 0) + (
+                        (b.extra_minutes or 0) if _idx == 0 else 0
+                    )
+                    _rev = float(_e.get("base_price") or 0)
+                    if _idx == 0:
+                        _rev += float(b.total_amount or 0) - _services_sum
+                    service_map[s_key]["revenue"] += _rev
 
         # Branch breakdown
         br_id = str(b.branch_id) if b.branch_id else None
@@ -558,8 +588,7 @@ async def get_therapist_analytics(
                 if isinstance(b.customer_data, dict) else None
             ),
             service_name=(
-                (b.service_data or {}).get("name")
-                if isinstance(b.service_data, dict) else None
+                joined_service_name(b) or None
             ),
             branch_name=(
                 (b.branch_data or {}).get("name")

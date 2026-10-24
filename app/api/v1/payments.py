@@ -18,6 +18,11 @@ Routes:
 
 from __future__ import annotations
 
+from app.booking.domain.services_snapshot import (
+    cache_services_payload,
+    get_booking_services,
+    joined_service_name,
+)
 from app.common.utils import to_local_tz as _to_local_tz
 import re
 import uuid
@@ -101,7 +106,8 @@ def _build_booking_snapshot(booking: Booking) -> dict[str, Any]:
         "booking_id": str(booking.id),
         "booking_number": getattr(booking, "booking_number", None),
         "service_id": str(booking.service_id) if booking.service_id else None,
-        "service_name": (booking.service_data or {}).get("name", ""),
+        "service_name": joined_service_name(booking) or (booking.service_data or {}).get("name", ""),
+        "services": cache_services_payload(get_booking_services(booking)),
         "service_category": (booking.service_data or {}).get("category", ""),
         "branch_id": str(booking.branch_id) if booking.branch_id else None,
         "branch_name": (booking.branch_data or {}).get("name", ""),

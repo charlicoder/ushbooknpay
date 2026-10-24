@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
+from app.booking.domain.services_snapshot import joined_service_name, service_names as service_names_of
 from app.api.deps import DBSession, OptionalUser
 from app.booking.infrastructure.models import Booking
 from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction
@@ -329,7 +330,7 @@ async def get_customer_analytics(
                 id=str(b.id),
                 booking_number=b.booking_number,
                 invoice_number=b.invoice_number,
-                service_name=(b.service_data or {}).get("name") if isinstance(b.service_data, dict) else None,
+                service_name=joined_service_name(b) or None,
                 branch_name=(b.branch_data or {}).get("name") if isinstance(b.branch_data, dict) else None,
                 therapist_name=(
                     (b.therapist_data or {}).get("name") or (b.therapist_data or {}).get("full_name")
@@ -391,9 +392,7 @@ async def get_customer_analytics(
 
     for b in bookings:
         if str(b.status).lower() != "cancelled":
-            s_name = (b.service_data or {}).get("name") if isinstance(b.service_data, dict) else None
-            if s_name:
-                service_names.append(s_name)
+            service_names.extend(service_names_of(b))
 
             br_name = (b.branch_data or {}).get("name") if isinstance(b.branch_data, dict) else None
             if br_name:

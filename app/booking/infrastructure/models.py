@@ -97,6 +97,15 @@ class Booking(Base):
     service_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     service_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
+    # ── Services (multi-service booking) ──────────────────────────────────
+    # Ordered list of service entries booked together (same branch + therapist).
+    # Entry: {service_id, service_data, service_arrangement_id,
+    #         service_arrangement_data, base_price, duration_minutes, position}
+    # The legacy single-service columns above/below always mirror services[0].
+    services: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+
     # ── Service Arrangement Reference & Snapshot ──────────────────────────
     service_arrangement_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
@@ -285,6 +294,18 @@ class Booking(Base):
         Index("ix_bookings_created_by_user", "created_by_user"),
         # Fast lookup by invoice_number
         Index("ix_bookings_invoice_number", "invoice_number"),
+        # Containment lookups on the services array (services @> '[{"service_id": ...}]')
+        Index(
+            "ix_bookings_services_gin",
+            "services",
+            postgresql_using="gin",
+            postgresql_ops={"services": "jsonb_path_ops"},
+        ),
+        # Services must be a JSON array of 1..10 entries
+        CheckConstraint(
+            "jsonb_typeof(services) = 'array' AND jsonb_array_length(services) BETWEEN 1 AND 10",
+            name="ck_bookings_services_array",
+        ),
         # Idempotency key uniqueness
         UniqueConstraint("idempotency_key", name="uq_bookings_idempotency_key"),
         # Enforce valid booking_type values

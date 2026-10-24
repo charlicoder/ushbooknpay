@@ -13,6 +13,7 @@ Routes:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -28,12 +29,23 @@ from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession,
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
 from app.payment.infrastructure.models import Payment
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
+from app.booking.application.multi_service import ServiceValidationError, resolve_service_entries
 from app.booking.application.services import _build_booking_event_data
+from app.booking.domain.services_snapshot import (
+    cache_services_payload,
+    distinct_arrangement_ids,
+    get_booking_services,
+    joined_service_name,
+    points_cost,
+    total_services_duration,
+    total_services_price,
+)
 from app.booking.interfaces.schemas import (
     AddonSchema,
     BookingDetailResponse,
     BookingListItem,
     BookingListResponse,
+    BookingServiceResponse,
     CancelBookingRequest,
     CreateBookingDataResponse,
     CreateBookingRequest,
@@ -71,6 +83,24 @@ def _safe_str(val: Any) -> str | None:
     return s if s else None
 
 
+def _services_out(b: object) -> list[BookingServiceResponse]:
+    """Map the booking's service entries to response items (legacy rows → 1 item)."""
+    out: list[BookingServiceResponse] = []
+    for idx, e in enumerate(get_booking_services(b)):
+        out.append(
+            BookingServiceResponse(
+                service_id=str(e.get("service_id") or ""),
+                service_data=e.get("service_data") if isinstance(e.get("service_data"), dict) else {},
+                service_arrangement_id=str(e["service_arrangement_id"]) if e.get("service_arrangement_id") else None,
+                service_arrangement_data=e.get("service_arrangement_data") if isinstance(e.get("service_arrangement_data"), dict) else {},
+                base_price=str(e["base_price"]) if e.get("base_price") is not None else None,
+                duration_minutes=int(e.get("duration_minutes") or 0),
+                position=idx,
+            )
+        )
+    return out
+
+
 def _booking_to_list_item(b: object) -> BookingListItem:
     """Map ORM Booking to BookingListItem."""
     b_type = getattr(b, "booking_type", "branch")
@@ -88,6 +118,7 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         service_data=b.service_data,
         service_arrangement_id=str(b.service_arrangement_id) if b.service_arrangement_id else None,
         service_arrangement_data=b.service_arrangement_data,
+        services=_services_out(b),
         therapist_id=str(b.therapist_id),
         therapist_data=b.therapist_data,
         appointment_date=raw_app_date,
@@ -180,6 +211,7 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         service_data=service_data_out,
         service_arrangement_id=str(b.service_arrangement_id) if getattr(b, "service_arrangement_id", None) and isinstance(b.service_arrangement_id, (str, uuid.UUID)) else None,
         service_arrangement_data=raw_arr_data,
+        services=_services_out(b),
         therapist_id=str(b.therapist_id),
         therapist_data=b.therapist_data if isinstance(getattr(b, "therapist_data", None), dict) else {},
         appointment_date=raw_app_date,
@@ -385,7 +417,6 @@ async def create_booking(
         raw_time_str if len(raw_time_str.split(":")) == 3 else f"{raw_time_str}:00"
     )
 
-    duration = int(body.total_duration or body.base_duration or 60)
     booking_type_str = (
         body.booking_type.value
         if hasattr(body.booking_type, "value")
@@ -416,6 +447,28 @@ async def create_booking(
         request_source = "ushspa"
         if not body.payment_through:
             body.payment_through = "ushspa"
+
+    # ── Resolve every requested service (concurrent ushauth look-ups) ────
+    # All services share the booking's branch and therapist.
+    try:
+        service_entries = await resolve_service_entries(
+            ushauth,
+            body.services or [],
+            is_loyalty_booking=bool(is_loyalty_booking),
+        )
+    except ServiceValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    if len(service_entries) > 1:
+        # Never reserve less than the sum of the booked services' durations.
+        duration = max(int(body.total_duration or 0), total_services_duration(service_entries)) or 60
+    else:
+        duration = int(body.total_duration or body.base_duration or 60)
+    service_name = joined_service_name(service_entries)
+    entries_points_cost = sum(points_cost(e) for e in service_entries)
 
     # ── Status & Payment Status Resolution ────────────────────────────
     status_str: str | None = None
@@ -586,6 +639,46 @@ async def create_booking(
                 detail=f"Invalid therapistId: {therapist_id_str}",
             )
 
+    # ── 2b. Multi-service: remaining arrangements, same therapist & window ─
+    if booking_type_str in ("branch_service", "branch", "loyalty") and selected_therapist_id:
+        extra_arrangement_ids = [
+            a for a in distinct_arrangement_ids(service_entries) if a != service_arrangement_id
+        ]
+        if extra_arrangement_ids:
+            extra_results = await asyncio.gather(
+                *(
+                    ushauth.check_appointment_availability(
+                        service_arrangement_id=arr_id,
+                        appointment_date=appointment_date,
+                        appointment_time=appointment_time,
+                        duration=duration,
+                        therapist_id=str(selected_therapist_id),
+                        therapist_ids=None,
+                    )
+                    for arr_id in extra_arrangement_ids
+                ),
+                return_exceptions=True,
+            )
+            for res in extra_results:
+                if isinstance(res, GatewayTimeoutError):
+                    raise HTTPException(
+                        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                        detail=f"Availability check timed out: {str(res)}",
+                    )
+                if isinstance(res, HTTPException):
+                    raise res
+                if isinstance(res, Exception):
+                    logger.error("check_availability_failed", error=str(res))
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"Failed to check appointment availability: {str(res)}",
+                    )
+                if res.get("available") != "yes":
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="One of the selected service arrangements is not available for the requested date and time.",
+                    )
+
     # ── 4. Build start and end datetime ─────────────────────────────────
     # The customer's chosen date/time is Asia/Kuwait local time. Store it as a
     # real timezone-aware instant (e.g. 2026-10-10T10:00:00+03:00).
@@ -597,13 +690,19 @@ async def create_booking(
     appointment_end = appointment_start + timedelta(minutes=duration)
 
     # ── 5. Build pricing and addons ─────────────────────────────────────
+    # Single service: legacy client price. Multi-service: sum of the services' prices.
+    fallback_base = (
+        body.base_price
+        if len(service_entries) == 1
+        else (total_services_price(service_entries) or None)
+    )
     if body.pricing_details:
         arr_price = str(
             body.pricing_details.get("arrangement_price")
             or body.pricing_details.get("arrangement")
             or body.pricing_details.get("base_price")
             or body.pricing_details.get("base")
-            or body.base_price
+            or fallback_base
             or "0"
         )
         add_price = str(
@@ -626,10 +725,10 @@ async def create_booking(
         )
         curr = str(body.pricing_details.get("currency") or body.currency or "KWD")
     else:
-        arr_price = str(body.base_price or body.total_price or "0")
+        arr_price = str(fallback_base or body.total_price or "0")
         add_price = str(body.addons_price or "0")
         ext_price = str(body.extra_price or "0")
-        tot_price = str(body.total_price or body.base_price or "0")
+        tot_price = str(body.total_price or fallback_base or "0")
         curr = body.currency or "KWD"
 
     pricing = PricingBreakdown(
@@ -679,136 +778,6 @@ async def create_booking(
         **(body.branch_data or {}),
     }
 
-    # ── Fetch service & arrangement details from ushauth (source of truth) ──
-    db_service: dict[str, Any] = {}
-    if body.service_id:
-        try:
-            raw_svc = await ushauth.get_service(str(body.service_id))
-            db_service = raw_svc.get("data", raw_svc) if isinstance(raw_svc, dict) else {}
-        except Exception as exc:
-            logger.warning("fetch_service_details_failed", service_id=str(body.service_id), error=str(exc))
-
-    db_arrangement: dict[str, Any] = {}
-    if body.service_arrangement_id:
-        try:
-            raw_arr = await ushauth.get_service_arrangement(str(body.service_arrangement_id))
-            db_arrangement = raw_arr.get("data", raw_arr) if isinstance(raw_arr, dict) else {}
-        except Exception as exc:
-            logger.warning("fetch_arrangement_details_failed", arrangement_id=str(body.service_arrangement_id), error=str(exc))
-
-    # Resolve arrangement overrides for this service
-    db_arr_loyalty = None
-    db_arr_price_pts = None
-    if body.service_id and db_arrangement:
-        for asvc in db_arrangement.get("arrangement_services", []):
-            if str(asvc.get("service_id")) == str(body.service_id):
-                db_arr_loyalty = asvc.get("loyalty_points")
-                db_arr_price_pts = asvc.get("price_in_points")
-                break
-
-    # Determine loyalty values: database service details is source of truth
-    db_loyalty = db_service.get("loyalty_points")
-    db_price_pts = db_service.get("price_in_points")
-    db_eligible = db_service.get("is_eligible_for_loyalty")
-
-    if db_loyalty is not None and int(db_loyalty) > 0:
-        resolved_loyalty_points = int(db_loyalty)
-    elif body.loyalty_points and int(body.loyalty_points) > 0:
-        resolved_loyalty_points = int(body.loyalty_points)
-    else:
-        resolved_loyalty_points = int((body.service_data or {}).get("loyalty_points", 0) or 0)
-
-    if db_price_pts is not None and int(db_price_pts) > 0:
-        resolved_price_in_points = int(db_price_pts)
-    elif body.price_in_points and int(body.price_in_points) > 0:
-        resolved_price_in_points = int(body.price_in_points)
-    else:
-        resolved_price_in_points = int((body.service_data or {}).get("price_in_points", 0) or 0)
-
-    if db_eligible is not None:
-        resolved_is_eligible = bool(db_eligible)
-    else:
-        resolved_is_eligible = bool(
-            body.is_eligible_for_loyalty
-            or (body.service_data or {}).get("is_eligible_for_loyalty", False)
-        )
-
-    if db_arr_loyalty is not None and int(db_arr_loyalty) > 0:
-        resolved_arr_loyalty_points = int(db_arr_loyalty)
-    elif body.arrangement_loyalty_points is not None:
-        resolved_arr_loyalty_points = int(body.arrangement_loyalty_points)
-    else:
-        resolved_arr_loyalty_points = (body.service_arrangement_data or {}).get("loyalty_points")
-
-    if db_arr_price_pts is not None and int(db_arr_price_pts) > 0:
-        resolved_arr_price_in_points = int(db_arr_price_pts)
-    elif body.arrangement_price_in_points is not None:
-        resolved_arr_price_in_points = int(body.arrangement_price_in_points)
-    else:
-        resolved_arr_price_in_points = (body.service_arrangement_data or {}).get("price_in_points")
-
-    if is_loyalty_booking:
-        # Redeeming points to buy a service at booking must never earn loyalty points
-        resolved_loyalty_points = 0
-        resolved_arr_loyalty_points = 0
-        resolved_is_eligible = False
-
-    service_name = (
-        body.service_name
-        or db_service.get("name")
-        or (body.service_data.get("service_name") or body.service_data.get("name") if body.service_data else "")
-    )
-    service_category = (
-        body.service_category
-        or db_service.get("category")
-        or (body.service_data.get("service_category") or body.service_data.get("category") if body.service_data else "")
-    )
-    service_base_price = str(
-        body.base_price
-        or db_service.get("base_price")
-        or (body.service_data.get("base_price") if body.service_data else "0")
-        or "0"
-    )
-    service_base_duration = int(
-        body.base_duration
-        or db_service.get("duration_minutes")
-        or (body.service_data.get("base_duration") or body.service_data.get("duration") if body.service_data else 60)
-        or 60
-    )
-    service_data = {
-        "id": str(body.service_id) if body.service_id else "",
-        "name": service_name,
-        "category": service_category,
-        "base_price": service_base_price,
-        "base_duration": service_base_duration,
-        **(body.service_data or {}),
-        "is_eligible_for_loyalty": resolved_is_eligible,
-        "loyalty_points": resolved_loyalty_points,
-        "price_in_points": resolved_price_in_points,
-    }
-
-    arrangement_type = (
-        body.arrangement_type
-        or db_arrangement.get("arrangement_type")
-        or (body.service_arrangement_data.get("arrangement_type") or body.service_arrangement_data.get("type") if body.service_arrangement_data else "")
-    )
-    room_name = (
-        body.room_name
-        or body.arrangement_name
-        or db_arrangement.get("name")
-        or (body.service_arrangement_data.get("arrangement_name") or body.service_arrangement_data.get("room_name") or body.service_arrangement_data.get("name") if body.service_arrangement_data else "")
-    )
-    service_arrangement_data = {
-        "id": str(body.service_arrangement_id) if body.service_arrangement_id else "",
-        "arrangement_type": arrangement_type,
-        "room_name": room_name,
-        "arrangement_name": room_name,
-        **(body.service_arrangement_data or {}),
-        "loyalty_points": resolved_arr_loyalty_points,
-        "price_in_points": resolved_arr_price_in_points,
-    }
-
-
     therapist_name = (
         body.therapist_name
         or (body.therapist_data.get("therapist_name") or body.therapist_data.get("name") if body.therapist_data else "")
@@ -854,19 +823,16 @@ async def create_booking(
             customer_data=customer_data,
             branch_id=body.branch_id,
             branch_data=branch_data,
-            service_id=body.service_id or uuid.uuid4(),
-            service_data=service_data,
-            service_arrangement_id=body.service_arrangement_id,
-            service_arrangement_data=service_arrangement_data,
+            services=service_entries,
             therapist_id=selected_therapist_id,
             therapist_data=therapist_data,
             appointment_start=appointment_start,
             appointment_end=appointment_end,
-            duration_minutes=service_base_duration,
+            duration_minutes=total_services_duration(service_entries) or 60,
             extra_minutes=int(body.extra_minutes or 0),
             total_duration=body.total_duration,
             addons_duration=int(body.addons_duration or 0) if body.addons_duration is not None else None,
-            base_price=Decimal(str(body.base_price)) if body.base_price is not None else None,
+            base_price=Decimal(str(fallback_base)) if fallback_base is not None else None,
             pricing=pricing,
             addons=addon_records,
             customer_notes=body.customer_notes or body.customer_message or None,
@@ -929,8 +895,7 @@ async def create_booking(
     # ── Deduct loyalty points if this is a loyalty booking ──────────────
     if is_loyalty_booking or booking_type_str == "loyalty":
         points_to_deduct = (
-            resolved_arr_price_in_points
-            or resolved_price_in_points
+            entries_points_cost
             or (int(body.price_in_points) if getattr(body, "price_in_points", None) else 0)
             or (int(body.loyalty_points) if body.loyalty_points else 0)
             or (int(body.loyalty_data.get("points_cost", 0)) if body.loyalty_data else 0)
@@ -1080,8 +1045,7 @@ async def create_booking(
                         "invoice_number": inv_num_res,
                         "invoice_id": inv_id_res,
                         "points_cost": (
-                            resolved_arr_price_in_points
-                            or resolved_price_in_points
+                            entries_points_cost
                             or (int(body.price_in_points) if getattr(body, "price_in_points", None) else 0)
                             or (int(body.loyalty_points) if body.loyalty_points else 0)
                             or (int(body.loyalty_data.get("points_cost", 0)) if body.loyalty_data else 0)
@@ -1140,8 +1104,9 @@ async def create_booking(
                 customer_name=cust_name or None,
                 branch_id=str(body.branch_id) if body.branch_id else None,
                 branch_name=branch_name or None,
-                service_id=str(body.service_id) if body.service_id else None,
+                service_id=service_entries[0]["service_id"] or None,
                 service_name=service_name or None,
+                services=cache_services_payload(service_entries),
             )
             logger.info(
                 "appointment_cache_created_for_draft_booking",
@@ -1163,6 +1128,7 @@ async def create_booking(
             booking_id=str(booking.id),
             booking_number=_safe_str(getattr(booking, "booking_number", None)),
             customer_id=str(booking.customer_id),
+            services=_services_out(booking),
             final_amount=str(booking.total_amount),
             status=booking.status,
             payment_status=booking.payment_status,
@@ -1390,6 +1356,21 @@ async def update_booking(
         except Exception:
             pass
 
+    # Multi-service: replace the booked services (same branch + therapist)
+    new_service_entries: list[dict[str, Any]] | None = None
+    if body.services:
+        try:
+            new_service_entries = await resolve_service_entries(
+                ushauth,
+                body.services,
+                is_loyalty_booking=str(getattr(booking, "booking_type", "")) == "loyalty",
+            )
+        except ServiceValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+
     target_start = to_local_tz(body.appointment_start)
     if target_start is None and body.appointment_date and body.appointment_time:
         try:
@@ -1418,6 +1399,7 @@ async def update_booking(
         branch_data=branch_data,
         service_arrangement_id=body.service_arrangement_id,
         service_arrangement_data=service_arrangement_data,
+        services=new_service_entries,
         appointment_start=target_start,
         extra_minutes=body.extra_minutes,
         customer_notes=body.customer_notes,
@@ -1475,6 +1457,7 @@ async def update_booking(
             payment_status=str(updated.payment_status) if updated.payment_status else "",
             branch_id=str(updated.branch_id) if updated.branch_id else "",
             service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else "",
+            services=ev_data.get("services") or [],
             source=body.source or "",
             reason=body.reason or "",
             booking_number=str(ev_data.get("booking_number") or getattr(updated, "booking_number", "") or ""),
@@ -1532,6 +1515,7 @@ async def update_booking(
             payment_status=cache_payment_status,
             branch_id=str(updated.branch_id) if updated.branch_id else None,
             service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else None,
+            services=cache_services_payload(get_booking_services(updated)),
         )
         logger.info(
             "appointment_cache_updated_on_booking_update",
