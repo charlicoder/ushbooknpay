@@ -187,3 +187,13 @@ The `booking/` and `payment/` directories are designed to be extracted into inde
 1. Each has its own domain, application, infrastructure, and interfaces layers
 2. They communicate only through the outbox event system
 3. The only shared code is `app/core/` and `app/common/` — move to a shared library
+
+
+```
+# Dry-run (no DB writes)
+uv run python -m scripts.import_appointments_csv scripts/data/appointment_list_2026-10-23.csv
+
+# Execute import (creates customers/bookings and publishes SQS events)
+uv run python -m scripts.import_appointments_csv scripts/data/appointment_list_2026-10-23.csv --execute
+
+```
