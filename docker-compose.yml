@@ -1,3 +1,9 @@
+# =============================================================================
+# ushbooknpay — docker-compose.yml (DEVELOPMENT)
+# For production use: docker compose -f docker-compose.prod.yml up --build -d
+#                 OR: ./start-prod.sh
+# =============================================================================
+
 services:
   web:
     build:
@@ -17,7 +23,7 @@ services:
       - ushspa-network
     volumes:
       - .:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8003 --reload --loop uvloop --http httptools
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8003/api/v1/health/')"]
