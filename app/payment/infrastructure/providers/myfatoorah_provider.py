@@ -21,6 +21,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from app.payment_links.infrastructure.myfatoorah_gateway import sanitize_customer_name
 import httpx
 
 from app.core.config import Settings, get_settings
@@ -133,7 +134,7 @@ class MyFatoorahProvider:
         # Step 2: ExecutePayment
         execute_payload = {
             "PaymentMethodId": payment_method_id,
-            "CustomerName": request.customer_name,
+            "CustomerName": sanitize_customer_name(request.customer_name),
             "CustomerEmail": request.customer_email,
             "MobileCountryCode": "+965",
             "CustomerMobile": request.customer_phone.lstrip("+"),

@@ -21,12 +21,27 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import re
 from datetime import timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 import httpx
+
+
+_CUSTOMER_NAME_DISALLOWED = re.compile(r"[^\w\s.\-']", re.UNICODE)
+
+
+def sanitize_customer_name(name: str | None, default: str = "Customer") -> str:
+    """MyFatoorah rejects punctuation (e.g. ':' in "إلى : خالتي") in CustomerName.
+
+    Keeps letters (any script, incl. Arabic), digits, spaces, '.', '-' and "'";
+    drops everything else and collapses whitespace.
+    """
+    cleaned = _CUSTOMER_NAME_DISALLOWED.sub(" ", name or "").replace("_", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()[:100]
+    return cleaned or default
 
 from app.core.config import Settings
 from app.core.exceptions import PaymentProviderError, RefundError
@@ -210,7 +225,7 @@ class MyFatoorahGateway(PaymentLinkGateway):
         payload: dict[str, Any] = {
             "NotificationOption": "LNK",
             "InvoiceValue": float(request.amount),
-            "CustomerName": request.customer_name or "Customer",
+            "CustomerName": sanitize_customer_name(request.customer_name),
             "DisplayCurrencyIso": request.currency,
             "Language": "en",
             "CustomerReference": request.reference,
