@@ -10,6 +10,7 @@ that is seeded in ushauth (``payment_links.*``):
   GET    /payment-links/                      payment_links.list     (?target_type&target_id)
   GET    /payment-links/{link_id}/            payment_links.view
   POST   /payment-links/{link_id}/sync/       payment_links.view     (pull status from gateway)
+  POST   /payment-links/{link_id}/renew/      payment_links.create   (new link for an expired unpaid one)
   POST   /payment-links/{link_id}/cancel/     payment_links.cancel
   POST   /payment-links/{link_id}/refund/     payment_links.refund
 
@@ -545,6 +546,21 @@ async def get_payment_link(
 ) -> JSONResponse:
     service = PaymentLinkService(session, settings, _gateway(None, settings))
     return _ok(PaymentLinkOut.from_link(await service.get_link(link_id)))
+
+
+@router.post("/{link_id}/renew/", summary="Renew an expired unpaid payment link (creates a new link)")
+@router.post("/{link_id}/renew", include_in_schema=False)
+async def renew_payment_link(
+    link_id: uuid.UUID,
+    session: DBSession,
+    settings: AppSettings,
+    user: Annotated[TokenPayload, Depends(require_permission("payment_links.create"))],
+) -> JSONResponse:
+    actor_id, actor_data = _actor(user)
+    probe = await PaymentLinkService(session, settings, _gateway(None, settings)).get_link(link_id)
+    service = PaymentLinkService(session, settings, _gateway(probe.gateway, settings))
+    link = await service.renew_link(link_id, actor_id=actor_id, actor_data=actor_data)
+    return _ok(PaymentLinkOut.from_link(link), status.HTTP_201_CREATED)
 
 
 @router.post("/{link_id}/sync/", summary="Check status with the gateway and settle if paid")

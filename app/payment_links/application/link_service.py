@@ -283,6 +283,47 @@ class PaymentLinkService:
         )
         return link
 
+    # ── Renew ───────────────────────────────────────────────────────────
+    async def renew_link(
+        self,
+        link_id: uuid.UUID,
+        *,
+        actor_id: str,
+        actor_data: dict[str, Any] | None = None,
+        expiry_minutes: int | None = None,
+    ) -> PaymentLink:
+        """Issue a fresh link for an unpaid link whose validity has run out.
+
+        Only unpaid links that are expired (by ``expires_at`` or status), cancelled
+        or failed can be renewed. The previous link is cancelled at the gateway
+        (best effort) and replaced by a new one for the same target and amount.
+        """
+        old = await self.get_link(link_id)
+        if old.status in (
+            PaymentLinkStatus.PAID.value,
+            PaymentLinkStatus.REFUNDED.value,
+            PaymentLinkStatus.PARTIALLY_REFUNDED.value,
+        ):
+            raise ValidationError("This payment link is already paid and cannot be renewed.")
+        renewable = (
+            old.status in (PaymentLinkStatus.EXPIRED.value, PaymentLinkStatus.CANCELLED.value, PaymentLinkStatus.FAILED.value)
+            or self.is_expired(old)
+        )
+        if not renewable:
+            raise ValidationError("This payment link is still active and does not need to be renewed.")
+        return await self.create_link(
+            target_type=old.target_type,
+            target_id=old.target_id,
+            amount=Decimal(str(old.amount)),
+            actor_id=actor_id,
+            actor_data=actor_data,
+            invoice_id=old.invoice_id,
+            invoice_number=old.invoice_number,
+            force_new=True,
+            expiry_minutes=expiry_minutes,
+            request_data={"renewed_from": str(old.id)},
+        )
+
     # ── Sync (pull) ─────────────────────────────────────────────────────
     async def sync_status(self, link_id: uuid.UUID) -> PaymentLink:
         """Pull the state from the gateway and settle if it was paid.

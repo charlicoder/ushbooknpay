@@ -350,6 +350,7 @@ class PaymentListItem(BaseModel):
 
     service_id: str | None = None
     branch_id: str | None = None
+    branch_data: dict[str, Any] | None = None
     service_arrangement_id: str | None = None
 
     addons_price: str | None = None

@@ -358,6 +358,7 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         sender_id=str(p.sender_id) if p.sender_id else None,
         service_id=str(p.service_id) if p.service_id else None,
         branch_id=str(p.branch_id) if p.branch_id else None,
+        branch_data=p.branch_data or (b_data.get("branch_data") if isinstance(b_data, dict) and isinstance(b_data.get("branch_data"), dict) else None),
         service_arrangement_id=str(p.service_arrangement_id) if p.service_arrangement_id else None,
         addons_price=str(p.addons_price) if p.addons_price is not None else None,
         extra_time=p.extra_time,
@@ -964,7 +965,11 @@ async def list_payments(
     if payment_provider_filter and isinstance(payment_provider_filter, str):
         conditions.append(Payment.payment_provider == PaymentProvider.normalise(payment_provider_filter).value)
     if payment_through_filter and isinstance(payment_through_filter, str):
-        conditions.append(Payment.payment_through == PaymentThrough.normalise(payment_through_filter).value)
+        pt_norm = PaymentThrough.normalise(payment_through_filter).value
+        if pt_norm in (PaymentThrough.USHDESK.value, PaymentThrough.DESK.value):
+            conditions.append(func.lower(Payment.payment_through).in_(["desk", "ushdesk"]))
+        else:
+            conditions.append(func.lower(Payment.payment_through) == pt_norm.lower())
     if payment_gateway_filter and isinstance(payment_gateway_filter, str):
         conditions.append(Payment.payment_gateway == PaymentGateway.normalise(payment_gateway_filter).value)
     if payment_id_filter and isinstance(payment_id_filter, str):
