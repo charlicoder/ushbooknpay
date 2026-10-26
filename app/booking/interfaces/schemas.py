@@ -297,6 +297,10 @@ class CreateBookingRequest(BaseModel):
             return v
         if isinstance(v, str):
             s = v.strip().lower()
+            if s in ("checkedin", "checked-in"):
+                s = "checked_in"
+            elif s in ("inprogress", "in-progress"):
+                s = "in_progress"
             if s in BookingStatus._value2member_map_:
                 return BookingStatus(s)
             return s
@@ -888,7 +892,7 @@ class UpdateBookingStatusRequest(BaseModel):
 
     status: BookingStatus = Field(
         ...,
-        description="Target booking status: requested, payment_pending, confirmed, in_progress, completed, cancelled, reschedule_requested, reschedule_approved, no_show",
+        description="Target booking status: requested, payment_pending, confirmed, checked_in, in_progress, completed, cancelled, reschedule_requested, reschedule_approved, no_show",
     )
     payment_status: PaymentStatus | str | None = Field(
         default=None,
@@ -941,6 +945,24 @@ class UpdateBookingStatusRequest(BaseModel):
         description="Payment number from payment record or voucher.",
     )
 
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def sanitize_status(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, BookingStatus):
+            return v
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("checkedin", "checked-in"):
+                s = "checked_in"
+            elif s in ("inprogress", "in-progress"):
+                s = "in_progress"
+            if s in BookingStatus._value2member_map_:
+                return BookingStatus(s)
+            return s
+        return v
 
     @field_validator("payment_provider", mode="before")
     @classmethod

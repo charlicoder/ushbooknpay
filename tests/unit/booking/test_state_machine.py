@@ -68,3 +68,15 @@ class TestBookingStateMachine:
         """Ensure all BookingStatus values have an entry in the transition table."""
         for status in BookingStatus:
             assert status in VALID_TRANSITIONS, f"{status} not in VALID_TRANSITIONS"
+
+    def test_pipeline_transitions(self):
+        sm = BookingStateMachine(BookingStatus.CONFIRMED)
+        assert sm.can_transition_to(BookingStatus.CHECKED_IN) is True
+        sm.transition_to(BookingStatus.CHECKED_IN)
+        assert sm.current_status == BookingStatus.CHECKED_IN
+        assert sm.can_transition_to(BookingStatus.IN_PROGRESS) is True
+        sm.transition_to(BookingStatus.IN_PROGRESS)
+        assert sm.current_status == BookingStatus.IN_PROGRESS
+        assert sm.can_transition_to(BookingStatus.COMPLETED) is True
+        sm.transition_to(BookingStatus.COMPLETED)
+        assert sm.current_status == BookingStatus.COMPLETED

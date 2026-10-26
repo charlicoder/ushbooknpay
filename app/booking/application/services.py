@@ -1093,7 +1093,7 @@ class BookingService:
                     f"{booking.internal_notes or ''}\n[{utcnow().isoformat()}] Status changed to {status.value} by {source}: {reason}"
                 ).strip()
 
-            if status in (BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED):
+            if status in (BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN, BookingStatus.IN_PROGRESS, BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED):
                 await self._repo.delete_hold(booking_id)
 
             if status in (BookingStatus.REFUNDED, "refunded"):
@@ -1809,6 +1809,20 @@ class BookingService:
                     therapist_id=ev_data["therapist_id"] or None,
                 )
             )
+        elif new_status in (
+            BookingStatus.CHECKED_IN,
+            "checked_in",
+            BookingStatus.IN_PROGRESS,
+            "in_progress",
+        ):
+            # Intermediate statuses checked_in and in_progress do not dispatch SQS events
+            # or update appointment cache.
+            logger.info(
+                "skipping_sqs_event_for_intermediate_status",
+                booking_id=ev_data.get("booking_id"),
+                new_status=new_status_val,
+            )
+            return
         else:
             ev_update = dict(ev_data)
             ev_update.pop("change_by_user", None)

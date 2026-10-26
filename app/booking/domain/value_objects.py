@@ -29,6 +29,8 @@ class BookingStatus(str, Enum):
     REQUESTED = "requested"
     PAYMENT_PENDING = "payment_pending"
     CONFIRMED = "confirmed"
+    CHECKED_IN = "checked_in"
+    IN_PROGRESS = "in_progress"
     PAYMENT_FAILED = "payment_failed"
     RESCHEDULE_REQUESTED = "reschedule_requested"
     RESCHEDULE_APPROVED = "reschedule_approved"

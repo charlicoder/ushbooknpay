@@ -252,3 +252,77 @@ async def test_update_booking_endpoint_dispatches_booking_updated_sqs_event():
     assert event.event_type == "booking.updated"
     assert event.booking_id == str(booking_id)
     mock_ushauth.update_appointment_cache_by_booking_id.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_status_to_checked_in_does_not_dispatch_sqs_event():
+    """Intermediate status checked_in must not dispatch SQS event or update appointment cache."""
+    mock_session = AsyncMock()
+    service = BookingService(session=mock_session)
+
+    booking = _create_dummy_booking(status="confirmed")
+    service._repo.get_by_id = AsyncMock(return_value=booking)
+    service._repo.update = AsyncMock(return_value=booking)
+    service._repo.delete_hold = AsyncMock()
+    service._record_status_change = AsyncMock()
+    service._enqueue_event = AsyncMock()
+
+    updated = await service.update_status(
+        booking_id=booking.id,
+        new_status=BookingStatus.CHECKED_IN,
+        reason="Customer Checked In",
+    )
+
+    assert booking.status == "checked_in"
+    service._enqueue_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_status_to_in_progress_does_not_dispatch_sqs_event():
+    """Intermediate status in_progress must not dispatch SQS event or update appointment cache."""
+    mock_session = AsyncMock()
+    service = BookingService(session=mock_session)
+
+    booking = _create_dummy_booking(status="checked_in")
+    service._repo.get_by_id = AsyncMock(return_value=booking)
+    service._repo.update = AsyncMock(return_value=booking)
+    service._repo.delete_hold = AsyncMock()
+    service._record_status_change = AsyncMock()
+    service._enqueue_event = AsyncMock()
+
+    updated = await service.update_status(
+        booking_id=booking.id,
+        new_status=BookingStatus.IN_PROGRESS,
+        reason="Service In Progress",
+    )
+
+    assert booking.status == "in_progress"
+    service._enqueue_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_status_from_in_progress_to_completed_dispatches_sqs_event():
+    """Transition from in_progress to completed dispatches BookingCompletedEvent."""
+    mock_session = AsyncMock()
+    service = BookingService(session=mock_session)
+
+    booking = _create_dummy_booking(status="in_progress")
+    service._repo.get_by_id = AsyncMock(return_value=booking)
+    service._repo.update = AsyncMock(return_value=booking)
+    service._repo.delete_hold = AsyncMock()
+    service._record_status_change = AsyncMock()
+    service._enqueue_event = AsyncMock()
+
+    updated = await service.update_status(
+        booking_id=booking.id,
+        new_status=BookingStatus.COMPLETED,
+        reason="Service Completed",
+    )
+
+    assert booking.status == "completed"
+    service._enqueue_event.assert_called_once()
+    event = service._enqueue_event.call_args[0][0]
+    assert isinstance(event, BookingCompletedEvent)
+    assert event.event_type == "booking.completed"
+    assert event.booking_id == str(booking.id)
+

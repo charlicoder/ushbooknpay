@@ -36,11 +36,27 @@ VALID_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
     ),
     BookingStatus.CONFIRMED: frozenset(
         {
+            BookingStatus.CHECKED_IN,
+            BookingStatus.IN_PROGRESS,
             BookingStatus.RESCHEDULE_REQUESTED,
             BookingStatus.CANCELLED,
             BookingStatus.REFUNDED,
             BookingStatus.COMPLETED,
             BookingStatus.NO_SHOW,
+        }
+    ),
+    BookingStatus.CHECKED_IN: frozenset(
+        {
+            BookingStatus.IN_PROGRESS,
+            BookingStatus.COMPLETED,
+            BookingStatus.CANCELLED,
+            BookingStatus.NO_SHOW,
+        }
+    ),
+    BookingStatus.IN_PROGRESS: frozenset(
+        {
+            BookingStatus.COMPLETED,
+            BookingStatus.CANCELLED,
         }
     ),
     BookingStatus.PAYMENT_FAILED: frozenset(
