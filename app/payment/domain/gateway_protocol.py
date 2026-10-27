@@ -64,6 +64,7 @@ class RefundRequest:
 
     provider_payment_id: str
     amount: Decimal | None = None  # None = full refund
+    currency: str = "KWD"
     reason: str = ""
 
 

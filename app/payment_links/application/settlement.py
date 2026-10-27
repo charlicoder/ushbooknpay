@@ -50,6 +50,7 @@ from app.payment.domain.value_objects import (
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory
 from app.payment.infrastructure.repository import generate_payment_number
 from app.payment_links.domain.gateway import GatewayPaymentState, GatewayPaymentStatus
+from app.payment_links.domain.registry import provider_group_for
 from app.payment_links.infrastructure.models import (
     PaymentLink,
     PaymentLinkStatus,
@@ -299,6 +300,9 @@ class PaymentSettlementService:
         booking.payment_status = PaymentStatus.SUCCESS.value
         booking.payment_id = link.gateway_payment_id or booking.payment_id
         booking.payment_provider = link.provider_label
+        booking.payment_provider_group = provider_group_for(link.gateway)
+        booking.payment_source = link.gateway
+        booking.payment_link_id = link.id
         booking.payment_method = link.payment_method or booking.payment_method
         booking.payment_url = link.payment_url
         booking.payment_data = {
@@ -343,6 +347,9 @@ class PaymentSettlementService:
                 payment_provider=link.provider_label,
                 payment_through=PaymentThrough.USHDESK.value,
                 payment_gateway=link.gateway,
+                payment_provider_group=provider_group_for(link.gateway),
+                payment_source=link.gateway,
+                payment_link_id=link.id,
                 payment_method=link.payment_method or "card",
                 payment_url=link.payment_url,
                 invoice_id=link.gateway_invoice_id,
@@ -382,6 +389,9 @@ class PaymentSettlementService:
             payment.transaction_status = "SUCCESS"
             payment.paid_at = paid_at
             payment.payment_provider = link.provider_label
+            payment.payment_provider_group = provider_group_for(link.gateway)
+            payment.payment_source = link.gateway
+            payment.payment_link_id = link.id
             payment.payment_method = link.payment_method or payment.payment_method
             await self._session.flush()
 
@@ -435,6 +445,9 @@ class PaymentSettlementService:
             payment.track_id = link.track_id or payment.track_id
             payment.reference_id = link.reference_id or payment.reference_id
             payment.payment_provider = link.provider_label or payment.payment_provider
+            payment.payment_provider_group = provider_group_for(link.gateway) or payment.payment_provider_group
+            payment.payment_source = link.gateway or payment.payment_source
+            payment.payment_link_id = link.id
             payment.payment_method = link.payment_method or payment.payment_method
             payment.payment_url = link.payment_url or payment.payment_url
             if link.invoice_number and not payment.invoice_number:
@@ -492,6 +505,9 @@ class PaymentSettlementService:
             payment_method=link.payment_method or "payment_link",
             payment_through=PaymentThrough.USHDESK.value,
             payment_provider=link.provider_label,
+            payment_provider_group=provider_group_for(link.gateway),
+            payment_source=link.gateway,
+            payment_link_id=link.id,
             payment_for=PaymentFor.GIFT_VOUCHER.value,
             payment_url=link.payment_url,
             invoice_id=link.gateway_invoice_id,

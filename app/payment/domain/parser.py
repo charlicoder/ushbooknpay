@@ -112,12 +112,22 @@ def parse_gateway_response(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     # ── 3. Gateway & Transaction Identifiers ──────────────────────────────
+    ref_obj = payload.get("reference") if isinstance(payload.get("reference"), dict) else {}
+    source_obj = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+
     invoice_id = str(
-        data.get("InvoiceId") or payload.get("invoiceId") or payload.get("InvoiceId") or ""
+        data.get("InvoiceId")
+        or payload.get("invoiceId")
+        or payload.get("InvoiceId")
+        or (payload.get("id") if str(payload.get("id") or "").startswith("chg_") else "")
+        or ""
     ).strip() or None
 
     transaction_id = str(
-        first_txn.get("TransactionId") or payload.get("transaction_id") or ""
+        first_txn.get("TransactionId")
+        or payload.get("transaction_id")
+        or ref_obj.get("transaction")
+        or ""
     ).strip() or None
 
     payment_id = str(
@@ -125,30 +135,50 @@ def parse_gateway_response(payload: dict[str, Any]) -> dict[str, Any]:
         or data.get("PaymentId")
         or payload.get("payment_id")
         or payload.get("PaymentId")
+        or ref_obj.get("payment")
+        or payload.get("id")
         or ""
     ).strip() or None
 
-    reference_id = str(first_txn.get("ReferenceId") or "").strip() or None
-    track_id = str(first_txn.get("TrackId") or "").strip() or None
+    reference_id = str(
+        first_txn.get("ReferenceId")
+        or ref_obj.get("gateway")
+        or ref_obj.get("order")
+        or ""
+    ).strip() or None
+    track_id = str(
+        first_txn.get("TrackId")
+        or ref_obj.get("track")
+        or ref_obj.get("acquirer")
+        or ""
+    ).strip() or None
 
     # Raw gateway status string (verbatim)
-    transaction_status = str(first_txn.get("TransactionStatus") or "").strip() or None
+    transaction_status = str(first_txn.get("TransactionStatus") or payload.get("status") or "").strip() or None
 
     # ── 4. Payment Method & Gateway ───────────────────────────────────────
-    gateway_name = str(first_txn.get("PaymentGateway") or payload.get("gateway") or "").strip() or None
+    source_id = str(source_obj.get("id") or source_obj.get("payment_method") or "").strip().lower()
+    gateway_name = (
+        str(first_txn.get("PaymentGateway") or payload.get("gateway") or "").strip()
+        or ("Deema" if "deema" in source_id else None)
+    )
     payment_method = "knet" if gateway_name and "knet" in gateway_name.lower() else "card"
-    if gateway_name:
+    if "deema" in source_id or (gateway_name and "deema" in gateway_name.lower()):
+        payment_method = "deema"
+    elif gateway_name:
         if "apple" in gateway_name.lower():
             payment_method = "apple_pay"
         elif "google" in gateway_name.lower():
             payment_method = "google_pay"
 
-    # Normalise payment_gateway to spec values: KNET | TAP | Other
+    # Normalise payment_gateway to spec values: KNET | TAP | Deema | Other
     payment_gateway = None
     if gateway_name:
         gn_up = gateway_name.upper()
         if "KNET" in gn_up or "K-NET" in gn_up:
             payment_gateway = "KNET"
+        elif "DEEMA" in gn_up:
+            payment_gateway = "Deema"
         elif "TAP" in gn_up:
             payment_gateway = "TAP"
         else:

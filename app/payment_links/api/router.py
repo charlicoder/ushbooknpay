@@ -85,6 +85,49 @@ def _gateway(name: str | None, settings: Settings):
     return get_gateway(name or settings.PAYMENT_LINK_DEFAULT_GATEWAY, get_http_client(), settings)
 
 
+def _success_redirect_base(gateway_name: str | None, settings: Settings) -> str:
+    if (gateway_name or "").strip().lower() == "deema":
+        return (
+            getattr(settings, "DEEMA_SUCCESS_URL", "")
+            or getattr(settings, "TAP_REDIRECT_URL", "")
+            or getattr(settings, "MYFATOORAH_SUCCESS_URL", "")
+        )
+    return getattr(settings, "MYFATOORAH_SUCCESS_URL", "")
+
+
+def _error_redirect_base(gateway_name: str | None, settings: Settings) -> str:
+    if (gateway_name or "").strip().lower() == "deema":
+        return (
+            getattr(settings, "DEEMA_ERROR_URL", "")
+            or getattr(settings, "MYFATOORAH_ERROR_URL", "")
+        )
+    return getattr(settings, "MYFATOORAH_ERROR_URL", "")
+
+
+def _extract_lookup_key(qp: dict[str, Any], bd: dict[str, Any] | None = None) -> str | None:
+    body = bd if isinstance(bd, dict) else {}
+    return (
+        qp.get("paymentId")
+        or qp.get("PaymentId")
+        or qp.get("tap_id")
+        or qp.get("charge_id")
+        or qp.get("Id")
+        or qp.get("id")
+        or qp.get("InvoiceId")
+        or qp.get("invoiceId")
+        or qp.get("invoice_id")
+        or body.get("paymentId")
+        or body.get("PaymentId")
+        or body.get("tap_id")
+        or body.get("charge_id")
+        or body.get("Id")
+        or body.get("id")
+        or body.get("InvoiceId")
+        or qp.get("link_id")
+        or body.get("link_id")
+    )
+
+
 # ── Public webhook (declared first so it never collides with /{link_id}/) ──
 @router.api_route(
     "/webhook/{gateway}",
@@ -108,15 +151,7 @@ async def gateway_webhook(
     # 1. Handle GET requests (browser redirects after payment or gateway verification pings)
     if request.method == "GET":
         qp = dict(request.query_params)
-        lookup_key = (
-            qp.get("paymentId")
-            or qp.get("PaymentId")
-            or qp.get("Id")
-            or qp.get("id")
-            or qp.get("InvoiceId")
-            or qp.get("invoiceId")
-            or qp.get("invoice_id")
-        )
+        lookup_key = _extract_lookup_key(qp)
         if not lookup_key:
             logger.info("gateway_webhook_ping_received", gateway=gateway)
             return JSONResponse(
@@ -204,9 +239,9 @@ async def gateway_webhook(
             error_msg = "This booking has been cancelled and this payment link is no longer valid. Your payment has been automatically refunded."
 
         target_redirect_base = (
-            getattr(settings, "MYFATOORAH_SUCCESS_URL", "")
+            _success_redirect_base(gw.name, settings)
             if is_paid
-            else getattr(settings, "MYFATOORAH_ERROR_URL", "")
+            else _error_redirect_base(gw.name, settings)
         )
 
         redirect_params: dict[str, Any] = {
@@ -245,15 +280,7 @@ async def gateway_webhook(
     raw_body = await request.body()
     if not raw_body or raw_body.strip() == b"" or raw_body.strip() == b"{}":
         qp = dict(request.query_params)
-        lookup_key = (
-            qp.get("paymentId")
-            or qp.get("PaymentId")
-            or qp.get("Id")
-            or qp.get("id")
-            or qp.get("InvoiceId")
-            or qp.get("invoiceId")
-            or qp.get("invoice_id")
-        )
+        lookup_key = _extract_lookup_key(qp)
         if lookup_key:
             try:
                 state = await gw.get_payment_state(str(lookup_key))
@@ -331,29 +358,22 @@ async def payment_link_success(
 
     qp = data.get("query_params") or {}
     bd = data.get("body") if isinstance(data.get("body"), dict) else {}
-    lookup_key = (
-        qp.get("paymentId")
-        or qp.get("PaymentId")
-        or qp.get("Id")
-        or qp.get("id")
-        or qp.get("InvoiceId")
-        or bd.get("paymentId")
-        or bd.get("PaymentId")
-        or bd.get("Id")
-        or bd.get("InvoiceId")
-        or qp.get("link_id")
-        or bd.get("link_id")
-    )
+    lookup_key = _extract_lookup_key(qp, bd)
 
     settlement_outcome = None
     target_booking_id = None
     link_status = None
     state = None
     link = None
+    resolved_gw_name: str | None = (
+        qp.get("gateway")
+        or bd.get("gateway")
+        or ("deema" if (qp.get("tap_id") or bd.get("tap_id") or str(lookup_key or "").startswith("chg_")) else None)
+    )
 
     if lookup_key:
         try:
-            gw = _gateway(None, settings)
+            gw = _gateway(resolved_gw_name, settings)
             state = await gw.get_payment_state(str(lookup_key))
             logger.info("payment_link_success_state_verified", lookup_key=lookup_key, status=state.status.value)
             settlement = PaymentSettlementService(session, settings)
@@ -381,7 +401,7 @@ async def payment_link_success(
         except Exception as exc:
             logger.error("payment_link_success_settlement_failed", lookup_key=lookup_key, error=str(exc))
 
-    target_redirect_base = getattr(settings, "MYFATOORAH_SUCCESS_URL", "")
+    target_redirect_base = _success_redirect_base(link.gateway if link else resolved_gw_name, settings)
     if target_redirect_base and request.method == "GET":
         redirect_params: dict[str, Any] = {
             "paymentId": str(lookup_key) if lookup_key else "",
@@ -438,25 +458,18 @@ async def payment_link_failed(
 
     qp = data.get("query_params") or {}
     bd = data.get("body") if isinstance(data.get("body"), dict) else {}
-    lookup_key = (
-        qp.get("paymentId")
-        or qp.get("PaymentId")
-        or qp.get("Id")
-        or qp.get("id")
-        or qp.get("InvoiceId")
-        or bd.get("paymentId")
-        or bd.get("PaymentId")
-        or bd.get("Id")
-        or bd.get("InvoiceId")
-        or qp.get("link_id")
-        or bd.get("link_id")
+    lookup_key = _extract_lookup_key(qp, bd)
+    resolved_gw_name: str | None = (
+        qp.get("gateway")
+        or bd.get("gateway")
+        or ("deema" if (qp.get("tap_id") or bd.get("tap_id") or str(lookup_key or "").startswith("chg_")) else None)
     )
 
     state = None
     link = None
     if lookup_key:
         try:
-            gw = _gateway(None, settings)
+            gw = _gateway(resolved_gw_name, settings)
             state = await gw.get_payment_state(str(lookup_key))
             settlement = PaymentSettlementService(session, settings)
             link = await settlement.get_locked_link_by_any_identifier(
@@ -472,7 +485,7 @@ async def payment_link_failed(
         except Exception as exc:
             logger.warning("payment_link_failed_handling_warn", lookup_key=lookup_key, error=str(exc))
 
-    target_redirect_base = getattr(settings, "MYFATOORAH_ERROR_URL", "")
+    target_redirect_base = _error_redirect_base(link.gateway if link else resolved_gw_name, settings)
     if target_redirect_base and request.method == "GET":
         redirect_params: dict[str, Any] = {
             "paymentId": str(lookup_key) if lookup_key else "",
@@ -664,7 +677,8 @@ async def refund_payment_link(
     user: Annotated[TokenPayload, Depends(require_permission("payment_links.refund"))],
 ) -> JSONResponse:
     actor_id, actor_data = _actor(user)
-    service = PaymentLinkRefundService(session, settings, _gateway(None, settings), get_http_client())
+    probe = await PaymentLinkService(session, settings, _gateway(None, settings)).get_link(link_id)
+    service = PaymentLinkRefundService(session, settings, _gateway(probe.gateway, settings), get_http_client())
     refund = await service.refund(
         link_id, amount=body.amount, reason=body.reason, actor_id=actor_id, actor_data=actor_data
     )

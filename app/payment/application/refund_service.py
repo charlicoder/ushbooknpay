@@ -126,6 +126,10 @@ class RefundService:
             from app.payment_links import get_gateway
 
             return get_gateway("myfatoorah", self._http, self._settings)
+        if "deema" in prov:
+            from app.payment_links import get_gateway
+
+            return get_gateway("deema", self._http, self._settings)
         return TapProvider(http_client=self._http, settings=self._settings)
 
     async def _resolve_refund_to_execute(
@@ -298,7 +302,8 @@ class RefundService:
                 raise ValidationError("Net refunded amount after cancellation fee must be greater than zero.")
 
         # Identify external gateway transaction id
-        if "fatoorah" in str(payment.payment_provider or "").lower():
+        prov_lower = str(payment.payment_provider or payment.payment_gateway or "").lower()
+        if "fatoorah" in prov_lower or "deema" in prov_lower:
             gateway_payment_id = payment.invoice_id or payment.payment_id or payment.transaction_id
         else:
             gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id
@@ -708,8 +713,14 @@ class RefundService:
         provider_ref = None
         gateway_raw_res = None
 
-        if payment and ("fatoorah" in gateway_name or "tap" in gateway_name or "gateway" in str(refund.refund_method).lower()):
-            if "fatoorah" in gateway_name:
+        if payment and (
+            "fatoorah" in gateway_name
+            or "deema" in gateway_name
+            or "tap" in gateway_name
+            or "gateway" in str(refund.refund_method).lower()
+            or "payment_link" in str(refund.refund_method).lower()
+        ):
+            if "fatoorah" in gateway_name or "deema" in gateway_name:
                 gateway_payment_id = payment.invoice_id or payment.payment_id or payment.transaction_id
             else:
                 gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id

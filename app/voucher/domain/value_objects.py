@@ -110,6 +110,9 @@ class VoucherPaymentProvider(str, Enum):
             "directlink": cls.DIRECTLINK.value,
             "direct": cls.DIRECTLINK.value,
             "deema": cls.DEEMA.value,
+            "deemapaymentlink": cls.DEEMA.value,
+            "deemalink": cls.DEEMA.value,
+            "tapdeema": cls.DEEMA.value,
             "other": cls.OTHER.value,
         }
         if cleaned in lookup:

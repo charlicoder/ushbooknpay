@@ -128,6 +128,9 @@ class TapProvider:
             },
             "metadata": request.metadata or {},
         }
+        merchant_id = getattr(self._settings, "TAP_MERCHANT_ID", "")
+        if merchant_id:
+            payload["merchant"] = {"id": str(merchant_id).strip()}
 
         response = await self._request("POST", "/charges", payload)
 
@@ -179,6 +182,7 @@ class TapProvider:
         """Issue a refund for a Tap charge."""
         payload: dict[str, Any] = {
             "charge_id": request.provider_payment_id,
+            "currency": (request.currency or "KWD").upper(),
             "reason": request.reason or "Booking cancellation",
         }
         if request.amount is not None:
@@ -187,7 +191,7 @@ class TapProvider:
         response = await self._request("POST", "/refunds", payload)
 
         refund_status = response.get("status", "").upper()
-        is_refunded = refund_status in {"INITIATED", "APPROVED"}
+        is_refunded = refund_status in {"INITIATED", "PENDING", "ACCEPTED", "APPROVED", "REFUNDED", "SUCCEEDED"}
 
         if not is_refunded:
             raise RefundError(

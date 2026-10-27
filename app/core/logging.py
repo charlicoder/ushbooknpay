@@ -35,6 +35,7 @@ _SENSITIVE_KEYS: frozenset[str] = frozenset(
         "aws_session_token",
         "myfatoorah_api_key",
         "tap_secret_key",
+        "deema_secret_key",
         "card_number",
         "cvv",
         "card_holder",

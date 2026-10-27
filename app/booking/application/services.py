@@ -1032,15 +1032,23 @@ class BookingService:
             if is_confirmed_booking and is_pending_payment and is_amount_diff:
                 try:
                     from app.payment_links.application.link_service import PaymentLinkService
+                    from app.payment_links.domain.registry import resolve_gateway_name
                     from app.payment_links import get_gateway
                     from app.api.deps import get_http_client
                     from app.core.config import get_settings
 
                     pl_settings = get_settings()
-                    gateway = get_gateway(pl_settings.PAYMENT_LINK_DEFAULT_GATEWAY, get_http_client(), pl_settings)
+                    initial_gw_name = resolve_gateway_name(
+                        getattr(booking, "payment_provider", None),
+                        pl_settings.PAYMENT_LINK_DEFAULT_GATEWAY,
+                    )
+                    gateway = get_gateway(initial_gw_name, get_http_client(), pl_settings)
                     pl_service = PaymentLinkService(self._session, pl_settings, gateway)
 
                     open_link = await pl_service._find_open_link("booking", booking.id)
+                    if open_link is not None and open_link.gateway and open_link.gateway != gateway.name:
+                        gateway = get_gateway(open_link.gateway, get_http_client(), pl_settings)
+                        pl_service = PaymentLinkService(self._session, pl_settings, gateway)
                     has_payment_link = open_link is not None or bool(getattr(booking, "payment_url", None))
 
                     if has_payment_link:
@@ -1486,15 +1494,20 @@ class BookingService:
         return booking
 
     async def _cancel_booking_payment_links(self, booking: Booking) -> None:
-        """Cancel payment links with gateway (e.g. MyFatoorah) and clear payment_url on booking."""
+        """Cancel payment links with gateway (e.g. MyFatoorah, Deema) and clear payment_url on booking."""
         try:
             from app.payment_links.application.link_service import PaymentLinkService
+            from app.payment_links.domain.registry import resolve_gateway_name
             from app.payment_links import get_gateway
             from app.api.deps import get_http_client
             from app.core.config import get_settings
 
             pl_settings = get_settings()
-            gateway = get_gateway(pl_settings.PAYMENT_LINK_DEFAULT_GATEWAY, get_http_client(), pl_settings)
+            gw_name = resolve_gateway_name(
+                getattr(booking, "payment_provider", None),
+                pl_settings.PAYMENT_LINK_DEFAULT_GATEWAY,
+            )
+            gateway = get_gateway(gw_name, get_http_client(), pl_settings)
             session = getattr(self._repo, "_session", None) or getattr(self, "_session", None)
             if session is not None:
                 pl_service = PaymentLinkService(session, pl_settings, gateway)

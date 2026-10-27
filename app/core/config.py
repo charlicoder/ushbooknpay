@@ -269,10 +269,42 @@ class Settings(BaseSettings):
     PAYMENT_WEBHOOK_DEBUG_LOG: bool = False
 
     # Tap Payments
-    TAP_SECRET_KEY: str = ""  # never log
+    TAP_SECRET_KEY: str = ""  # never log; set in .env
+    TAP_MERCHANT_ID: str = ""
     TAP_BASE_URL: str = "https://api.tap.company/v2"
     TAP_CALLBACK_URL: str = ""
     TAP_REDIRECT_URL: str = ""
+
+    # Deema (via Tap Payments Charges API — source: src_deema)
+    # Tap hosted-link sources (KNET / Visa-Master / Apple Pay) used by the "Tap Providers" options.
+    # KNET uses the direct KNET source so the hosted page only offers KNET. Do not use src_all
+    # (it shows every payment method).
+    TAP_KNET_SOURCE_ID: str = "src_kw.knet"
+    TAP_CARD_SOURCE_ID: str = "src_card"
+    TAP_APPLEPAY_SOURCE_ID: str = "src_apple_pay"
+    DEEMA_SECRET_KEY: str = ""  # never log; set in .env
+    DEEMA_MERCHANT_ID: str = ""
+    DEEMA_BASE_URL: str = "https://api.tap.company/v2"
+    DEEMA_SOURCE_ID: str = "src_deema"
+    DEEMA_CALLBACK_URL: str = ""
+    DEEMA_WEBHOOK_URL: str = ""
+    DEEMA_SUCCESS_URL: str = ""
+    DEEMA_ERROR_URL: str = ""
+    DEEMA_DEFAULT_COUNTRY_CODE: str = "+965"
+
+    @field_validator("TAP_BASE_URL", "DEEMA_BASE_URL", mode="before")
+    @classmethod
+    def validate_tap_base_url(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.split("#")[0].strip()
+        return v or "https://api.tap.company/v2"
+
+    @field_validator("TAP_SECRET_KEY", "DEEMA_SECRET_KEY", "TAP_MERCHANT_ID", "DEEMA_MERCHANT_ID", mode="before")
+    @classmethod
+    def validate_tap_credentials(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.split("#")[0].strip()
+        return v
 
     # ── 9. Domain Configuration ──────────────────────────────────────────
     AVAILABILITY_DAYS_AHEAD: int = Field(default=10, ge=1, le=60)

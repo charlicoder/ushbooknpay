@@ -29,9 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus
 from app.booking.infrastructure.models import Booking
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError, PaymentProviderError, ValidationError
+from app.core.exceptions import ConflictError, NotFoundError, PaymentProviderError, ValidationError
 from app.core.logging import get_logger
 from app.payment_links.domain.gateway import PaymentLinkGateway, PaymentLinkRequest
+from app.payment_links.domain.registry import provider_group_for
 from app.payment_links.infrastructure.models import (
     PaymentLink,
     PaymentLinkStatus,
@@ -175,6 +176,27 @@ class PaymentLinkService:
         amount = resolved_amount
 
         existing = await self._find_open_link(canonical, target_id)
+        if (
+            existing is not None
+            and existing.gateway != self._gateway.name
+            and existing.status in (PaymentLinkStatus.CREATED.value, PaymentLinkStatus.PENDING.value)
+            and existing.payment_url
+            and not self.is_expired(existing)
+        ):
+            # An active link for another provider/source is still payable: do not silently
+            # replace it. The caller must cancel it (or wait for it to expire) first.
+            raise ConflictError(
+                f"An active {existing.provider_label} payment link already exists for this "
+                f"{canonical.replace('_', ' ')}. Cancel it or wait until it expires before "
+                "creating a new payment link.",
+                detail={
+                    "link_id": str(existing.id),
+                    "gateway": existing.gateway,
+                    "provider_label": existing.provider_label,
+                    "expires_at": existing.expires_at.isoformat() if existing.expires_at else None,
+                },
+                code="ACTIVE_PAYMENT_LINK_EXISTS",
+            )
         if existing is not None:
             reusable = (
                 existing.payment_url
@@ -554,6 +576,10 @@ class PaymentLinkService:
         target.payment_url = link.payment_url
         target.payment_provider = link.provider_label
         if target_type == PaymentLinkTarget.BOOKING.value:
+            # Provider trace: which family / source / link this booking is being paid through.
+            target.payment_provider_group = provider_group_for(link.gateway)
+            target.payment_source = link.gateway
+            target.payment_link_id = link.id
             return
         if target.status == GiftVoucherStatus.CREATED.value:
             # CREATED → PAYMENT_PENDING (emits the pending event; ushnotice sends nothing for it)

@@ -59,6 +59,7 @@ from app.payment.domain.value_objects import (
 )
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory
 from app.payment.infrastructure.repository import generate_payment_number
+from app.payment.infrastructure.providers.deema_provider import DeemaProvider
 from app.payment.infrastructure.providers.myfatoorah_provider import MyFatoorahProvider
 from app.payment.infrastructure.providers.tap_provider import TapProvider
 from app.payment.interfaces.schemas import (
@@ -89,9 +90,11 @@ def _get_provider(
     settings: object,
 ) -> object:
     """Return the correct payment provider implementation."""
-    prov = provider.strip().lower() if provider else ""
-    if prov in ("myfatoorah", "fatoorah"):
+    prov = provider.strip().lower().replace("-", "").replace("_", "").replace(" ", "") if provider else ""
+    if prov in ("myfatoorah", "fatoorah", "myfatora"):
         return MyFatoorahProvider(http_client=http_client, settings=settings)  # type: ignore
+    elif prov in ("deema", "deemapaymentlink", "deemalink", "tapdeema"):
+        return DeemaProvider(http_client=http_client, settings=settings)  # type: ignore
     elif prov == "tap":
         return TapProvider(http_client=http_client, settings=settings)  # type: ignore
     raise HTTPException(

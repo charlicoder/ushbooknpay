@@ -29,6 +29,9 @@ class PaymentProvider(str, Enum):
     DIRECTLINK = "DirectLink"
     DEEMA = "Deema"
     KNET_CARD = "KNET Card"
+    TAP_KNET = "Tap KNET"
+    TAP_CARD = "Tap Card"
+    TAP_APPLE_PAY = "Tap Apple Pay"
     OTHER = "Other"
 
     @classmethod
@@ -45,6 +48,12 @@ class PaymentProvider(str, Enum):
             "directlink": cls.DIRECTLINK,
             "direct": cls.DIRECTLINK,
             "deema": cls.DEEMA,
+            "deemapaymentlink": cls.DEEMA,
+            "deemalink": cls.DEEMA,
+            "tapdeema": cls.DEEMA,
+            "tapknet": cls.TAP_KNET,
+            "tapcard": cls.TAP_CARD,
+            "tapapplepay": cls.TAP_APPLE_PAY,
             "knetcard": cls.KNET_CARD,
             "knet": cls.KNET_CARD,
             "card": cls.KNET_CARD,
@@ -86,17 +95,19 @@ class PaymentGateway(str, Enum):
 
     KNET = "KNET"
     TAP = "TAP"
+    DEEMA = "Deema"
     OTHER = "Other"
 
     @classmethod
     def normalise(cls, value: str) -> "PaymentGateway":
         if not value:
             return cls.OTHER
-        v = value.strip().upper()
+        v = value.strip().upper().replace("-", "").replace("_", "").replace(" ", "")
         mapping = {
             "KNET": cls.KNET,
-            "K-NET": cls.KNET,
             "TAP": cls.TAP,
+            "DEEMA": cls.DEEMA,
+            "DEEMAPAYMENTLINK": cls.DEEMA,
             "OTHER": cls.OTHER,
         }
         return mapping.get(v, cls.OTHER)
@@ -136,6 +147,8 @@ class PaymentMethod(str, Enum):
     KNET = "knet"
     APPLE_PAY = "apple_pay"
     GOOGLE_PAY = "google_pay"
+    DEEMA = "deema"
+    PAYMENT_LINK = "payment_link"
     CASH = "cash"
     UNKNOWN = "unknown"
 
@@ -177,9 +190,11 @@ class RefundMethod(str, Enum):
             "payment_gateway": cls.PAYMENT_GATEWAY,
             "gateway": cls.PAYMENT_GATEWAY,
             "tap": cls.PAYMENT_GATEWAY,
+            "deema": cls.PAYMENT_GATEWAY,
             "myfatoorah": cls.PAYMENT_GATEWAY,
             "knet": cls.PAYMENT_GATEWAY,
             "payment_link": cls.PAYMENT_LINK,
+            "deema_paymentlink": cls.PAYMENT_LINK,
             "link": cls.PAYMENT_LINK,
             "cash": cls.CASH,
             "card": cls.CARD,

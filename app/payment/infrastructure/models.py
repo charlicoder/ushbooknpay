@@ -158,6 +158,10 @@ class Payment(Base):
     payment_through: Mapped[str | None] = mapped_column(String(20), nullable=True)     # ushspa | desk | other
     payment_provider: Mapped[str | None] = mapped_column(String(20), nullable=True)    # MyFatoorah | DirectLink | Deema | Other
     payment_gateway: Mapped[str | None] = mapped_column(String(20), nullable=True)     # KNET | TAP | Other
+    # Provider trace (see bookings): family, exact source and the payment link used.
+    payment_provider_group: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    payment_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    payment_link_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     payment_for: Mapped[str | None] = mapped_column(
         String(30),
         nullable=True,

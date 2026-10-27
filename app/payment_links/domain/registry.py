@@ -28,9 +28,30 @@ def available_gateways() -> list[str]:
     return sorted(_FACTORIES)
 
 
+# Gateways that are processed through Tap Payments (grouped as one provider family in the UI
+# and in the ``payment_provider_group`` trace column).
+TAP_FAMILY_GATEWAYS = frozenset({"deema", "tap_knet", "tap_card", "tap_applepay"})
+
+
+def provider_group_for(gateway_name: str | None) -> str | None:
+    """Provider family for a gateway name: ``Tap`` | ``MyFatoorah`` | the name itself."""
+    name = (gateway_name or "").strip().lower()
+    if not name:
+        return None
+    if name in TAP_FAMILY_GATEWAYS:
+        return "Tap"
+    if name == "myfatoorah":
+        return "MyFatoorah"
+    return name
+
+
 def resolve_gateway_name(provider: str | None, default: str) -> str:
     """Map a stored ``payment_provider`` label (e.g. 'MyFatoorah') to a registry key."""
     key = (provider or default or "").strip().lower().replace(" ", "")
+    # Exact match first so labels such as 'Tap KNET' resolve to 'tap_knet'.
+    for name in _FACTORIES:
+        if name.replace("_", "") == key.replace("_", ""):
+            return name
     for name in _FACTORIES:
         if name in key or key in name:
             return name

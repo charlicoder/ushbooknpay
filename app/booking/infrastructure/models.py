@@ -215,6 +215,11 @@ class Booking(Base):
     payment_gateway: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     payment_through: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     payment_method: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    # Provider trace: provider family (Tap | MyFatoorah), exact source (tap_knet | tap_card |
+    # tap_applepay | deema | myfatoorah) and the payment link the payment was made through.
+    payment_provider_group: Mapped[str | None] = mapped_column(String(30), nullable=True, default=None)
+    payment_source: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
+    payment_link_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, default=None)
     payment_url: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
     # ── Loyalty ───────────────────────────────────────────────────────

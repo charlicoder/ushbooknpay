@@ -85,6 +85,7 @@ class PaymentProvider(str, Enum):
 
     MYFATOORAH = "myfatoorah"
     TAP = "tap"
+    DEEMA = "deema"
 
 
 class BookingPaymentProvider(str, Enum):
@@ -94,6 +95,9 @@ class BookingPaymentProvider(str, Enum):
     PAYMENTLINK = "PaymentLink"
     DEEMA = "Deema"
     KNET_CARD = "KNET Card"
+    TAP_KNET = "Tap KNET"
+    TAP_CARD = "Tap Card"
+    TAP_APPLE_PAY = "Tap Apple Pay"
     OTHER = "Other"
 
     @classmethod
@@ -109,6 +113,12 @@ class BookingPaymentProvider(str, Enum):
             "directlink": cls.PAYMENTLINK,
             "direct": cls.PAYMENTLINK,
             "deema": cls.DEEMA,
+            "deemapaymentlink": cls.DEEMA,
+            "deemalink": cls.DEEMA,
+            "tapdeema": cls.DEEMA,
+            "tapknet": cls.TAP_KNET,
+            "tapcard": cls.TAP_CARD,
+            "tapapplepay": cls.TAP_APPLE_PAY,
             "knetcard": cls.KNET_CARD,
             "knet": cls.KNET_CARD,
             "card": cls.KNET_CARD,
@@ -122,6 +132,7 @@ class BookingPaymentGateway(str, Enum):
 
     KNET = "KNET"
     TAP = "TAP"
+    DEEMA = "Deema"
     OTHER = "Other"
 
     @classmethod
@@ -132,6 +143,8 @@ class BookingPaymentGateway(str, Enum):
         mapping = {
             "KNET": cls.KNET,
             "TAP": cls.TAP,
+            "DEEMA": cls.DEEMA,
+            "DEEMAPAYMENTLINK": cls.DEEMA,
             "OTHER": cls.OTHER,
         }
         return mapping.get(v, cls.OTHER)
