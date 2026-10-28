@@ -379,6 +379,7 @@ class CreateBookingRequest(BaseModel):
 
     # Pricing & Duration
     pricing_details: dict[str, Any] | None = Field(default=None, alias="pricingDetails")
+    discount: str | Decimal | float | None = Field(default=None, alias="discount")
     total_price: str | Decimal | float | None = Field(default=None, alias="totalPrice")
     total_duration: int | None = Field(default=None, alias="totalDuration")
     currency: str = Field(default="KWD")

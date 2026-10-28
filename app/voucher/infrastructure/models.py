@@ -206,6 +206,12 @@ class GiftVoucher(Base):
     total_amount: Mapped[float] = mapped_column(
         Numeric(precision=10, scale=3), nullable=False
     )
+    discount: Mapped[Decimal] = mapped_column(
+        Numeric(precision=10, scale=3),
+        nullable=False,
+        default=Decimal("0.000"),
+        server_default=text("0.000"),
+    )
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KWD")
 
     # ── Personalisation ───────────────────────────────────────────────────
@@ -271,6 +277,9 @@ class GiftVoucher(Base):
         default=_now_kuwait,
         onupdate=_now_kuwait,
         nullable=False,
+    )
+    update_history: Mapped[list[dict] | None] = mapped_column(
+        JSONB, nullable=True, default=list, server_default=text("'[]'::jsonb")
     )
 
 
@@ -378,6 +387,7 @@ class GiftVoucher(Base):
             "created_by": str(self.created_by) if self.created_by else None,
             "total_duration": self.total_duration,
             "total_amount": str(self.total_amount),
+            "discount": str(getattr(self, "discount", "0.000")),
             "currency": self.currency,
             "gift_message": self.gift_message,
             "gift_from": self.gift_from,
@@ -397,4 +407,5 @@ class GiftVoucher(Base):
             "payment_through": self.payment_through or None,
             "created_at": _to_local_tz(self.created_at).isoformat() if self.created_at else None,
             "updated_at": _to_local_tz(self.updated_at).isoformat() if self.updated_at else None,
+            "update_history": self.update_history or [],
         }

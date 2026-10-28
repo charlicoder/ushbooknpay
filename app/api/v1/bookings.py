@@ -793,11 +793,17 @@ async def create_booking(
         tot_price = str(body.total_price or fallback_base or "0")
         curr = body.currency or "KWD"
 
+    disc_price = str(
+        body.discount
+        or (body.pricing_details.get("discount") if body.pricing_details else None)
+        or (body.pricing_details.get("discount_amount") if body.pricing_details else None)
+        or "0"
+    )
     pricing = PricingBreakdown(
         arrangement_price=Decimal(arr_price),
         price_for_extra_minutes=Decimal(ext_price),
         addon_price=Decimal(add_price),
-        discount=Decimal("0.000"),
+        discount=Decimal(disc_price),
         tax=Decimal("0.000"),
         fees=Decimal("0.000"),
         total=Decimal(tot_price),

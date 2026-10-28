@@ -39,35 +39,41 @@ app/
 
 ## Domain Boundaries
 
-| Domain | Responsibility |
-|--------|----------------|
-| Booking | Booking lifecycle, state machine, double-booking prevention, reschedule requests |
-| Payment | Payment sessions, provider integration (MyFatoorah / Tap), refunds |
-| Availability | O(n log n) slot computation from schedules, bookings, leaves, and holds |
-| Vouchers | Gift voucher lifecycle, digital/physical/service vouchers, delivery status state machine, verification & redemption |
+| Domain       | Responsibility                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| Booking      | Booking lifecycle, state machine, double-booking prevention, reschedule requests                                    |
+| Payment      | Payment sessions, provider integration (MyFatoorah / Tap), refunds                                                  |
+| Availability | O(n log n) slot computation from schedules, bookings, leaves, and holds                                             |
+| Vouchers     | Gift voucher lifecycle, digital/physical/service vouchers, delivery status state machine, verification & redemption |
 
 ## Key Design Decisions
 
 ### 1. Transactional Outbox
+
 Events (BookingCreated, BookingConfirmed, etc.) are written to the `outbox_events` table **in the same database transaction** as the state change. A background asyncio task polls the table and publishes to SQS. This guarantees at-least-once delivery even if the process crashes.
 
 ### 2. O(n log n) Availability Engine
+
 The availability engine is a pure computation module with zero I/O. It:
+
 - Merges working hours + extra hours using sorted sweep
 - Subtracts leaves, bookings, and holds using two-pointer subtraction
 - Generates 30-minute time blocks with service-duration continuity checks
 - Applies home-service travel buffers before/after home bookings
 
 ### 3. Double-Booking Prevention
+
 - Row-level `SELECT FOR UPDATE` lock on the booking row during creation
 - Overlap query against `bookings` table before inserting
 - `TemporaryHold` records block slots during payment (15-minute TTL)
 - PostgreSQL EXCLUDE constraint (defined in Alembic migration) as final guard
 
 ### 4. Payment Provider Selection
+
 Customers choose between **MyFatoorah** (KNET/Card) and **Tap Payments** at payment time. Both satisfy the `PaymentGateway` Protocol — no inheritance, pure structural subtyping. Adding a third provider requires only a new file implementing the Protocol.
 
 ### 5. JWT + Application Token Auth
+
 - `USHSPA-TOKEN` header: service-to-service authentication
 - `Authorization: Bearer <JWT>` header: customer identity (RS256, validated locally from ushauth public key)
 - Both are required on customer-facing endpoints
@@ -76,17 +82,20 @@ Customers choose between **MyFatoorah** (KNET/Card) and **Tap Payments** at paym
 ## Quick Start
 
 ### 1. Copy environment file
+
 ```bash
 cp .env.example .env
 # Fill in required values: DATABASE_URL, USHSPA_TOKEN, JWT_PUBLIC_KEY, API_GATEWAY_BASE_URL
 ```
 
 ### 2. Start infrastructure
+
 ```bash
 docker-compose up postgres redis -d
 ```
 
 ### 3. Run migrations
+
 ```bash
 pip install -e ".[dev]"
 alembic upgrade head
@@ -94,47 +103,49 @@ docker exec ushbooknpay alembic upgrade head
 ```
 
 ### 4. Start the service
+
 ```bash
 uvicorn app.main:app --reload --port 8003
 ```
 
 ### 5. API Documentation
+
 Open `http://localhost:8001/api/docs/`
 
 ## API Endpoints
 
 ### Bookings & Payments
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/health/` | Health check |
-| GET | `/api/v1/ready/` | Readiness probe |
-| GET | `/api/v1/availability/` | Query therapist availability |
-| POST | `/api/v1/bookings/` | Create booking |
-| GET | `/api/v1/bookings/` | List customer bookings |
-| GET | `/api/v1/bookings/{id}/` | Get booking detail |
-| POST | `/api/v1/bookings/{id}/cancel/` | Cancel booking |
-| POST | `/api/v1/bookings/{id}/reschedule/` | Request reschedule |
-| POST | `/api/v1/payments/initiate/` | Initiate payment |
-| GET | `/api/v1/payments/{booking_id}/status/` | Get payment status |
-| POST | `/api/v1/payments/webhook/myfatoorah/` | MyFatoorah webhook |
-| POST | `/api/v1/payments/webhook/tap/` | Tap webhook |
+| Method | Path                                    | Description                  |
+| ------ | --------------------------------------- | ---------------------------- |
+| GET    | `/api/v1/health/`                       | Health check                 |
+| GET    | `/api/v1/ready/`                        | Readiness probe              |
+| GET    | `/api/v1/availability/`                 | Query therapist availability |
+| POST   | `/api/v1/bookings/`                     | Create booking               |
+| GET    | `/api/v1/bookings/`                     | List customer bookings       |
+| GET    | `/api/v1/bookings/{id}/`                | Get booking detail           |
+| POST   | `/api/v1/bookings/{id}/cancel/`         | Cancel booking               |
+| POST   | `/api/v1/bookings/{id}/reschedule/`     | Request reschedule           |
+| POST   | `/api/v1/payments/initiate/`            | Initiate payment             |
+| GET    | `/api/v1/payments/{booking_id}/status/` | Get payment status           |
+| POST   | `/api/v1/payments/webhook/myfatoorah/`  | MyFatoorah webhook           |
+| POST   | `/api/v1/payments/webhook/tap/`         | Tap webhook                  |
 
 ### Gift Vouchers (See [Full Voucher API Documentation](docs/VOUCHERS_API.md))
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/vouchers/` | Create gift voucher (service, digital, physical) |
-| GET | `/api/v1/vouchers/my-vouchers/` | List my received gift vouchers |
-| GET | `/api/v1/vouchers/my-sent-vouchers/` | List my sent gift vouchers |
-| GET | `/api/v1/vouchers/{id}/` | Get voucher detail (sender or admin) |
-| GET | `/api/v1/vouchers/public/{public_token}/` | Public gift card page (secret code masked) |
-| POST | `/api/v1/vouchers/public/{public_token}/` | Verify secret code & retrieve full voucher |
-| PATCH / PUT | `/api/v1/vouchers/{id}/` | Update gift voucher details (partial or full) |
-| PATCH | `/api/v1/vouchers/{id}/status/` | Update voucher lifecycle status (internal) |
-| PATCH | `/api/v1/vouchers/{id}/delivery-status/` | Update physical delivery status (staff/drivers) |
-| GET | `/api/v1/vouchers/` | List all vouchers (interservice) |
-| GET | `/api/v1/vouchers/admin/` | Admin: list all vouchers with filters |
+| Method      | Path                                      | Description                                      |
+| ----------- | ----------------------------------------- | ------------------------------------------------ |
+| POST        | `/api/v1/vouchers/`                       | Create gift voucher (service, digital, physical) |
+| GET         | `/api/v1/vouchers/my-vouchers/`           | List my received gift vouchers                   |
+| GET         | `/api/v1/vouchers/my-sent-vouchers/`      | List my sent gift vouchers                       |
+| GET         | `/api/v1/vouchers/{id}/`                  | Get voucher detail (sender or admin)             |
+| GET         | `/api/v1/vouchers/public/{public_token}/` | Public gift card page (secret code masked)       |
+| POST        | `/api/v1/vouchers/public/{public_token}/` | Verify secret code & retrieve full voucher       |
+| PATCH / PUT | `/api/v1/vouchers/{id}/`                  | Update gift voucher details (partial or full)    |
+| PATCH       | `/api/v1/vouchers/{id}/status/`           | Update voucher lifecycle status (internal)       |
+| PATCH       | `/api/v1/vouchers/{id}/delivery-status/`  | Update physical delivery status (staff/drivers)  |
+| GET         | `/api/v1/vouchers/`                       | List all vouchers (interservice)                 |
+| GET         | `/api/v1/vouchers/admin/`                 | Admin: list all vouchers with filters            |
 
 ## Running Tests
 
@@ -155,27 +166,28 @@ docker-compose up
 
 ## Domain Events Published to SQS
 
-| Event | Trigger |
-|-------|---------|
-| `Booking.Created` | New booking created |
-| `Booking.Confirmed` | Payment succeeded |
-| `Booking.Cancelled` | Booking cancelled |
-| `Booking.Completed` | Appointment completed |
-| `Booking.NoShow` | Customer no-show |
-| `Booking.RescheduleRequested` | Customer requests reschedule |
-| `Payment.Initiated` | Payment session started |
-| `Payment.Succeeded` | Payment confirmed by provider |
-| `Payment.Failed` | Payment failed |
-| `Payment.RefundIssued` | Refund processed |
-| `Voucher.Active` | Voucher payment confirmed (delivered to recipient) |
-| `Voucher.PaymentPending` | Voucher checkout initiated |
-| `Voucher.Redeemed` | Voucher redeemed for a booking |
+| Event                         | Trigger                                            |
+| ----------------------------- | -------------------------------------------------- |
+| `Booking.Created`             | New booking created                                |
+| `Booking.Confirmed`           | Payment succeeded                                  |
+| `Booking.Cancelled`           | Booking cancelled                                  |
+| `Booking.Completed`           | Appointment completed                              |
+| `Booking.NoShow`              | Customer no-show                                   |
+| `Booking.RescheduleRequested` | Customer requests reschedule                       |
+| `Payment.Initiated`           | Payment session started                            |
+| `Payment.Succeeded`           | Payment confirmed by provider                      |
+| `Payment.Failed`              | Payment failed                                     |
+| `Payment.RefundIssued`        | Refund processed                                   |
+| `Voucher.Active`              | Voucher payment confirmed (delivered to recipient) |
+| `Voucher.PaymentPending`      | Voucher checkout initiated                         |
+| `Voucher.Redeemed`            | Voucher redeemed for a booking                     |
 
 ## Environment Variables
 
 See [`.env.example`](.env.example) for the full list with documentation.
 
 Critical required variables:
+
 - `DATABASE_URL` — PostgreSQL async connection string
 - `USHSPA_TOKEN` — Application authentication token
 - `JWT_PUBLIC_KEY` — RS256 public key from ushauth
@@ -184,10 +196,10 @@ Critical required variables:
 ## Future Extraction
 
 The `booking/` and `payment/` directories are designed to be extracted into independent microservices with minimal changes:
+
 1. Each has its own domain, application, infrastructure, and interfaces layers
 2. They communicate only through the outbox event system
 3. The only shared code is `app/core/` and `app/common/` — move to a shared library
-
 
 ```
 # Dry-run (no DB writes)

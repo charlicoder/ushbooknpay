@@ -40,6 +40,22 @@ class BookingStatus(str, Enum):
     NO_SHOW = "no_show"
 
 
+# Statuses that no longer occupy a therapist's time slot.
+#
+# This MUST stay in sync with the appointment cache (ushauth ``UshSpaAppointmentCache``) that
+# powers the Therapist / Room Schedule pages. ushnotice deletes the cache row for each of these
+# outcomes, so the schedule shows the slot as free. COMPLETED is deliberately *not* here: a
+# completed booking keeps its cache row (shown on the schedule) and keeps blocking the slot.
+NON_BLOCKING_BOOKING_STATUSES: frozenset[str] = frozenset(
+    {
+        BookingStatus.CANCELLED.value,
+        BookingStatus.NO_SHOW.value,
+        BookingStatus.REFUNDED.value,
+        BookingStatus.PAYMENT_FAILED.value,
+    }
+)
+
+
 class PaymentStatus(str, Enum):
     """Payment lifecycle states within the booking context."""
 

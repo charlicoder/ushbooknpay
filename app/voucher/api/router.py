@@ -51,6 +51,8 @@ from app.voucher.application.voucher_service import GiftVoucherService
 from app.voucher.domain.value_objects import DeliveryStatus, get_delivery_status_label
 from app.voucher.infrastructure.models import GiftVoucher
 from app.voucher.interfaces.schemas import (
+    BatchDeleteVouchersRequest,
+    BatchUpdateVoucherStatusRequest,
     CreateGiftVoucherRequest,
     GiftVoucherListItem,
     GiftVoucherPublicResponse,
@@ -203,6 +205,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         payment_number=_extract_payment_number(v),
         created_at=v.created_at,
         updated_at=v.updated_at,
+        update_history=getattr(v, "update_history", None) or [],
     )
 
 
@@ -293,6 +296,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         created_by=v.created_by,
         created_at=v.created_at,
         updated_at=v.updated_at,
+        update_history=getattr(v, "update_history", None) or [],
     )
 
 
@@ -1000,6 +1004,30 @@ def _resolve_api_requester(request: Request, explicit_id: uuid.UUID | None = Non
     return None
 
 
+def _resolve_api_requester_name(request: Request) -> str | None:
+    for header in ("X-User-Name", "x-user-name", "X-Requester-Name", "x-requester-name"):
+        val = request.headers.get(header)
+        if val:
+            return val
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            import base64
+            import json
+
+            parts = token.split(".")
+            if len(parts) >= 2:
+                padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                jwt_claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                name = jwt_claims.get("full_name") or jwt_claims.get("name") or jwt_claims.get("username")
+                if name:
+                    return str(name)
+        except Exception:
+            pass
+    return None
+
+
 @router.patch(
     "/{voucher_id}/status/",
     summary="Update voucher status (internal)",
@@ -1492,11 +1520,13 @@ async def update_gift_voucher(
             )
 
     svc = GiftVoucherService(session)
+    actor_name = _resolve_api_requester_name(request)
     try:
         voucher = await svc.update_voucher(
             voucher_id=voucher_id,
             fields_to_update=updates,
             actor_id=str(actor_id) if actor_id else None,
+            changed_by_name=actor_name,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
@@ -1509,6 +1539,116 @@ async def update_gift_voucher(
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
+@router.delete(
+    "/{voucher_id}/",
+    summary="Delete a gift voucher",
+    description="Delete a gift voucher record by ID. Requires USHSPA-TOKEN.",
+)
+@router.delete(
+    "/{voucher_id}",
+    include_in_schema=False,
+)
+async def delete_gift_voucher(
+    voucher_id: uuid.UUID,
+    _: RequireAppToken,
+    session: DBSession,
+) -> JSONResponse:
+    """Delete a single gift voucher. Requires USHSPA-TOKEN."""
+    svc = GiftVoucherService(session)
+    try:
+        await svc.delete_voucher(voucher_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "message": f"Gift voucher {voucher_id} deleted successfully."},
+    )
+
+
+@router.post(
+    "/batch-delete/",
+    summary="Batch delete gift vouchers",
+    description="Delete multiple gift vouchers by their IDs. Requires USHSPA-TOKEN.",
+)
+@router.post(
+    "/batch-delete",
+    include_in_schema=False,
+)
+async def batch_delete_gift_vouchers(
+    body: BatchDeleteVouchersRequest,
+    _: RequireAppToken,
+    session: DBSession,
+) -> JSONResponse:
+    """Delete multiple gift vouchers in one request. Requires USHSPA-TOKEN."""
+    svc = GiftVoucherService(session)
+    deleted_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    for vid in body.voucher_ids:
+        try:
+            async with session.begin_nested():
+                await svc.delete_voucher(vid)
+            deleted_ids.append(str(vid))
+        except Exception as exc:
+            err_msg = getattr(exc, "message", None) or str(exc)
+            errors.append({"id": str(vid), "error": err_msg})
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "success": len(deleted_ids) > 0,
+            "deleted_count": len(deleted_ids),
+            "deleted_ids": deleted_ids,
+            "errors": errors,
+        },
+    )
+
+
+@router.post(
+    "/batch-update-status/",
+    summary="Batch update voucher status",
+    description="Update the status of multiple gift vouchers by their IDs. Requires USHSPA-TOKEN.",
+)
+@router.post(
+    "/batch-update-status",
+    include_in_schema=False,
+)
+async def batch_update_voucher_status(
+    body: BatchUpdateVoucherStatusRequest,
+    _: RequireAppToken,
+    session: DBSession,
+    request: Request,
+) -> JSONResponse:
+    """Update status of multiple gift vouchers in one request. Requires USHSPA-TOKEN."""
+    svc = GiftVoucherService(session)
+    actor_id = _resolve_api_requester(request)
+    updated_ids: list[str] = []
+    errors: list[dict[str, str]] = []
+
+    for vid in body.voucher_ids:
+        try:
+            await svc.update_status(
+                voucher_id=vid,
+                new_status=body.status,
+                actor_id=str(actor_id) if actor_id else None,
+            )
+            updated_ids.append(str(vid))
+        except Exception as exc:
+            errors.append({"id": str(vid), "error": str(exc)})
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "success": len(updated_ids) > 0,
+            "updated_count": len(updated_ids),
+            "updated_ids": updated_ids,
+            "errors": errors,
+        },
     )
 
 

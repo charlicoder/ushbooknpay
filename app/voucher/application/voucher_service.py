@@ -239,6 +239,13 @@ class GiftVoucherService:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
             voucher.redeemed_by = created_by
 
+        voucher.update_history = [{
+            "action": "created",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "changed_by": str(created_by) if created_by else "system",
+            "details": f"Created with status {initial_status}",
+        }]
+
         # ── Assign auto-generated voucher number (with retry on collision) ──
         max_attempts = 5
         for attempt in range(max_attempts):
@@ -390,6 +397,18 @@ class GiftVoucherService:
                 voucher.booking_data = booking_data
             if redeemed_by is not None:
                 voucher.redeemed_by = redeemed_by
+
+        # Record update in history
+        history_entry = {
+            "action": "status_updated",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "changed_by": str(actor_id) if actor_id else "staff",
+            "old_status": old_status,
+            "new_status": target_status.value,
+        }
+        current_history = list(voucher.update_history or [])
+        current_history.append(history_entry)
+        voucher.update_history = current_history
 
         await self._repo.flush()
 
@@ -592,6 +611,21 @@ class GiftVoucherService:
             if hasattr(voucher, key):
                 setattr(voucher, key, val)
 
+        # Record update in history
+        history_entry = {
+            "action": "status_updated" if target_status else "details_updated",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "changed_by": str(actor_id) if actor_id else "staff",
+            "changed_by_name": kwargs.get("changed_by_name") or updates.get("changed_by_name"),
+            "old_status": old_status if target_status else None,
+            "new_status": target_status.value if target_status else None,
+            "updated_fields": list(updates.keys()),
+            "note": updates.get("update_note") or kwargs.get("update_note"),
+        }
+        current_history = list(voucher.update_history or [])
+        current_history.append(history_entry)
+        voucher.update_history = current_history
+
         await self._repo.flush()
 
         logger.info(
@@ -608,6 +642,40 @@ class GiftVoucherService:
             )
 
         return voucher
+
+    async def delete_voucher(self, voucher_id: uuid.UUID) -> bool:
+        """
+        Delete a GiftVoucher by ID.
+        Only pending vouchers can be deleted (e.g. 'created', 'payment_pending', 'pending').
+        Active and redeemed vouchers cannot be deleted.
+
+        Raises:
+            NotFoundError: if not found.
+            ValidationError: if the voucher is active, redeemed, or not in pending state.
+        """
+        voucher = await self._repo.get_by_id(voucher_id)
+        if voucher is None:
+            raise NotFoundError(f"Gift voucher {voucher_id} not found.")
+
+        current_status = (voucher.status or "").strip().lower()
+        allowed_pending_statuses = {
+            GiftVoucherStatus.CREATED.value.lower(),
+            GiftVoucherStatus.PAYMENT_PENDING.value.lower(),
+            "pending",
+        }
+
+        if (
+            current_status in (GiftVoucherStatus.ACTIVE.value.lower(), GiftVoucherStatus.REDEEMED.value.lower())
+            or current_status not in allowed_pending_statuses
+        ):
+            raise ValidationError(
+                f"Cannot delete gift voucher with status '{voucher.status}'. Only pending vouchers can be deleted; active and redeemed vouchers cannot be deleted."
+            )
+
+        await self._repo.delete(voucher)
+        await self._repo.flush()
+        logger.info("gift_voucher_deleted", voucher_id=str(voucher_id), status=voucher.status)
+        return True
 
 
     # ── Read operations ───────────────────────────────────────────────────────

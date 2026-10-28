@@ -906,6 +906,7 @@ class GiftVoucherResponse(BaseModel):
     payment_number: str | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
+    update_history: list[dict[str, Any]] | None = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -1000,6 +1001,16 @@ class GiftVoucherListItem(BaseModel):
     created_by: uuid.UUID | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
+    update_history: list[dict[str, Any]] | None = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+class BatchDeleteVouchersRequest(BaseModel):
+    voucher_ids: list[uuid.UUID] = Field(..., min_length=1, description="List of voucher UUIDs to delete")
+
+
+class BatchUpdateVoucherStatusRequest(BaseModel):
+    voucher_ids: list[uuid.UUID] = Field(..., min_length=1, description="List of voucher UUIDs to update")
+    status: str = Field(..., description="Target status ('active', 'created', 'payment_pending', 'redeemed', 'expired', 'cancelled')")
 

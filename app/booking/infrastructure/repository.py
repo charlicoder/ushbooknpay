@@ -20,7 +20,7 @@ from sqlalchemy import and_, cast, delete, func, or_, select, update, Date, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.booking.domain.value_objects import BookingStatus
+from app.booking.domain.value_objects import NON_BLOCKING_BOOKING_STATUSES, BookingStatus
 from app.booking.infrastructure.models import (
     Booking,
     BookingStatusHistory,
@@ -348,7 +348,7 @@ class BookingRepository:
                     Booking.appointment_start < end,
                     Booking.appointment_end > start,
                     Booking.status.notin_(
-                        [BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value]
+                        list(NON_BLOCKING_BOOKING_STATUSES)
                     ),
                 )
             )
@@ -382,7 +382,7 @@ class BookingRepository:
                     Booking.appointment_start < end,
                     Booking.appointment_end > start,
                     Booking.status.notin_(
-                        [BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value]
+                        list(NON_BLOCKING_BOOKING_STATUSES)
                     ),
                 )
             )
@@ -412,7 +412,7 @@ class BookingRepository:
                 Booking.appointment_start < end,
                 Booking.appointment_end > start,
                 Booking.status.notin_(
-                    [BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value]
+                    list(NON_BLOCKING_BOOKING_STATUSES)
                 ),
             )
         )
@@ -445,7 +445,7 @@ class BookingRepository:
                 Booking.appointment_start < end,
                 Booking.appointment_end > start,
                 Booking.status.notin_(
-                    [BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value]
+                    list(NON_BLOCKING_BOOKING_STATUSES)
                 ),
             )
         )

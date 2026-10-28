@@ -448,6 +448,10 @@ class GiftVoucherRepository:
         self._session.add(voucher)
         return voucher
 
+    async def delete(self, voucher: GiftVoucher) -> None:
+        """Delete an existing GiftVoucher from the database."""
+        await self._session.delete(voucher)
+
     async def flush(self) -> None:
         """Flush pending ORM changes to the DB without committing."""
         await self._session.flush()
