@@ -106,6 +106,8 @@ class BookingRequestedEvent(BaseEvent):
     service_name: str = ""
     therapist_id: str = ""
     therapist_name: str = ""
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
     appointment_start: str = ""  # ISO datetime
     appointment_end: str = ""
     duration_minutes: int = 0
@@ -137,6 +139,9 @@ class BookingCreatedEvent(BaseEvent):
     services: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""  # ISO datetime
     appointment_end: str = ""
     duration_minutes: int = 0
@@ -181,6 +186,9 @@ class BookingStatusUpdatedEvent(BaseEvent):
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""
     appointment_end: str = ""
     appointment_date: str = ""
@@ -262,6 +270,9 @@ class BookingConfirmedEvent(BaseEvent):
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""
     appointment_end: str = ""
     appointment_date: str = ""       # e.g. "2026-08-25"
@@ -339,6 +350,9 @@ class BookingPaymentPendingEvent(BaseEvent):
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""
     appointment_end: str = ""
     appointment_date: str = ""
@@ -416,6 +430,9 @@ class BookingCancelledEvent(BaseEvent):
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""
     appointment_end: str = ""
     appointment_date: str = ""
@@ -600,6 +617,9 @@ class BookingCompletedEvent(BaseEvent):
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     appointment_start: str = ""
     appointment_end: str = ""
     appointment_date: str = ""
@@ -710,6 +730,9 @@ class BookingUpdatedEvent(BaseEvent):
     appointment_time: str = ""
     duration: int = 0
     therapist_id: str = ""
+    secondary_therapist_id: str = ""
+    secondary_therapist_name: str = ""
+    secondary_therapist_data: dict[str, Any] = field(default_factory=dict)
     status: str = ""
     payment_status: str = ""
     branch_id: str = ""

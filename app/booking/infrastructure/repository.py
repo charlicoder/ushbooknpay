@@ -199,7 +199,12 @@ class BookingRepository:
             conditions.append(Booking.branch_id == branch_id)
 
         if therapist_id:
-            conditions.append(Booking.therapist_id == therapist_id)
+            conditions.append(
+                or_(
+                    Booking.therapist_id == therapist_id,
+                    Booking.secondary_therapist_id == therapist_id,
+                )
+            )
 
         # Multi-service: match any booked service via JSONB containment (``@>``),
         # served by the GIN index ix_bookings_services_gin. When both filters are
@@ -272,6 +277,7 @@ class BookingRepository:
                     # all booked services (names of secondary services live here)
                     cast(Booking.services, Text).ilike(s),
                     Booking.therapist_data["therapist_name"].astext.ilike(s),
+                    Booking.secondary_therapist_data["therapist_name"].astext.ilike(s),
                 )
             )
 
@@ -335,7 +341,10 @@ class BookingRepository:
             select(Booking)
             .where(
                 and_(
-                    Booking.therapist_id == therapist_id,
+                    or_(
+                        Booking.therapist_id == therapist_id,
+                        Booking.secondary_therapist_id == therapist_id,
+                    ),
                     Booking.appointment_start < end,
                     Booking.appointment_end > start,
                     Booking.status.notin_(
@@ -366,7 +375,10 @@ class BookingRepository:
             select(Booking)
             .where(
                 and_(
-                    Booking.therapist_id.in_(therapist_ids),
+                    or_(
+                        Booking.therapist_id.in_(therapist_ids),
+                        Booking.secondary_therapist_id.in_(therapist_ids),
+                    ),
                     Booking.appointment_start < end,
                     Booking.appointment_end > start,
                     Booking.status.notin_(
@@ -374,7 +386,7 @@ class BookingRepository:
                     ),
                 )
             )
-            .order_by(Booking.therapist_id, Booking.appointment_start)
+            .order_by(Booking.appointment_start)
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
@@ -393,7 +405,10 @@ class BookingRepository:
         """
         stmt = select(Booking.id).where(
             and_(
-                Booking.therapist_id == therapist_id,
+                or_(
+                    Booking.therapist_id == therapist_id,
+                    Booking.secondary_therapist_id == therapist_id,
+                ),
                 Booking.appointment_start < end,
                 Booking.appointment_end > start,
                 Booking.status.notin_(
@@ -403,6 +418,7 @@ class BookingRepository:
         )
         if exclude_booking_id:
             stmt = stmt.where(Booking.id != exclude_booking_id)
+        stmt = stmt.limit(1)
 
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none() is not None
@@ -419,23 +435,28 @@ class BookingRepository:
         if not therapist_ids:
             return set()
 
-        # 1. Conflicting active bookings
-        stmt_bookings = (
-            select(Booking.therapist_id)
-            .where(
-                and_(
+        # 1. Conflicting active bookings (either the primary or the secondary therapist)
+        stmt_bookings = select(Booking.therapist_id, Booking.secondary_therapist_id).where(
+            and_(
+                or_(
                     Booking.therapist_id.in_(therapist_ids),
-                    Booking.appointment_start < end,
-                    Booking.appointment_end > start,
-                    Booking.status.notin_(
-                        [BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value]
-                    ),
-                )
+                    Booking.secondary_therapist_id.in_(therapist_ids),
+                ),
+                Booking.appointment_start < end,
+                Booking.appointment_end > start,
+                Booking.status.notin_(
+                    [BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value]
+                ),
             )
-            .distinct()
         )
         res_bookings = await self._session.execute(stmt_bookings)
-        busy_ids: set[uuid.UUID] = set(res_bookings.scalars().all())
+        requested = set(therapist_ids)
+        busy_ids: set[uuid.UUID] = set()
+        for primary_id, secondary_id in res_bookings.all():
+            if primary_id in requested:
+                busy_ids.add(primary_id)
+            if secondary_id is not None and secondary_id in requested:
+                busy_ids.add(secondary_id)
 
         # 2. Conflicting unexpired temporary holds
         now = utcnow()

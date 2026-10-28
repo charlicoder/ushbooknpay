@@ -263,6 +263,11 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         _extract_therapist_name(therapist_dict)
         or str(therapist_dict.get("therapist_name") or "")
     )
+    secondary_therapist_dict = getattr(booking, "secondary_therapist_data", None) or {}
+    secondary_therapist_name = (
+        _extract_therapist_name(secondary_therapist_dict)
+        or str(secondary_therapist_dict.get("therapist_name") or secondary_therapist_dict.get("full_name") or "")
+    )
 
     pricing_dict = {
         "arrangement_price": str(booking.arrangement_price),
@@ -306,6 +311,9 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "therapist_id": str(booking.therapist_id) if booking.therapist_id else "",
         "therapist_name": therapist_name,
         "therapist_data": therapist_dict,
+        "secondary_therapist_id": str(booking.secondary_therapist_id) if getattr(booking, "secondary_therapist_id", None) else "",
+        "secondary_therapist_name": secondary_therapist_name,
+        "secondary_therapist_data": secondary_therapist_dict,
         "appointment_start": start_iso,
         "appointment_end": end_iso,
         "appointment_date": date_str,
@@ -551,6 +559,8 @@ class BookingService:
         service_arrangement_data: dict | None = None,
         therapist_id: uuid.UUID,
         therapist_data: dict | None = None,
+        secondary_therapist_id: uuid.UUID | None = None,
+        secondary_therapist_data: dict | None = None,
         appointment_start: datetime,
         appointment_end: datetime,
         duration_minutes: int,
@@ -597,7 +607,7 @@ class BookingService:
         """
         if not services:
             if service_id is None:
-                raise ValueError("create_booking requires 'services' or 'service_id'.")
+                raise ValidationError("create_booking requires 'services' or 'service_id'.")
             services = [
                 build_service_entry(
                     service_id=service_id,
@@ -609,7 +619,7 @@ class BookingService:
                 )
             ]
         elif len(services) > MAX_SERVICES_PER_BOOKING:
-            raise ValueError(f"A booking can contain at most {MAX_SERVICES_PER_BOOKING} services.")
+            raise ValidationError(f"A booking can contain at most {MAX_SERVICES_PER_BOOKING} services.")
         primary = primary_fields(services)
         service_id = primary["service_id"]
         service_arrangement_id = primary["service_arrangement_id"]
@@ -622,16 +632,20 @@ class BookingService:
                 return existing
 
         # ── Double-booking check (with row lock) ─────────────────────────
-        is_conflicting = await self._repo.check_therapist_overlap(
-            therapist_id,
-            appointment_start,
-            appointment_end,
-        )
-        if is_conflicting:
-            raise DoubleBookingError(
-                f"Therapist {therapist_id} is already booked for the requested slot.",
-                code="DOUBLE_BOOKING",
+        # Couple/double bookings occupy two therapists: both must be free.
+        if secondary_therapist_id and secondary_therapist_id == therapist_id:
+            raise ValidationError("The secondary therapist must differ from the primary therapist.")
+        for assigned_therapist_id in filter(None, (therapist_id, secondary_therapist_id)):
+            is_conflicting = await self._repo.check_therapist_overlap(
+                assigned_therapist_id,
+                appointment_start,
+                appointment_end,
             )
+            if is_conflicting:
+                raise DoubleBookingError(
+                    f"Therapist {assigned_therapist_id} is already booked for the requested slot.",
+                    code="DOUBLE_BOOKING",
+                )
 
         # ── Create Booking ────────────────────────────────────────────────
         booking = Booking(
@@ -646,6 +660,8 @@ class BookingService:
             service_arrangement_data=primary["service_arrangement_data"],
             therapist_id=therapist_id,
             therapist_data=therapist_data or {},
+            secondary_therapist_id=secondary_therapist_id,
+            secondary_therapist_data=(secondary_therapist_data or {}) if secondary_therapist_id else None,
             appointment_date=local_midnight(appointment_start),
             appointment_start=appointment_start,
             appointment_end=appointment_end,
@@ -754,6 +770,13 @@ class BookingService:
                     services=cache_services_payload(services),
                     therapist_id=str(booking.therapist_id),
                     therapist_name=str(therapist_dict.get("name") or therapist_dict.get("full_name") or ""),
+                    secondary_therapist_id=str(booking.secondary_therapist_id) if booking.secondary_therapist_id else "",
+                    secondary_therapist_name=str(
+                        (booking.secondary_therapist_data or {}).get("name")
+                        or (booking.secondary_therapist_data or {}).get("full_name")
+                        or ""
+                    ),
+                    secondary_therapist_data=booking.secondary_therapist_data or {},
                     appointment_start=to_local_tz(booking.appointment_start).isoformat(),
                     appointment_end=to_local_tz(booking.appointment_end).isoformat(),
                     duration_minutes=booking.duration_minutes,
@@ -803,6 +826,9 @@ class BookingService:
         created_by_user_data: dict | None = None,
         therapist_id: uuid.UUID | None = None,
         therapist_data: dict | None = None,
+        secondary_therapist_id: uuid.UUID | None = None,
+        secondary_therapist_data: dict | None = None,
+        secondary_therapist_provided: bool = False,
         branch_id: uuid.UUID | None = None,
         branch_data: dict | None = None,
         service_arrangement_id: uuid.UUID | None = None,
@@ -842,7 +868,7 @@ class BookingService:
         # ── Replace the booked services (multi-service) ──────────────────
         if services is not None:
             if not services or len(services) > MAX_SERVICES_PER_BOOKING:
-                raise ValueError(
+                raise ValidationError(
                     f"A booking must contain between 1 and {MAX_SERVICES_PER_BOOKING} services."
                 )
             _primary = primary_fields(services)
@@ -856,6 +882,30 @@ class BookingService:
 
         # ── Update timing / therapist if provided ────────────────────────
         target_therapist_id = therapist_id or booking.therapist_id
+        existing_secondary_id = getattr(booking, "secondary_therapist_id", None)
+        explicit_secondary_update = secondary_therapist_provided or secondary_therapist_id is not None
+
+        if explicit_secondary_update:
+            target_secondary_therapist_id = secondary_therapist_id
+            if target_secondary_therapist_id and target_secondary_therapist_id == target_therapist_id:
+                raise ValidationError("The secondary therapist must differ from the primary therapist.")
+        elif existing_secondary_id and existing_secondary_id == target_therapist_id:
+            # Primary therapist was reassigned to the current secondary therapist without
+            # explicitly sending secondary_therapist_id: swap the previous primary into
+            # the secondary slot (or clear if they were already identical).
+            if booking.therapist_id and booking.therapist_id != target_therapist_id:
+                target_secondary_therapist_id = booking.therapist_id
+                secondary_therapist_id = booking.therapist_id
+                secondary_therapist_data = booking.therapist_data
+                secondary_therapist_provided = True
+            else:
+                target_secondary_therapist_id = None
+                secondary_therapist_id = None
+                secondary_therapist_data = None
+                secondary_therapist_provided = True
+        else:
+            target_secondary_therapist_id = existing_secondary_id
+
         target_start = to_local_tz(appointment_start or booking.appointment_start)
         target_extra = extra_minutes if extra_minutes is not None else booking.extra_minutes
         raw_addons_dur = getattr(booking, "addons_duration", 0)
@@ -865,30 +915,41 @@ class BookingService:
 
         if (
             therapist_id is not None
+            or secondary_therapist_provided
+            or secondary_therapist_id is not None
             or appointment_start is not None
             or extra_minutes is not None
             or services is not None
         ):
-            # Check overlap against other bookings
-            is_conflicting = await self._repo.check_therapist_overlap(
-                target_therapist_id,
-                target_start,
-                target_end,
-                exclude_booking_id=booking.id,
-            )
-            if is_conflicting:
-                raise DoubleBookingError(
-                    f"Therapist {target_therapist_id} is already booked for {target_start.isoformat()}.",
-                    code="DOUBLE_BOOKING",
+            # Check overlap against other bookings for all assigned therapists
+            for assigned_tid in filter(None, (target_therapist_id, target_secondary_therapist_id)):
+                is_conflicting = await self._repo.check_therapist_overlap(
+                    assigned_tid,
+                    target_start,
+                    target_end,
+                    exclude_booking_id=booking.id,
                 )
+                if is_conflicting:
+                    raise DoubleBookingError(
+                        f"Therapist {assigned_tid} is already booked for {target_start.isoformat()}.",
+                        code="DOUBLE_BOOKING",
+                    )
 
             booking.therapist_id = target_therapist_id
             if therapist_data is not None:
                 booking.therapist_data = therapist_data
+            if secondary_therapist_provided or secondary_therapist_id is not None:
+                booking.secondary_therapist_id = secondary_therapist_id
+                if secondary_therapist_id is None:
+                    booking.secondary_therapist_data = None
+                elif secondary_therapist_data is not None:
+                    booking.secondary_therapist_data = secondary_therapist_data
             booking.extra_minutes = target_extra
             booking.appointment_start = target_start
             booking.appointment_end = target_end
             booking.appointment_date = local_midnight(target_start)
+        elif secondary_therapist_data is not None and getattr(booking, "secondary_therapist_id", None) is not None:
+            booking.secondary_therapist_data = secondary_therapist_data
 
         # ── Update branch / arrangement if provided ──────────────────────
         if branch_id is not None:
@@ -1842,7 +1903,7 @@ class BookingService:
             ev_update.pop("change_by_user_data", None)
             await self._enqueue_event(
                 BookingStatusUpdatedEvent(
-                    **ev_update,
+                    **_safe_event_kwargs(BookingStatusUpdatedEvent, ev_update),
                     old_status=old_status_val,
                     new_status=new_status_val,
                     reason=reason,

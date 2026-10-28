@@ -122,6 +122,16 @@ class Booking(Base):
         JSONB, nullable=True, default=dict
     )
 
+    # ── Secondary Therapist (couple_room / double_room bookings) ──────────
+    # Two guests take the same service at once, so the booking carries a second
+    # therapist.  NULL for every other booking; therapist_id stays the primary.
+    secondary_therapist_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    secondary_therapist_data: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )
+
     # ── Add-ons (stored as JSONB list) ────────────────────────────────────
     # Format: [{"addon_id": "uuid", "name": "...", "price": "0.000"}]
     addons: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=list)
@@ -287,6 +297,13 @@ class Booking(Base):
         Index("ix_bookings_branch_date", "branch_id", "appointment_date"),
         # Fast lookup by therapist + date (availability queries)
         Index("ix_bookings_therapist_date", "therapist_id", "appointment_date"),
+        # Same for the second therapist of couple/double bookings (sparse index)
+        Index(
+            "ix_bookings_secondary_therapist_date",
+            "secondary_therapist_id",
+            "appointment_date",
+            postgresql_where=text("secondary_therapist_id IS NOT NULL"),
+        ),
         # Fast lookup by status
         Index("ix_bookings_status", "status"),
         # Fast lookup by booking_type
@@ -328,6 +345,14 @@ class Booking(Base):
         # ExcludeConstraint is defined in the Alembic migration directly
         # to use tstzrange which is not directly expressible in ORM.
     )
+
+    @property
+    def therapist_ids(self) -> list[uuid.UUID]:
+        """Assigned therapist IDs: primary first, then the secondary (if any)."""
+        ids = [self.therapist_id]
+        if self.secondary_therapist_id:
+            ids.append(self.secondary_therapist_id)
+        return ids
 
     def __repr__(self) -> str:
         return f"<Booking id={self.id} status={self.status} customer={self.customer_id}>"

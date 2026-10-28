@@ -30,6 +30,12 @@ from app.booking.domain.value_objects import BookingStatus, PaymentStatus, Prici
 from app.payment.infrastructure.models import Payment
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
 from app.booking.application.multi_service import ServiceValidationError, resolve_service_entries
+from app.booking.application.multi_therapist import (
+    entries_required_therapists,
+    parse_uuid,
+    therapist_display_name,
+    unique_ids,
+)
 from app.booking.application.services import _build_booking_event_data
 from app.booking.domain.services_snapshot import (
     cache_services_payload,
@@ -101,6 +107,26 @@ def _services_out(b: object) -> list[BookingServiceResponse]:
     return out
 
 
+def _secondary_therapist_id_out(b: object) -> str | None:
+    """Second therapist ID of a couple/double booking (None for every other booking)."""
+    raw = getattr(b, "secondary_therapist_id", None)
+    return str(raw) if isinstance(raw, (str, uuid.UUID)) and raw else None
+
+
+def _secondary_therapist_data_out(b: object) -> dict | None:
+    raw = getattr(b, "secondary_therapist_data", None)
+    return raw if isinstance(raw, dict) else None
+
+
+def _therapist_ids_out(b: object) -> list[str]:
+    """All assigned therapist IDs: primary first, then the secondary (if any)."""
+    ids = [str(b.therapist_id)]
+    secondary = _secondary_therapist_id_out(b)
+    if secondary:
+        ids.append(secondary)
+    return ids
+
+
 def _booking_to_list_item(b: object) -> BookingListItem:
     """Map ORM Booking to BookingListItem."""
     b_type = getattr(b, "booking_type", "branch")
@@ -121,6 +147,9 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         services=_services_out(b),
         therapist_id=str(b.therapist_id),
         therapist_data=b.therapist_data,
+        secondary_therapist_id=_secondary_therapist_id_out(b),
+        secondary_therapist_data=_secondary_therapist_data_out(b),
+        therapist_ids=_therapist_ids_out(b),
         appointment_date=raw_app_date,
         appointment_start=b.appointment_start,
         appointment_end=b.appointment_end,
@@ -214,6 +243,9 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         services=_services_out(b),
         therapist_id=str(b.therapist_id),
         therapist_data=b.therapist_data if isinstance(getattr(b, "therapist_data", None), dict) else {},
+        secondary_therapist_id=_secondary_therapist_id_out(b),
+        secondary_therapist_data=_secondary_therapist_data_out(b),
+        therapist_ids=_therapist_ids_out(b),
         appointment_date=raw_app_date,
         appointment_start=b.appointment_start,
         appointment_end=b.appointment_end,
@@ -529,6 +561,16 @@ async def create_booking(
     if not therapist_id_str and therapist_ids:
         therapist_id_str = therapist_ids[0]
 
+    # Couple / double rooms: two guests, same service, same time → two therapists.
+    # The primary stays first so single-therapist clients are unaffected.
+    required_therapists = entries_required_therapists(service_entries)
+    secondary_requested_id = str(body.secondary_therapist_id) if body.secondary_therapist_id else None
+    if required_therapists > 1 or secondary_requested_id:
+        therapist_ids = unique_ids([therapist_id_str, secondary_requested_id, *therapist_ids])
+        if not therapist_id_str and therapist_ids:
+            therapist_id_str = therapist_ids[0]
+    selected_secondary_therapist_id: uuid.UUID | None = None
+
     # ── 2. Check appointment availability in ushauth microservice ───────
     # branch → check-appointment-availability (validates arrangement + therapist)
     # home   → check-booking-therapists-availability (validates therapist only)
@@ -544,6 +586,9 @@ async def create_booking(
                 duration=duration,
                 therapist_id=therapist_id_str,
                 therapist_ids=therapist_ids if therapist_ids else None,
+                required_therapists=required_therapists,
+                branch_id=str(body.branch_id) if body.branch_id else None,
+                service_id=str(service_entries[0].get("service_id")) if service_entries else None,
             )
         except GatewayTimeoutError as exc:
             raise HTTPException(
@@ -579,6 +624,19 @@ async def create_booking(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Invalid therapist ID received from availability service: {selected_therapist_id_str}",
             )
+
+        # ushauth is authoritative about how many therapists the arrangement needs
+        required_therapists = max(required_therapists, int(avail_res.get("required_therapists") or 1))
+        if required_therapists > 1:
+            available_ids = unique_ids(
+                [selected_therapist_id_str, *(avail_res.get("therapist_ids") or []), avail_res.get("secondary_therapist_id")]
+            )
+            selected_secondary_therapist_id = parse_uuid(available_ids[1]) if len(available_ids) > 1 else None
+            if not selected_secondary_therapist_id or selected_secondary_therapist_id == selected_therapist_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Two available therapists are required for a couple/double room at the requested time slot.",
+                )
 
     elif booking_type_str in ("home_service", "home"):
         # ── Home booking: therapist-only availability check ──────────────
@@ -653,7 +711,11 @@ async def create_booking(
                         appointment_time=appointment_time,
                         duration=duration,
                         therapist_id=str(selected_therapist_id),
-                        therapist_ids=None,
+                        therapist_ids=(
+                            [str(selected_therapist_id), str(selected_secondary_therapist_id)]
+                            if selected_secondary_therapist_id
+                            else None
+                        ),
                     )
                     for arr_id in extra_arrangement_ids
                 ),
@@ -780,14 +842,67 @@ async def create_booking(
 
     therapist_name = (
         body.therapist_name
-        or (body.therapist_data.get("therapist_name") or body.therapist_data.get("name") if body.therapist_data else "")
+        or therapist_display_name(body.therapist_data)
     )
+    t_avatar = (body.therapist_data or {}).get("avatar") or (body.therapist_data or {}).get("photo_url")
+    if (not therapist_name or not t_avatar) and selected_therapist_id:
+        try:
+            t_profile = await ushauth.get_therapist(str(selected_therapist_id))
+            t_data_raw = t_profile.get("data") if isinstance(t_profile.get("data"), dict) else t_profile
+            if not therapist_name:
+                therapist_name = therapist_display_name(t_data_raw)
+            if not t_avatar and isinstance(t_data_raw, dict):
+                t_avatar = t_data_raw.get("avatar") or t_data_raw.get("photo_url")
+            if not body.therapist_data and isinstance(t_data_raw, dict):
+                body.therapist_data = t_data_raw
+        except Exception as exc:
+            logger.warning("therapist_lookup_failed", error=str(exc))
+
     therapist_data = {
         "id": str(selected_therapist_id),
         "name": therapist_name,
         "therapist_name": therapist_name,
+        "full_name": therapist_name,
         **(body.therapist_data or {}),
     }
+    if t_avatar:
+        therapist_data.setdefault("avatar", t_avatar)
+        therapist_data.setdefault("photo_url", t_avatar)
+
+    # Snapshot of the second therapist (couple/double rooms only)
+    secondary_therapist_data: dict | None = None
+    if selected_secondary_therapist_id:
+        secondary_matches_request = secondary_requested_id == str(selected_secondary_therapist_id)
+        secondary_name = (
+            (body.secondary_therapist_name or therapist_display_name(body.secondary_therapist_data))
+            if secondary_matches_request
+            else ""
+        )
+        sec_avatar = (
+            ((body.secondary_therapist_data or {}).get("avatar") or (body.secondary_therapist_data or {}).get("photo_url"))
+            if secondary_matches_request
+            else None
+        )
+        if not secondary_name or not sec_avatar:
+            try:
+                s_profile = await ushauth.get_therapist(str(selected_secondary_therapist_id))
+                s_data_raw = s_profile.get("data") if isinstance(s_profile.get("data"), dict) else s_profile
+                if not secondary_name:
+                    secondary_name = therapist_display_name(s_data_raw)
+                if not sec_avatar and isinstance(s_data_raw, dict):
+                    sec_avatar = s_data_raw.get("avatar") or s_data_raw.get("photo_url")
+            except Exception as exc:  # name is cosmetic; never block the booking
+                logger.warning("secondary_therapist_lookup_failed", error=str(exc))
+        secondary_therapist_data = {
+            "id": str(selected_secondary_therapist_id),
+            "name": secondary_name,
+            "therapist_name": secondary_name,
+            "full_name": secondary_name,
+            **((body.secondary_therapist_data or {}) if secondary_matches_request else {}),
+        }
+        if sec_avatar:
+            secondary_therapist_data.setdefault("avatar", sec_avatar)
+            secondary_therapist_data.setdefault("photo_url", sec_avatar)
 
     idempotency_key = body.idempotency_key or request.headers.get("Idempotency-Key")
 
@@ -826,6 +941,8 @@ async def create_booking(
             services=service_entries,
             therapist_id=selected_therapist_id,
             therapist_data=therapist_data,
+            secondary_therapist_id=selected_secondary_therapist_id,
+            secondary_therapist_data=secondary_therapist_data,
             appointment_start=appointment_start,
             appointment_end=appointment_end,
             duration_minutes=total_services_duration(service_entries) or 60,
@@ -1107,6 +1224,8 @@ async def create_booking(
                 service_id=service_entries[0]["service_id"] or None,
                 service_name=service_name or None,
                 services=cache_services_payload(service_entries),
+                secondary_therapist_id=str(selected_secondary_therapist_id) if selected_secondary_therapist_id else None,
+                secondary_therapist_name=(secondary_therapist_data or {}).get("name") or None,
             )
             logger.info(
                 "appointment_cache_created_for_draft_booking",
@@ -1323,6 +1442,7 @@ async def update_booking(
 ) -> JSONResponse:
     """Update a booking resource."""
     booking = await booking_service.get_booking(booking_id)
+    prev_secondary_therapist = _secondary_therapist_id_out(booking)
 
     # Check permission if called by non-admin customer
     user_id = uuid.UUID(current_user.sub)
@@ -1339,6 +1459,27 @@ async def update_booking(
             therapist_data = t_raw.get("data") if isinstance(t_raw.get("data"), dict) else t_raw
         except Exception:
             pass
+    if therapist_data and isinstance(therapist_data, dict):
+        t_name = therapist_display_name(therapist_data)
+        if t_name:
+            therapist_data.setdefault("name", t_name)
+            therapist_data.setdefault("therapist_name", t_name)
+            therapist_data.setdefault("full_name", t_name)
+
+    # Second therapist (couple_room / double_room bookings)
+    secondary_therapist_data = body.secondary_therapist_data
+    if body.secondary_therapist_id and not secondary_therapist_data:
+        try:
+            s_raw = await ushauth.get_therapist(str(body.secondary_therapist_id))
+            secondary_therapist_data = s_raw.get("data") if isinstance(s_raw.get("data"), dict) else s_raw
+        except Exception:
+            pass
+    if secondary_therapist_data and isinstance(secondary_therapist_data, dict):
+        s_name = therapist_display_name(secondary_therapist_data)
+        if s_name:
+            secondary_therapist_data.setdefault("name", s_name)
+            secondary_therapist_data.setdefault("therapist_name", s_name)
+            secondary_therapist_data.setdefault("full_name", s_name)
 
     branch_data = body.branch_data
     if body.branch_id and not branch_data:
@@ -1395,6 +1536,9 @@ async def update_booking(
         created_by_user_data=body.created_by_user_data,
         therapist_id=body.therapist_id,
         therapist_data=therapist_data,
+        secondary_therapist_id=body.secondary_therapist_id,
+        secondary_therapist_data=secondary_therapist_data,
+        secondary_therapist_provided="secondary_therapist_id" in body.model_fields_set,
         branch_id=body.branch_id,
         branch_data=branch_data,
         service_arrangement_id=body.service_arrangement_id,
@@ -1453,6 +1597,9 @@ async def update_booking(
             appointment_time=appt_time_str,
             duration=duration_val,
             therapist_id=str(updated.therapist_id) if updated.therapist_id else "",
+            secondary_therapist_id=str(ev_data.get("secondary_therapist_id") or _secondary_therapist_id_out(updated) or ""),
+            secondary_therapist_name=str(ev_data.get("secondary_therapist_name") or ""),
+            secondary_therapist_data=ev_data.get("secondary_therapist_data") or (_secondary_therapist_data_out(updated) or {}),
             status=str(updated.status) if updated.status else "",
             payment_status=str(updated.payment_status) if updated.payment_status else "",
             branch_id=str(updated.branch_id) if updated.branch_id else "",
@@ -1505,6 +1652,15 @@ async def update_booking(
         else:
             cache_payment_status = None
 
+        _cache_extra: dict[str, Any] = {}
+        _updated_secondary = _secondary_therapist_id_out(updated)
+        if _updated_secondary or prev_secondary_therapist or "secondary_therapist_id" in body.model_fields_set:
+            # A UUID sets/moves the second therapist row, null removes it
+            _cache_extra["secondary_therapist_id"] = _updated_secondary
+            _cache_extra["secondary_therapist_name"] = (
+                (_secondary_therapist_data_out(updated) or {}).get("name") or None
+            )
+
         await ushauth.update_appointment_cache_by_booking_id(
             booking_id=str(booking_id),
             appointment_date=appt_dt_str,
@@ -1516,6 +1672,7 @@ async def update_booking(
             branch_id=str(updated.branch_id) if updated.branch_id else None,
             service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else None,
             services=cache_services_payload(get_booking_services(updated)),
+            **_cache_extra,
         )
         logger.info(
             "appointment_cache_updated_on_booking_update",

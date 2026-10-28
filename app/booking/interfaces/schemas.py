@@ -244,6 +244,11 @@ class CreateBookingRequest(BaseModel):
     therapist_data: dict[str, Any] | None = Field(default=None, alias="therapistData")
     selected_therapist_ids: list[uuid.UUID | str] | None = Field(default_factory=list, alias="selected_therapist_ids")
     therapist_ids: list[uuid.UUID | str] | None = Field(default_factory=list, alias="therapist_ids")
+    # Second therapist for couple_room / double_room arrangements. Optional: when
+    # omitted the server auto-assigns a free second therapist from availability.
+    secondary_therapist_id: uuid.UUID | None = Field(default=None, alias="secondaryTherapistId")
+    secondary_therapist_name: str | None = Field(default=None, alias="secondaryTherapistName")
+    secondary_therapist_data: dict[str, Any] | None = Field(default=None, alias="secondaryTherapistData")
 
     # Date / Time info
     date: str | None = Field(default=None)
@@ -328,6 +333,7 @@ class CreateBookingRequest(BaseModel):
         "branch_id",
         "service_arrangement_id",
         "therapist_id",
+        "secondary_therapist_id",
         "reward_id",
         "voucher_id",
         mode="before",
@@ -654,6 +660,16 @@ class UpdateBookingRequest(BaseModel):
         alias="therapistData",
         description="Snapshot of therapist data",
     )
+    secondary_therapist_id: uuid.UUID | None = Field(
+        default=None,
+        alias="secondaryTherapistId",
+        description="Reassign the second therapist (couple_room / double_room bookings)",
+    )
+    secondary_therapist_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="secondaryTherapistData",
+        description="Snapshot of the second therapist data",
+    )
     branch_id: uuid.UUID | None = Field(
         default=None,
         alias="branchId",
@@ -833,7 +849,7 @@ class UpdateBookingRequest(BaseModel):
             self.created_by_user_data = data_val
         return self
 
-    @field_validator("therapist_id", "voucher_id", "branch_id", "service_arrangement_id", mode="before")
+    @field_validator("therapist_id", "secondary_therapist_id", "voucher_id", "branch_id", "service_arrangement_id", mode="before")
     @classmethod
     def coerce_empty_uuid_to_none(cls, v: Any) -> Any:
         if v == "" or (isinstance(v, str) and not v.strip()):
@@ -1102,6 +1118,10 @@ class BookingListItem(BaseModel):
     services: list[BookingServiceResponse] = Field(default_factory=list)
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
+    # Second therapist for couple_room / double_room bookings (null otherwise)
+    secondary_therapist_id: str | None = None
+    secondary_therapist_data: dict[str, Any] | None = None
+    therapist_ids: list[str] = Field(default_factory=list)
     appointment_date: str | None = None
     appointment_start: LocalDateTime
     appointment_end: LocalDateTime
@@ -1179,6 +1199,10 @@ class BookingDetailResponse(BaseModel):
     services: list[BookingServiceResponse] = Field(default_factory=list)
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
+    # Second therapist for couple_room / double_room bookings (null otherwise)
+    secondary_therapist_id: str | None = None
+    secondary_therapist_data: dict[str, Any] | None = None
+    therapist_ids: list[str] = Field(default_factory=list)
     appointment_date: str | None = None
     appointment_start: LocalDateTime
     appointment_end: LocalDateTime

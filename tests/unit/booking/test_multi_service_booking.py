@@ -587,3 +587,39 @@ async def test_api_create_legacy_single_service_payload_unchanged():
     assert kwargs["duration_minutes"] == 60
     assert kwargs["pricing"].arrangement_price == Decimal("40.000")
     assert ushauth.check_appointment_availability.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_update_booking_swaps_therapists_when_primary_reassigned_to_secondary():
+    from app.core.exceptions import ValidationError as DomainValidationError
+
+    svc = _service()
+    t1 = uuid.uuid4()
+    t2 = uuid.uuid4()
+    booking = _orm_booking([_entry(S1, A1, "Massage")])
+    booking.therapist_id = t1
+    booking.therapist_data = {"id": str(t1), "name": "Primary"}
+    booking.secondary_therapist_id = t2
+    booking.secondary_therapist_data = {"id": str(t2), "name": "Secondary"}
+    svc._repo.get_by_id = AsyncMock(return_value=booking)
+    svc._repo.update = AsyncMock(side_effect=lambda b: b)
+
+    # Reassigning primary therapist_id to t2 without specifying secondary_therapist_id
+    # should automatically swap t1 into secondary_therapist_id instead of raising 500.
+    updated = await svc.update_booking(
+        booking_id=booking.id,
+        therapist_id=t2,
+        therapist_data={"id": str(t2), "name": "Secondary"},
+    )
+    assert updated.therapist_id == t2
+    assert updated.secondary_therapist_id == t1
+    assert updated.secondary_therapist_data == {"id": str(t1), "name": "Primary"}
+
+    # Explicitly setting both primary and secondary to the same therapist raises DomainValidationError (422)
+    with pytest.raises(DomainValidationError):
+        await svc.update_booking(
+            booking_id=booking.id,
+            therapist_id=t1,
+            secondary_therapist_id=t1,
+            secondary_therapist_provided=True,
+        )

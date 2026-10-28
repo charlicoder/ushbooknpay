@@ -195,7 +195,12 @@ async def get_therapist_analytics(
     # ── 1. Query Bookings for this Therapist ──
     booking_stmt = (
         select(Booking)
-        .where(Booking.therapist_id == therapist_id)
+        .where(
+            or_(
+                Booking.therapist_id == therapist_id,
+                Booking.secondary_therapist_id == therapist_id,
+            )
+        )
         .order_by(Booking.appointment_start.desc().nullslast(), Booking.appointment_date.desc())
     )
     booking_res = await session.execute(booking_stmt)
@@ -204,11 +209,13 @@ async def get_therapist_analytics(
     # Extract therapist name if present
     therapist_name: str | None = None
     for b in bookings:
-        if isinstance(b.therapist_data, dict):
+        # Use the snapshot that belongs to the requested therapist (primary or secondary)
+        t_data = b.therapist_data if b.therapist_id == therapist_id else b.secondary_therapist_data
+        if isinstance(t_data, dict):
             therapist_name = (
-                b.therapist_data.get("name")
-                or b.therapist_data.get("full_name")
-                or f"{b.therapist_data.get('first_name', '')} {b.therapist_data.get('last_name', '')}".strip()
+                t_data.get("name")
+                or t_data.get("full_name")
+                or f"{t_data.get('first_name', '')} {t_data.get('last_name', '')}".strip()
             )
             if therapist_name:
                 break

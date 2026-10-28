@@ -407,6 +407,10 @@ class USHAuthClient:
         duration: int,
         therapist_id: str | None = None,
         therapist_ids: list[str] | None = None,
+        required_therapists: int | None = None,
+        branch_id: str | None = None,
+        service_id: str | None = None,
+        exclude_booking_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Check appointment availability in ushauth microservice.
@@ -439,6 +443,15 @@ class USHAuthClient:
             payload["therapist_id"] = str(therapist_id)
         if therapist_ids:
             payload["therapist_ids"] = [str(tid) for tid in therapist_ids]
+        # Multi-therapist (couple_room / double_room) context — all optional
+        if required_therapists and required_therapists > 1:
+            payload["required_therapists"] = int(required_therapists)
+        if branch_id:
+            payload["branch_id"] = str(branch_id)
+        if service_id:
+            payload["service_id"] = str(service_id)
+        if exclude_booking_id:
+            payload["exclude_booking_id"] = str(exclude_booking_id)
 
         return await self._post("/api/v1/check-appointment-availability/", json_data=payload)
 
@@ -503,6 +516,8 @@ class USHAuthClient:
         service_arrangement_name: str | None = None,
         therapist_name: str | None = None,
         services: list[dict[str, Any]] | None = None,
+        secondary_therapist_id: str | None = None,
+        secondary_therapist_name: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """
@@ -541,6 +556,10 @@ class USHAuthClient:
             payload["therapist_name"] = str(therapist_name)
         if services:
             payload["services"] = services
+        if secondary_therapist_id:
+            payload["secondary_therapist_id"] = str(secondary_therapist_id)
+            if secondary_therapist_name:
+                payload["secondary_therapist_name"] = str(secondary_therapist_name)
 
         return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
 

@@ -46,7 +46,7 @@ class ConflictError(USHBaseError):
     default_message = "A conflicting resource already exists."
 
 
-class ValidationError(USHBaseError):
+class ValidationError(USHBaseError, ValueError):
     status_code = HTTPStatus.UNPROCESSABLE_ENTITY
     default_message = "Validation failed."
 

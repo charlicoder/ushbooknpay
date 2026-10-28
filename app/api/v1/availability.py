@@ -128,11 +128,12 @@ async def get_availability(
         therapist_uuids, range_start, range_end
     )
 
-    # Group bookings by therapist_id
+    # Group bookings by therapist (a couple/double booking blocks both therapists)
     from collections import defaultdict
     bookings_by_therapist: dict[str, list] = defaultdict(list)
     for bk in all_bookings:
-        bookings_by_therapist[str(bk.therapist_id)].append(bk)
+        for assigned_id in bk.therapist_ids:
+            bookings_by_therapist[str(assigned_id)].append(bk)
 
     # Fetch temporary holds
     all_holds = []
