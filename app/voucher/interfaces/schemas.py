@@ -970,6 +970,8 @@ class GiftVoucherListItem(BaseModel):
     is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
+    service_arrangement_id: uuid.UUID | None = None
+    service_arrangement_data: dict[str, Any] = Field(default_factory=dict)
     branch_id: uuid.UUID | None
     branch_data: dict[str, Any] = Field(default_factory=dict)
     status: str

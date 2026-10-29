@@ -266,6 +266,8 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
+        service_arrangement_id=v.service_arrangement_id,
+        service_arrangement_data=v.service_arrangement_data or {},
         branch_id=v.branch_id,
         branch_data=v.branch_data or {},
         status=v.status,
