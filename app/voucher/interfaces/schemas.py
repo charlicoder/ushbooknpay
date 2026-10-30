@@ -87,7 +87,12 @@ class CreateGiftVoucherRequest(BaseModel):
     total_duration: int = Field(default=0, ge=0, description="Total service duration in minutes.")
 
     # ── Financial ─────────────────────────────────────────────────────
-    total_amount: Decimal = Field(description="Amount charged for the voucher (KWD).")
+    total_amount: Decimal = Field(description="Amount charged for the voucher (KWD), after discount.")
+    discount: Decimal = Field(
+        default=Decimal("0.000"),
+        ge=0,
+        description="Discount amount (KWD) already deducted from total_amount.",
+    )
     currency: str = Field(default="KWD", max_length=3, description="Currency code.")
 
     # ── Recipient ─────────────────────────────────────────────────────
@@ -883,6 +888,7 @@ class GiftVoucherResponse(BaseModel):
     created_by: uuid.UUID | None
     total_duration: int
     total_amount: str  # String to preserve KWD 3-decimal precision
+    discount: str = "0.000"
     currency: str
     gift_message: str | None = None
     gift_from: str | None = None
@@ -976,6 +982,7 @@ class GiftVoucherListItem(BaseModel):
     branch_data: dict[str, Any] = Field(default_factory=dict)
     status: str
     total_amount: str
+    discount: str = "0.000"
     currency: str
     expire_date: LocalDateTime
     extra_time: int = 0

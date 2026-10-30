@@ -170,6 +170,10 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         payment_url=_safe_str(getattr(b, "payment_url", None)),
         payment_data=b.payment_data or {},
         total_amount=str(b.total_amount),
+        total_price=str(b.total_amount),
+        discount=str(b.discount),
+        arrangement_price=str(b.arrangement_price),
+        addon_price=str(b.addon_price),
         currency=b.currency,
         is_eligible_for_loyalty=bool((b.service_data or {}).get("is_eligible_for_loyalty", False)),
         loyalty_data=getattr(b, "loyalty_data", None) if isinstance(getattr(b, "loyalty_data", None), dict) else None,
@@ -276,6 +280,12 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
             total=str(b.total_amount),
             currency=b.currency,
         ),
+        total_amount=str(b.total_amount),
+        total_price=str(b.total_amount),
+        discount=str(b.discount),
+        arrangement_price=str(b.arrangement_price),
+        addon_price=str(b.addon_price),
+        currency=b.currency,
         addons=addons,
         customer_notes=b.customer_notes,
         internal_notes=b.internal_notes,
@@ -565,6 +575,10 @@ async def create_booking(
     # The primary stays first so single-therapist clients are unaffected.
     required_therapists = entries_required_therapists(service_entries)
     secondary_requested_id = str(body.secondary_therapist_id) if body.secondary_therapist_id else None
+    allow_single_therapist = bool(getattr(body, "allow_single_therapist", False))
+    if allow_single_therapist and not secondary_requested_id:
+        # User explicitly removed the second therapist: book with one therapist only.
+        required_therapists = 1
     if required_therapists > 1 or secondary_requested_id:
         therapist_ids = unique_ids([therapist_id_str, secondary_requested_id, *therapist_ids])
         if not therapist_id_str and therapist_ids:
@@ -587,6 +601,7 @@ async def create_booking(
                 therapist_id=therapist_id_str,
                 therapist_ids=therapist_ids if therapist_ids else None,
                 required_therapists=required_therapists,
+                allow_single_therapist=allow_single_therapist,
                 branch_id=str(body.branch_id) if body.branch_id else None,
                 service_id=str(service_entries[0].get("service_id")) if service_entries else None,
             )
@@ -1255,6 +1270,22 @@ async def create_booking(
             customer_id=str(booking.customer_id),
             services=_services_out(booking),
             final_amount=str(booking.total_amount),
+            total_amount=str(booking.total_amount),
+            total_price=str(booking.total_amount),
+            discount=str(booking.discount),
+            arrangement_price=str(booking.arrangement_price),
+            addon_price=str(booking.addon_price),
+            currency=booking.currency,
+            pricing=PricingBreakdownSchema(
+                arrangement_price=str(booking.arrangement_price),
+                price_for_extra_minutes=str(booking.price_for_extra_minutes),
+                addon_price=str(booking.addon_price),
+                discount=str(booking.discount),
+                tax=str(booking.tax),
+                fees=str(booking.fees),
+                total=str(booking.total_amount),
+                currency=booking.currency,
+            ),
             status=booking.status,
             payment_status=booking.payment_status,
             payment_id=_safe_str(getattr(booking, "payment_id", None)),

@@ -249,6 +249,9 @@ class CreateBookingRequest(BaseModel):
     secondary_therapist_id: uuid.UUID | None = Field(default=None, alias="secondaryTherapistId")
     secondary_therapist_name: str | None = Field(default=None, alias="secondaryTherapistName")
     secondary_therapist_data: dict[str, Any] | None = Field(default=None, alias="secondaryTherapistData")
+    # Opt-out for couple_room / double_room: when True the booking is created with
+    # only one therapist (the second therapist was removed by the user).
+    allow_single_therapist: bool = Field(default=False, alias="allowSingleTherapist")
 
     # Date / Time info
     date: str | None = Field(default=None)
@@ -1143,6 +1146,10 @@ class BookingListItem(BaseModel):
     payment_url: str | None = None
     payment_data: dict[str, Any] | None = None
     total_amount: str
+    total_price: str | None = None
+    discount: str | None = None
+    arrangement_price: str | None = None
+    addon_price: str | None = None
     currency: str
     is_eligible_for_loyalty: bool = False
     loyalty_data: dict[str, Any] | None = None
@@ -1225,6 +1232,12 @@ class BookingDetailResponse(BaseModel):
     payment_url: str | None = None
     payment_data: dict[str, Any] | None = None
     pricing: PricingBreakdownSchema
+    total_amount: str | None = None
+    total_price: str | None = None
+    discount: str | None = None
+    arrangement_price: str | None = None
+    addon_price: str | None = None
+    currency: str = "KWD"
     addons: list[AddonSchema]
     customer_notes: str | None = None
     internal_notes: str | None = None
@@ -1281,6 +1294,13 @@ class CreateBookingDataResponse(BaseModel):
     customer_id: str
     services: list[BookingServiceResponse] = Field(default_factory=list)
     final_amount: str
+    total_amount: str | None = None
+    total_price: str | None = None
+    discount: str | None = None
+    arrangement_price: str | None = None
+    addon_price: str | None = None
+    currency: str = "KWD"
+    pricing: PricingBreakdownSchema | None = None
     status: str
     payment_status: str | None = None
     payment_id: str | None = None

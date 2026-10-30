@@ -411,6 +411,7 @@ class USHAuthClient:
         branch_id: str | None = None,
         service_id: str | None = None,
         exclude_booking_id: str | None = None,
+        allow_single_therapist: bool = False,
     ) -> dict[str, Any]:
         """
         Check appointment availability in ushauth microservice.
@@ -446,6 +447,8 @@ class USHAuthClient:
         # Multi-therapist (couple_room / double_room) context — all optional
         if required_therapists and required_therapists > 1:
             payload["required_therapists"] = int(required_therapists)
+        if allow_single_therapist:
+            payload["allow_single_therapist"] = True
         if branch_id:
             payload["branch_id"] = str(branch_id)
         if service_id:
