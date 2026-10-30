@@ -30,18 +30,24 @@ from zoneinfo import ZoneInfo
 import httpx
 
 
-_CUSTOMER_NAME_DISALLOWED = re.compile(r"[^\w\s.\-']", re.UNICODE)
+_CUSTOMER_NAME_DISALLOWED = re.compile(r"[^\w\s]", re.UNICODE)
+_ARABIC_EXTRAS = re.compile(r"[\u0640\u064B-\u065F\u0670]")
+_DIGITS_AND_PUNCT = re.compile(r"[\d._\-:/\\@#\$%&*+=()\[\]{}!?,\"~^|<>\x27]")
 
 
 def sanitize_customer_name(name: str | None, default: str = "Customer") -> str:
-    """MyFatoorah rejects punctuation (e.g. ':' in "إلى : خالتي") in CustomerName.
-
-    Keeps letters (any script, incl. Arabic), digits, spaces, '.', '-' and "'";
-    drops everything else and collapses whitespace.
+    """MyFatoorah strictly rejects numbers, punctuation (., -, ', :, etc.), and emojis in CustomerName.
+    Only letters (Arabic, Latin) and spaces are accepted.
     """
-    cleaned = _CUSTOMER_NAME_DISALLOWED.sub(" ", name or "").replace("_", " ")
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()[:100]
-    return cleaned or default
+    if not name or not isinstance(name, str):
+        return default
+    cleaned = _ARABIC_EXTRAS.sub("", name)
+    cleaned = _DIGITS_AND_PUNCT.sub(" ", cleaned)
+    cleaned = _CUSTOMER_NAME_DISALLOWED.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()[:50]
+    if len(cleaned) < 2 or not any(c.isalpha() for c in cleaned):
+        return default
+    return cleaned
 
 from app.core.config import Settings
 from app.core.exceptions import PaymentProviderError, RefundError
