@@ -157,10 +157,10 @@ class PaymentWebhookService:
         event = self._gateway.parse_event(payload)
         self._debug_log(
             "PARSED_EVENT",
-            kind=event.kind.value,
+            kind=getattr(event.kind, "value", event.kind),
             reference=event.event_reference,
             gateway_invoice_id=event.invoice_id,
-            status=event.status.value if event.status else None,
+            status=getattr(event.status, "value", event.status) if event.status else None,
             refund_id=event.refund_id,
             refund_status=event.refund_status,
         )
@@ -196,7 +196,7 @@ class PaymentWebhookService:
                 id=uuid.uuid4(),
                 gateway=self._gateway.name,
                 event_reference=reference[:150],
-                event_kind=event.kind.value,
+                event_kind=getattr(event.kind, "value", event.kind),
                 invoice_id=event.invoice_id,
                 outcome="received",
                 payload=self._sanitise(payload),
@@ -257,7 +257,11 @@ class PaymentWebhookService:
         if lookup_id:
             try:
                 verified = await self._gateway.get_payment_state(str(lookup_id))
-                self._debug_log("GATEWAY_VERIFICATION", state=verified.status.value, payment_id=verified.payment_id)
+                self._debug_log(
+                    "GATEWAY_VERIFICATION",
+                    state=getattr(verified.status, "value", verified.status),
+                    payment_id=verified.payment_id,
+                )
                 if link is None and verified.invoice_id:
                     link = await self._settlement.get_locked_link_by_any_identifier(
                         self._gateway.name,
@@ -283,13 +287,13 @@ class PaymentWebhookService:
             if merged is None:
                 merged = GatewayPaymentState(status=GatewayPaymentStatus.PAID, invoice_id=event.invoice_id)
             outcome = await self._settlement.apply(link, merged, source=source)
-            return outcome.value, link.id
+            return getattr(outcome, "value", outcome), link.id
 
         if current_status == GatewayPaymentStatus.FAILED and state_to_use is not None:
             outcome = await self._settlement.apply(link, state_to_use, source=source)
-            return outcome.value, link.id
+            return getattr(outcome, "value", outcome), link.id
 
-        return SettlementOutcome.PENDING, link.id
+        return getattr(SettlementOutcome.PENDING, "value", SettlementOutcome.PENDING), link.id
 
     # ── Refund events ───────────────────────────────────────────────────
     async def _handle_refund_event(self, event: GatewayWebhookEvent) -> tuple[str, uuid.UUID | None]:

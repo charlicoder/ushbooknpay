@@ -30,6 +30,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from sqlalchemy import select
@@ -71,7 +72,7 @@ _AMOUNT_TOLERANCE = Decimal("0.001")
 _NOT_PAYABLE_BOOKING = {BookingStatus.CANCELLED.value, BookingStatus.NO_SHOW.value}
 
 
-class SettlementOutcome:
+class SettlementOutcome(str, Enum):
     SETTLED = "settled"
     ALREADY_SETTLED = "already_settled"
     FAILURE_RECORDED = "failure_recorded"
