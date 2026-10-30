@@ -105,9 +105,10 @@ async def validate_user_with_ushauth(
 
     # 2. Interservice call to ushauth
     # Decode JWT payload (without verification) to determine user_type and route to the
-    # correct ushauth profile endpoint.  The signature is already validated by ushauth.
+    # correct ushauth profile endpoint. The signature is already validated by ushauth.
     _user_type_from_jwt = None
     _user_id_from_jwt = ""
+    _exp_from_jwt: int | float | None = None
     try:
         import base64 as _base64
         _parts = token.split(".")
@@ -116,8 +117,15 @@ async def validate_user_with_ushauth(
             _claims = json.loads(_base64.urlsafe_b64decode(_padded.encode()).decode("utf-8"))
             _user_type_from_jwt = _claims.get("user_type")
             _user_id_from_jwt = str(_claims.get("user_id") or _claims.get("sub") or "")
+            _exp_from_jwt = _claims.get("exp")
     except Exception:
         pass
+
+    if _exp_from_jwt is not None:
+        import time
+        if time.time() >= _exp_from_jwt:
+            logger.warning("token_expired_pre_check", user_id=_user_id_from_jwt)
+            raise AuthenticationError("Invalid or expired token.")
 
     if _user_type_from_jwt in ("employee", "admin"):
         url = f"{settings.ushauth_base_url.rstrip('/')}/api/v1/employees/me/"
@@ -333,9 +341,15 @@ async def validate_user_with_ushauth(
         codenames=codenames,
     )
 
-    # 4. Cache verified user in Redis (60 seconds)
+    # 4. Cache verified user in Redis (up to 60 seconds, bounded by remaining token lifetime)
+    ttl = 60
+    if _exp_from_jwt is not None:
+        import time
+        remaining = int(_exp_from_jwt - time.time())
+        if remaining > 0:
+            ttl = min(60, remaining)
     try:
-        await redis.setex(cache_key, 60, payload.model_dump_json())
+        await redis.setex(cache_key, ttl, payload.model_dump_json())
     except Exception as exc:
         logger.debug("auth_cache_save_failed", error=str(exc))
 

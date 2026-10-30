@@ -145,3 +145,27 @@ async def test_update_appointment_cache_status_by_booking_id(mock_settings):
         "new_status": "cancelled",
         "payment_status": "cancelled",
     }
+
+
+@pytest.mark.asyncio
+async def test_validate_user_pre_checks_expired_token(mock_settings):
+    """Ensure validate_user_with_ushauth rejects expired token before making network call."""
+    import base64
+    import json
+    import time
+    from app.core.exceptions import AuthenticationError
+    from app.core.security import validate_user_with_ushauth
+
+    # Create token payload with exp in the past
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256"}).encode()).decode().rstrip("=")
+    claims = {
+        "user_id": "u-123",
+        "user_type": "employee",
+        "exp": int(time.time()) - 100,  # 100 seconds ago
+    }
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    fake_token = f"{header}.{payload}.sig"
+
+    with pytest.raises(AuthenticationError, match="Invalid or expired token."):
+        await validate_user_with_ushauth(fake_token, mock_settings)
+

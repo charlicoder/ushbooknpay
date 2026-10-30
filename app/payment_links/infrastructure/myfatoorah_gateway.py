@@ -352,6 +352,8 @@ class MyFatoorahGateway(PaymentLinkGateway):
             status = GatewayPaymentStatus.PENDING
 
         tx = success_tx or matched_tx or (transactions[-1] if transactions else {})
+        raw_cur = _to_str(tx.get("Currency") or data.get("DisplayCurrencyIso") or data.get("CurrencyIso") or "").strip().upper()
+        norm_cur = "KWD" if raw_cur in ("KD", "K.D.", "K.D", "د.ك", "KWD") else (raw_cur or None)
         return GatewayPaymentState(
             status=status,
             invoice_id=_to_str(data.get("InvoiceId")) or invoice_id,
@@ -361,7 +363,7 @@ class MyFatoorahGateway(PaymentLinkGateway):
             reference_id=_to_str(tx.get("ReferenceId")) or None,
             payment_method=_to_str(tx.get("PaymentGateway")) or None,
             amount=_to_decimal(data.get("InvoiceValue")),
-            currency=_to_str(tx.get("Currency")) or None,
+            currency=norm_cur,
             failure_reason=_to_str(tx.get("Error")) or None if status == GatewayPaymentStatus.FAILED else None,
             raw=body,
         )

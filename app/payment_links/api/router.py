@@ -254,7 +254,8 @@ async def gateway_webhook(
         if state and getattr(state, "amount", None) is not None:
             redirect_params["amount"] = str(state.amount)
         if state and getattr(state, "currency", None):
-            redirect_params["currency"] = str(state.currency)
+            cur = str(state.currency).strip().upper()
+            redirect_params["currency"] = "KWD" if cur in ("KD", "K.D.", "K.D", "د.ك", "KWD") else cur
         if not is_paid:
             reason = (state and getattr(state, "failure_reason", None)) or error_msg or "Payment not completed"
             redirect_params["error"] = str(reason)
