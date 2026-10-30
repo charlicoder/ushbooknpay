@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
@@ -887,6 +888,14 @@ class GiftVoucherService:
 
     # ── Internal: event emission ──────────────────────────────────────────────
 
+    @staticmethod
+    def _safe_event_kwargs(cls: Any, data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            valid_names = {f.name for f in fields(cls)}
+            return {k: v for k, v in data.items() if k in valid_names}
+        except Exception:
+            return data
+
     async def _emit_status_event(
         self,
         voucher: GiftVoucher,
@@ -905,11 +914,11 @@ class GiftVoucherService:
             sqs = get_sqs_client()
 
             if status == GiftVoucherStatus.ACTIVE:
-                event = VoucherActiveEvent(**snapshot)
+                event = VoucherActiveEvent(**self._safe_event_kwargs(VoucherActiveEvent, snapshot))
             elif status == GiftVoucherStatus.PAYMENT_PENDING:
-                event = VoucherPaymentPendingEvent(**snapshot)
+                event = VoucherPaymentPendingEvent(**self._safe_event_kwargs(VoucherPaymentPendingEvent, snapshot))
             elif status == GiftVoucherStatus.REDEEMED:
-                event = VoucherRedeemedEvent(**snapshot)
+                event = VoucherRedeemedEvent(**self._safe_event_kwargs(VoucherRedeemedEvent, snapshot))
             else:
                 # No SQS event for other transitions (cancelled, expired, etc.)
                 return

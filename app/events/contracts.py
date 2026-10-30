@@ -961,6 +961,7 @@ class VoucherActiveEvent(BaseEvent):
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    update_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1040,6 +1041,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    update_history: list[dict[str, Any]] = field(default_factory=list)
 
     # Note: secret_code intentionally omitted — not yet delivered at this stage
 
@@ -1122,6 +1124,7 @@ class VoucherRedeemedEvent(BaseEvent):
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    update_history: list[dict[str, Any]] = field(default_factory=list)
 
     # Note: secret_code intentionally omitted from redemption event
 

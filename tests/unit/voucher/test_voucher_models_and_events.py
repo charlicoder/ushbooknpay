@@ -1010,6 +1010,72 @@ def test_generate_secret_code_alphanumeric():
         assert any(c.isdigit() for c in code)
 
 
+@pytest.mark.asyncio
+async def test_voucher_active_event_with_update_history_and_emit_status():
+    """Verify VoucherActiveEvent handles update_history and _emit_status_event publishes without error."""
+    from unittest.mock import AsyncMock, patch
+    from app.voucher.application.voucher_service import GiftVoucherService
+    from app.voucher.domain.value_objects import GiftVoucherStatus
+
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        service_id=uuid.uuid4(),
+        service_data={"name": "Spa Package"},
+        total_amount=Decimal("50.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+        sender_data={"name": "Sender User"},
+        recipient_phone="+96599998888",
+        status="active",
+        update_history=[{"action": "updated_recipient", "at": "2026-10-30T08:00:00Z"}],
+    )
+    snap = voucher.to_snapshot()
+    assert "update_history" in snap
+    assert snap["update_history"] == [{"action": "updated_recipient", "at": "2026-10-30T08:00:00Z"}]
+
+    # 1. Direct dataclass instantiation
+    ev = VoucherActiveEvent(**snap)
+    assert ev.update_history == [{"action": "updated_recipient", "at": "2026-10-30T08:00:00Z"}]
+    assert ev.to_dict()["update_history"] == [{"action": "updated_recipient", "at": "2026-10-30T08:00:00Z"}]
+
+    # 2. _emit_status_event execution
+    mock_sqs = AsyncMock()
+    mock_session = AsyncMock()
+    svc = GiftVoucherService(mock_session)
+
+    with patch("app.voucher.application.voucher_service.get_sqs_client", return_value=mock_sqs):
+        await svc._emit_status_event(voucher, GiftVoucherStatus.ACTIVE)
+        mock_sqs.publish_event.assert_awaited_once()
+        published_event = mock_sqs.publish_event.call_args[0][0]
+        assert isinstance(published_event, VoucherActiveEvent)
+        assert published_event.update_history == [{"action": "updated_recipient", "at": "2026-10-30T08:00:00Z"}]
+
+
+@pytest.mark.asyncio
+async def test_emit_status_event_defensive_against_unexpected_fields():
+    """Verify _emit_status_event does not fail if snapshot contains unknown extra keys."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.voucher.application.voucher_service import GiftVoucherService
+    from app.voucher.domain.value_objects import GiftVoucherStatus
+
+    voucher = MagicMock(spec=GiftVoucher)
+    voucher.to_snapshot.return_value = {
+        "id": str(uuid.uuid4()),
+        "status": "active",
+        "some_future_unsupported_field": "test_value",
+    }
+
+    mock_sqs = AsyncMock()
+    svc = GiftVoucherService(AsyncMock())
+
+    with patch("app.voucher.application.voucher_service.get_sqs_client", return_value=mock_sqs):
+        await svc._emit_status_event(voucher, GiftVoucherStatus.ACTIVE)
+        mock_sqs.publish_event.assert_awaited_once()
+        published_event = mock_sqs.publish_event.call_args[0][0]
+        assert isinstance(published_event, VoucherActiveEvent)
+
+
+
 
 
 
