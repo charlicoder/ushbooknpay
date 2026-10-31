@@ -26,11 +26,19 @@ _TRANSITIONS: dict[GiftVoucherStatus, frozenset[GiftVoucherStatus]] = {
     GiftVoucherStatus.CREATED: frozenset({
         GiftVoucherStatus.PAYMENT_PENDING,
         GiftVoucherStatus.ACTIVE,
+        GiftVoucherStatus.SCHEDULED,
         GiftVoucherStatus.CANCELLED,
     }),
     GiftVoucherStatus.PAYMENT_PENDING: frozenset({
         GiftVoucherStatus.ACTIVE,
+        GiftVoucherStatus.SCHEDULED,
         GiftVoucherStatus.PAYMENT_PENDING,  # idempotent retry
+        GiftVoucherStatus.CANCELLED,
+    }),
+    # Paid but not yet delivered. Cannot be redeemed; the scheduler activates it.
+    GiftVoucherStatus.SCHEDULED: frozenset({
+        GiftVoucherStatus.SCHEDULED,  # idempotent payment retry / reschedule
+        GiftVoucherStatus.ACTIVE,
         GiftVoucherStatus.CANCELLED,
     }),
     GiftVoucherStatus.ACTIVE: frozenset({

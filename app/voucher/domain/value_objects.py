@@ -17,6 +17,8 @@ class GiftVoucherStatus(str, Enum):
 
     created         — record created, awaiting payment
     payment_pending — payment initiated but not yet confirmed
+    scheduled       — payment confirmed, delivery scheduled for a future datetime;
+                      cannot be redeemed until the scheduler activates it
     active          — payment confirmed; voucher is valid and can be redeemed
     redeemed        — recipient has used the voucher to book a service
     fulfilled       — the booked appointment has been completed
@@ -26,6 +28,7 @@ class GiftVoucherStatus(str, Enum):
 
     CREATED = "created"
     PAYMENT_PENDING = "payment_pending"
+    SCHEDULED = "scheduled"
     ACTIVE = "active"
     REDEEMED = "redeemed"
     FULFILLED = "fulfilled"
@@ -51,6 +54,23 @@ class GiftVoucherStatus(str, Enum):
             if member.value == cleaned:
                 return member.value
         return str(val).strip()
+
+
+class VoucherDeliveryMode(str, Enum):
+    """
+    When the recipient is notified / the voucher becomes usable.
+
+    on_activation — immediately after successful payment (default)
+    scheduled     — at ``scheduled_delivery_at`` (Kuwait time) via EventBridge Scheduler
+    """
+
+    ON_ACTIVATION = "on_activation"
+    SCHEDULED = "scheduled"
+
+    @classmethod
+    def normalise(cls, val: str | None) -> str:
+        cleaned = str(val or "").strip().lower().replace("-", "_").replace(" ", "_")
+        return cls.SCHEDULED.value if cleaned == "scheduled" else cls.ON_ACTIVATION.value
 
 
 class GiftCategory(str, Enum):
@@ -149,7 +169,7 @@ class VoucherPaymentThrough(str, Enum):
             "ushspa": cls.USHSPA.value,
             "ushweb": cls.USHWEB.value,
             "app": cls.USHSPA.value,
-            "web": cls.USHWEB.value,
+            "web": cls.USHSPA.value,
             "desk": cls.DESK.value,
             "pos": cls.DESK.value,
             "reception": cls.DESK.value,

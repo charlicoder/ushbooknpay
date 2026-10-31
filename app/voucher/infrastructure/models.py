@@ -267,6 +267,24 @@ class GiftVoucher(Base):
     # Channel through which the voucher was sold: 'ushspa' (app/web) or 'desk' (reception)
     payment_through: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
+    # ── Scheduled delivery (EventBridge Scheduler + SQS) ──────────────────
+    # on_activation: recipient is notified right after payment success (default)
+    # scheduled:     status becomes 'scheduled' after payment; the scheduler
+    #                activates the voucher at scheduled_delivery_at (Kuwait time).
+    delivery_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="on_activation", server_default="on_activation"
+    )
+    scheduled_delivery_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivery_schedule_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    delivery_schedule_arn: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reschedule_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # ── Audit timestamps ──────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
@@ -408,4 +426,13 @@ class GiftVoucher(Base):
             "created_at": _to_local_tz(self.created_at).isoformat() if self.created_at else None,
             "updated_at": _to_local_tz(self.updated_at).isoformat() if self.updated_at else None,
             "update_history": self.update_history or [],
+            "delivery_mode": self.delivery_mode or "on_activation",
+            "scheduled_delivery_at": (
+                _to_local_tz(self.scheduled_delivery_at).isoformat()
+                if self.scheduled_delivery_at
+                else None
+            ),
+            "delivered_at": _to_local_tz(self.delivered_at).isoformat() if self.delivered_at else None,
+            "delivery_result": self.delivery_result or None,
+            "reschedule_count": self.reschedule_count or 0,
         }

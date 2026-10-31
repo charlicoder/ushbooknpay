@@ -197,6 +197,15 @@ class Settings(BaseSettings):
     AWS_SESSION_TOKEN: str = ""  # optional temporary credentials
 
     AWS_SQS_NOTIFICATION_QUEUE_URL: str = ""
+    AWS_SQS_QUEUE_URL: str = ""
+    AWS_SQS_URL: str = ""
+    AWS_SQS_NOTIFICATION_QUEUE_ARN: str = ""
+    AWS_SCHEDULER_ENDPOINT_URL: str = ""
+    AWS_SCHEDULER_URL: str = ""
+    EVENTBRIDGE_SCHEDULER_URL: str = ""
+    AWS_SCHEDULER_GROUP_NAME: str = "ush-gift-delivery"
+    AWS_SCHEDULER_ROLE_ARN: str = ""
+    AWS_ENDPOINT_URL: str = ""
     AWS_S3_BUCKET: str = ""
 
     @field_validator(
@@ -205,6 +214,15 @@ class Settings(BaseSettings):
         "AWS_REGION",
         "AWS_SESSION_TOKEN",
         "AWS_SQS_NOTIFICATION_QUEUE_URL",
+        "AWS_SQS_QUEUE_URL",
+        "AWS_SQS_URL",
+        "AWS_SQS_NOTIFICATION_QUEUE_ARN",
+        "AWS_SCHEDULER_ENDPOINT_URL",
+        "AWS_SCHEDULER_URL",
+        "EVENTBRIDGE_SCHEDULER_URL",
+        "AWS_SCHEDULER_GROUP_NAME",
+        "AWS_SCHEDULER_ROLE_ARN",
+        "AWS_ENDPOINT_URL",
         "AWS_S3_BUCKET",
         mode="before",
     )
@@ -217,6 +235,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_aws_in_production(self) -> "Settings":
+        if not self.AWS_SQS_NOTIFICATION_QUEUE_URL:
+            self.AWS_SQS_NOTIFICATION_QUEUE_URL = self.AWS_SQS_QUEUE_URL or self.AWS_SQS_URL
+
+        if not self.AWS_SCHEDULER_ROLE_ARN and "481048605945" in (self.AWS_SQS_NOTIFICATION_QUEUE_URL or ""):
+            self.AWS_SCHEDULER_ROLE_ARN = "arn:aws:iam::481048605945:role/ush-eventbridge-gift-sqs-role"
+
         if self.APP_ENV == "production":
             missing = []
             if not self.AWS_ACCESS_KEY_ID:
@@ -230,6 +254,25 @@ class Settings(BaseSettings):
                     f"Required AWS environment variables missing in production: {missing}"
                 )
         return self
+
+    @property
+    def scheduler_endpoint_url(self) -> str | None:
+        url = (
+            self.AWS_SCHEDULER_ENDPOINT_URL
+            or self.AWS_SCHEDULER_URL
+            or self.EVENTBRIDGE_SCHEDULER_URL
+            or self.AWS_ENDPOINT_URL
+            or ""
+        ).split("#")[0].strip()
+        return url or None
+
+    @property
+    def sqs_endpoint_url(self) -> str | None:
+        url = (
+            self.AWS_ENDPOINT_URL
+            or ""
+        ).split("#")[0].strip()
+        return url or None
 
     # ── 8. Payment Providers ─────────────────────────────────────────────
     # MyFatoorah

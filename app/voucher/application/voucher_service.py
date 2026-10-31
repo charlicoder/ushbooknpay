@@ -23,6 +23,7 @@ from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Sequence
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +34,9 @@ from app.events.contracts import (
     VoucherActiveEvent,
     VoucherPaymentPendingEvent,
     VoucherRedeemedEvent,
+    VoucherScheduledEvent,
 )
+from app.events.scheduler_client import get_scheduler_client
 from app.events.sqs_client import get_sqs_client
 from app.shop.domain.state_machine import DeliveryStateMachine, InvalidDeliveryTransitionError
 from app.voucher.domain.state_machine import GiftVoucherStateMachine
@@ -41,6 +44,7 @@ from app.voucher.domain.value_objects import (
     DeliveryStatus,
     GiftCategory,
     GiftVoucherStatus,
+    VoucherDeliveryMode,
     VoucherPaymentProvider,
     VoucherPaymentThrough,
 )
@@ -106,6 +110,8 @@ class GiftVoucherService:
         delivery_address: dict[str, Any] | None = None,
         digital_product_data: dict[str, Any] | None = None,
         is_digital_gift_opened: bool = False,
+        delivery_mode: str = VoucherDeliveryMode.ON_ACTIVATION.value,
+        scheduled_delivery_at: datetime | None = None,
     ) -> GiftVoucher:
         """
         Create a new GiftVoucher.
@@ -154,16 +160,17 @@ class GiftVoucherService:
         Returns:
             The newly created, flushed GiftVoucher ORM instance.
         """
-        # ── Sender phone is mandatory ────────────────────────────────────────
+        # ── Sender phone validation (if provided) ─────────────────────────────
         sender_phone = str((sender_data or {}).get("phone_number") or "").strip()
-        sender_digits = "".join(ch for ch in sender_phone if ch.isdigit())
-        if not sender_digits or not (8 <= len(sender_digits) <= 15) or any(
-            ch not in "+0123456789 -()" for ch in sender_phone
-        ):
-            raise ValidationError(
-                "Sender phone number is required and must be a valid phone number "
-                "(digits only, 8–15 digits)."
-            )
+        if sender_phone:
+            sender_digits = "".join(ch for ch in sender_phone if ch.isdigit())
+            if not sender_digits or not (8 <= len(sender_digits) <= 15) or any(
+                ch not in "+0123456789 -()" for ch in sender_phone
+            ):
+                raise ValidationError(
+                    "Sender phone number must be a valid phone number "
+                    "(digits only, 8–15 digits)."
+                )
 
         # ── Normalise total_duration = service + add-ons + extra time ────────
         def _to_int(value: Any) -> int:
@@ -186,6 +193,10 @@ class GiftVoucherService:
 
         initial_status = status or GiftVoucherStatus.CREATED.value
         category = GiftCategory.normalise(gift_category)
+        delivery_mode = VoucherDeliveryMode.normalise(delivery_mode)
+        if delivery_mode == VoucherDeliveryMode.SCHEDULED.value and initial_status == GiftVoucherStatus.ACTIVE.value:
+            initial_status = GiftVoucherStatus.SCHEDULED.value
+
         payment_provider = VoucherPaymentProvider.normalise(payment_provider)
         payment_through = VoucherPaymentThrough.normalise(payment_through)
 
@@ -200,6 +211,8 @@ class GiftVoucherService:
 
         voucher = GiftVoucher(
             gift_category=category,
+            delivery_mode=delivery_mode,
+            scheduled_delivery_at=scheduled_delivery_at,
             ordered_items=ordered_items,
             delivery_status=delivery_status,
             delivery_address=delivery_address,
@@ -241,6 +254,18 @@ class GiftVoucherService:
         if initial_status == GiftVoucherStatus.REDEEMED.value:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
             voucher.redeemed_by = created_by
+
+        if initial_status == GiftVoucherStatus.SCHEDULED.value and scheduled_delivery_at:
+            try:
+                scheduler = get_scheduler_client()
+                sched_name, sched_arn = await scheduler.create_voucher_schedule(
+                    str(voucher.id),
+                    scheduled_delivery_at,
+                )
+                voucher.delivery_schedule_name = sched_name
+                voucher.delivery_schedule_arn = sched_arn
+            except Exception as e:
+                logger.error("voucher_schedule_creation_error", voucher_id=str(voucher.id), error=str(e))
 
         voucher.update_history = [{
             "action": "created",
@@ -284,6 +309,10 @@ class GiftVoucherService:
         if initial_status == GiftVoucherStatus.ACTIVE.value:
             asyncio.create_task(
                 self._emit_status_event(voucher, GiftVoucherStatus.ACTIVE)
+            )
+        elif initial_status == GiftVoucherStatus.SCHEDULED.value:
+            asyncio.create_task(
+                self._emit_status_event(voucher, GiftVoucherStatus.SCHEDULED)
             )
 
         return voucher
@@ -351,6 +380,11 @@ class GiftVoucherService:
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
 
+        # If transitioning to ACTIVE but voucher is configured for scheduled delivery and not yet delivered,
+        # redirect to SCHEDULED instead.
+        if target_status == GiftVoucherStatus.ACTIVE and voucher.delivery_mode == VoucherDeliveryMode.SCHEDULED.value and not voucher.delivered_at:
+            target_status = GiftVoucherStatus.SCHEDULED
+
         try:
             GiftVoucherStateMachine.validate_transition(current_status, target_status)
         except ValueError as exc:
@@ -390,6 +424,31 @@ class GiftVoucherService:
                 voucher.payment_id = payment_id
             if payment_data is not None:
                 voucher.payment_data = {**(voucher.payment_data or {}), **payment_data}
+
+        elif target_status == GiftVoucherStatus.SCHEDULED:
+            if payment_id is not None:
+                voucher.payment_id = payment_id
+            if payment_data is not None:
+                voucher.payment_data = {**(voucher.payment_data or {}), **payment_data}
+            if voucher.scheduled_delivery_at and not voucher.delivery_schedule_name:
+                try:
+                    scheduler = get_scheduler_client()
+                    sched_name, sched_arn = await scheduler.create_voucher_schedule(
+                        str(voucher.id),
+                        voucher.scheduled_delivery_at,
+                    )
+                    voucher.delivery_schedule_name = sched_name
+                    voucher.delivery_schedule_arn = sched_arn
+                except Exception as e:
+                    logger.error("voucher_schedule_creation_error", voucher_id=str(voucher.id), error=str(e))
+
+        elif target_status == GiftVoucherStatus.CANCELLED:
+            if voucher.delivery_schedule_name:
+                try:
+                    scheduler = get_scheduler_client()
+                    await scheduler.delete_voucher_schedule(voucher.delivery_schedule_name)
+                except Exception as e:
+                    logger.warning("voucher_schedule_deletion_error", voucher_id=str(voucher.id), error=str(e))
 
         if target_status == GiftVoucherStatus.REDEEMED:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
@@ -915,6 +974,8 @@ class GiftVoucherService:
 
             if status == GiftVoucherStatus.ACTIVE:
                 event = VoucherActiveEvent(**self._safe_event_kwargs(VoucherActiveEvent, snapshot))
+            elif status == GiftVoucherStatus.SCHEDULED:
+                event = VoucherScheduledEvent(**self._safe_event_kwargs(VoucherScheduledEvent, snapshot))
             elif status == GiftVoucherStatus.PAYMENT_PENDING:
                 event = VoucherPaymentPendingEvent(**self._safe_event_kwargs(VoucherPaymentPendingEvent, snapshot))
             elif status == GiftVoucherStatus.REDEEMED:
@@ -932,3 +993,186 @@ class GiftVoucherService:
                 status=status.value,
                 error=str(exc),
             )
+
+    # ── Scheduled Delivery Operations ─────────────────────────────────────────
+
+    async def activate_scheduled_voucher(
+        self,
+        voucher_id: uuid.UUID,
+        *,
+        delivery_result: dict[str, Any] | None = None,
+    ) -> GiftVoucher:
+        """
+        Activate and deliver a scheduled voucher.
+        Triggered when AWS EventBridge Scheduler delivers the event to SQS (consumed by ushnotice)
+        or when the safety reconciler fires.
+        Sets status=ACTIVE, delivered_at=now, expire_date=now+60days, and emits VoucherActiveEvent.
+        """
+        voucher = await self._repo.get_by_id(voucher_id)
+        if voucher is None:
+            raise NotFoundError(f"Gift voucher {voucher_id} not found.")
+
+        # Idempotency check: already delivered/active or redeemed
+        if voucher.status in (GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.REDEEMED.value):
+            logger.info(
+                "scheduled_voucher_already_active_or_redeemed",
+                voucher_id=str(voucher_id),
+                status=voucher.status,
+            )
+            return voucher
+
+        if voucher.status != GiftVoucherStatus.SCHEDULED.value:
+            logger.warning(
+                "scheduled_voucher_unexpected_status_for_activation",
+                voucher_id=str(voucher_id),
+                status=voucher.status,
+            )
+            return voucher
+
+        now_utc = datetime.now(tz=timezone.utc)
+        voucher.status = GiftVoucherStatus.ACTIVE.value
+        voucher.delivered_at = now_utc
+        # 60 days validity starts from the moment of activation/delivery
+        voucher.expire_date = now_utc + timedelta(days=60)
+        voucher.delivery_result = delivery_result or {
+            "delivered": True,
+            "activated_at": now_utc.isoformat(),
+            "source": "scheduler",
+        }
+
+        history_entry = {
+            "action": "scheduled_delivery_activated",
+            "timestamp": now_utc.isoformat(),
+            "changed_by": "scheduler",
+            "old_status": GiftVoucherStatus.SCHEDULED.value,
+            "new_status": GiftVoucherStatus.ACTIVE.value,
+        }
+        current_history = list(voucher.update_history or [])
+        current_history.append(history_entry)
+        voucher.update_history = current_history
+
+        await self._repo.flush()
+
+        logger.info(
+            "scheduled_voucher_activated_successfully",
+            voucher_id=str(voucher_id),
+            expire_date=voucher.expire_date.isoformat(),
+        )
+
+        # Emit VoucherActiveEvent so recipient receives the secret code via SMS/WhatsApp
+        asyncio.create_task(
+            self._emit_status_event(voucher, GiftVoucherStatus.ACTIVE)
+        )
+
+        return voucher
+
+    async def reschedule_voucher(
+        self,
+        voucher_id: uuid.UUID,
+        new_scheduled_delivery_at: datetime,
+        *,
+        actor_id: str | None = None,
+    ) -> GiftVoucher:
+        """
+        Reschedule a scheduled voucher to a new Kuwait datetime within 2 months from now.
+        Permitted only while voucher status is 'scheduled'. Desk staff only.
+        """
+        voucher = await self._repo.get_by_id(voucher_id)
+        if voucher is None:
+            raise NotFoundError(f"Gift voucher {voucher_id} not found.")
+
+        if voucher.status != GiftVoucherStatus.SCHEDULED.value:
+            raise ValidationError(
+                f"Cannot reschedule voucher in status '{voucher.status}'. "
+                "Only vouchers in 'scheduled' status can be rescheduled."
+            )
+
+        kuwait_tz = ZoneInfo("Asia/Kuwait")
+        if new_scheduled_delivery_at.tzinfo is None:
+            dt_kuwait = new_scheduled_delivery_at.replace(tzinfo=kuwait_tz)
+        elif new_scheduled_delivery_at.tzinfo == timezone.utc:
+            dt_kuwait = new_scheduled_delivery_at.replace(tzinfo=None).replace(tzinfo=kuwait_tz)
+        else:
+            dt_kuwait = new_scheduled_delivery_at.astimezone(kuwait_tz)
+
+        now_kuwait = datetime.now(kuwait_tz)
+        if dt_kuwait <= now_kuwait:
+            raise ValidationError("New scheduled delivery time must be in the future.")
+
+        max_allowed = now_kuwait + timedelta(days=62)
+        if dt_kuwait > max_allowed:
+            raise ValidationError("New scheduled delivery time cannot be more than 2 months into the future.")
+
+        scheduler = get_scheduler_client()
+        if voucher.delivery_schedule_name:
+            sched_arn = await scheduler.update_voucher_schedule(
+                voucher.delivery_schedule_name,
+                str(voucher.id),
+                dt_kuwait,
+            )
+            voucher.delivery_schedule_arn = sched_arn
+        else:
+            sched_name, sched_arn = await scheduler.create_voucher_schedule(
+                str(voucher.id),
+                dt_kuwait,
+            )
+            voucher.delivery_schedule_name = sched_name
+            voucher.delivery_schedule_arn = sched_arn
+
+        voucher.scheduled_delivery_at = dt_kuwait
+        voucher.reschedule_count = (voucher.reschedule_count or 0) + 1
+
+        history_entry = {
+            "action": "rescheduled",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "changed_by": str(actor_id) if actor_id else "staff",
+            "new_scheduled_delivery_at": dt_kuwait.isoformat(),
+            "reschedule_count": voucher.reschedule_count,
+        }
+        current_history = list(voucher.update_history or [])
+        current_history.append(history_entry)
+        voucher.update_history = current_history
+
+        await self._repo.flush()
+
+        logger.info(
+            "gift_voucher_rescheduled",
+            voucher_id=str(voucher_id),
+            new_scheduled_delivery_at=dt_kuwait.isoformat(),
+            reschedule_count=voucher.reschedule_count,
+            actor_id=actor_id,
+        )
+
+        return voucher
+
+    async def reconcile_overdue_scheduled_vouchers(self, limit: int = 50) -> list[str]:
+        """
+        Safety net reconciler: find any scheduled vouchers whose delivery date has passed
+        and activate them.
+        """
+        overdue_vouchers = await self._repo.list_overdue_scheduled(limit=limit)
+        activated_ids: list[str] = []
+
+        for voucher in overdue_vouchers:
+            try:
+                await self.activate_scheduled_voucher(
+                    voucher.id,
+                    delivery_result={
+                        "delivered": True,
+                        "activated_at": datetime.now(tz=timezone.utc).isoformat(),
+                        "source": "reconciler",
+                    },
+                )
+                activated_ids.append(str(voucher.id))
+            except Exception as exc:
+                logger.error(
+                    "reconcile_scheduled_voucher_failed",
+                    voucher_id=str(voucher.id),
+                    error=str(exc),
+                )
+
+        if activated_ids:
+            logger.info("reconciled_overdue_vouchers", activated_count=len(activated_ids), ids=activated_ids)
+
+        return activated_ids
+

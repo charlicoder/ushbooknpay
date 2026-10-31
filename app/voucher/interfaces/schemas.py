@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from app.common.utils import LocalDateTime
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -28,6 +29,7 @@ from app.voucher.domain.value_objects import (
     DeliveryStatus,
     GiftCategory,
     GiftVoucherStatus,
+    VoucherDeliveryMode,
     VoucherPaymentProvider,
     VoucherPaymentThrough,
 )
@@ -193,6 +195,24 @@ class CreateGiftVoucherRequest(BaseModel):
         description="Alias for validity_days. Defaults to 60 days if neither validity nor expire_date is provided.",
     )
 
+    # ── Scheduled delivery ────────────────────────────────────────────
+    delivery_mode: str = Field(
+        default="on_activation",
+        description=(
+            "'on_activation' (default): recipient is notified right after payment success. "
+            "'scheduled': voucher becomes 'scheduled' after payment and is activated + "
+            "delivered at scheduled_delivery_at (Kuwait time) via AWS EventBridge Scheduler."
+        ),
+    )
+    scheduled_delivery_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Delivery datetime (ISO 8601). Naive values are interpreted as Kuwait time "
+            "(Asia/Kuwait). Required when delivery_mode='scheduled'; must be in the future "
+            "and within 2 months."
+        ),
+    )
+
     # ── Authoring ─────────────────────────────────────────────────────
     created_by: uuid.UUID | None = Field(
         default=None,
@@ -336,10 +356,68 @@ class CreateGiftVoucherRequest(BaseModel):
             raise ValueError(f"Invalid payment_through {v!r}. Valid values: {valid}")
         return normalised
 
+    @field_validator("delivery_mode", mode="before")
+    @classmethod
+    def normalise_delivery_mode(cls, v: Any) -> str:
+        return VoucherDeliveryMode.normalise(v)
+
+    @field_validator("scheduled_delivery_at", mode="before")
+    @classmethod
+    def blank_schedule_to_none(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if s.endswith("Z"):
+                s = s[:-1]
+            try:
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    return dt.replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+                elif dt.tzinfo == timezone.utc:
+                    return dt.replace(tzinfo=None).replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+                return dt.astimezone(ZoneInfo("Asia/Kuwait"))
+            except Exception:
+                return v
+        if isinstance(v, datetime):
+            if v.tzinfo is None:
+                return v.replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+            elif v.tzinfo == timezone.utc:
+                return v.replace(tzinfo=None).replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+            return v.astimezone(ZoneInfo("Asia/Kuwait"))
+        return v
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "CreateGiftVoucherRequest":
+        if self.delivery_mode == VoucherDeliveryMode.SCHEDULED.value:
+            if self.scheduled_delivery_at is None:
+                raise ValueError("scheduled_delivery_at is required when delivery_mode is 'scheduled'.")
+
+            dt = self.scheduled_delivery_at
+            if dt.tzinfo is None:
+                dt_kuwait = dt.replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+            elif dt.tzinfo == timezone.utc:
+                dt_kuwait = dt.replace(tzinfo=None).replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+            else:
+                dt_kuwait = dt.astimezone(ZoneInfo("Asia/Kuwait"))
+
+            now_kuwait = datetime.now(ZoneInfo("Asia/Kuwait"))
+            if dt_kuwait <= now_kuwait:
+                raise ValueError("scheduled_delivery_at must be in the future")
+
+            max_allowed = now_kuwait + timedelta(days=62)
+            if dt_kuwait > max_allowed:
+                raise ValueError("scheduled_delivery_at cannot be more than 2 months into the future")
+
+            self.scheduled_delivery_at = dt_kuwait
+        else:
+            # on_activation never carries a schedule
+            self.scheduled_delivery_at = None
+        return self
+
     model_config = {
         "json_schema_extra": {
             "example": {
-                "service_id": "99999999-9999-9999-9999-999999999999",
                 "service_data": {
                     "name": "Swedish Massage 60 min",
                     "category": "Massage",
@@ -910,6 +988,11 @@ class GiftVoucherResponse(BaseModel):
     payment_through: str | None = None
     invoice_number: str | None = None
     payment_number: str | None = None
+    delivery_mode: str = "on_activation"
+    scheduled_delivery_at: LocalDateTime | None = None
+    delivered_at: LocalDateTime | None = None
+    delivery_result: dict[str, Any] | None = None
+    reschedule_count: int = 0
     created_at: LocalDateTime
     updated_at: LocalDateTime
     update_history: list[dict[str, Any]] | None = Field(default_factory=list)
@@ -955,6 +1038,9 @@ class GiftVoucherPublicResponse(BaseModel):
     gift_template: str | None = None
     public_token: str
     secret_code: str | None = None
+    delivery_mode: str = "on_activation"
+    scheduled_delivery_at: LocalDateTime | None = None
+    delivered_at: LocalDateTime | None = None
     # payment_id / payment_data are OMITTED from the public response
     created_at: LocalDateTime
 
@@ -1007,6 +1093,10 @@ class GiftVoucherListItem(BaseModel):
     payment_through: str | None = None
     invoice_number: str | None = None
     payment_number: str | None = None
+    delivery_mode: str = "on_activation"
+    scheduled_delivery_at: LocalDateTime | None = None
+    delivered_at: LocalDateTime | None = None
+    reschedule_count: int = 0
     created_by: uuid.UUID | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
@@ -1022,4 +1112,47 @@ class BatchDeleteVouchersRequest(BaseModel):
 class BatchUpdateVoucherStatusRequest(BaseModel):
     voucher_ids: list[uuid.UUID] = Field(..., min_length=1, description="List of voucher UUIDs to update")
     status: str = Field(..., description="Target status ('active', 'created', 'payment_pending', 'redeemed', 'expired', 'cancelled')")
+
+
+class RescheduleVoucherRequest(BaseModel):
+    """
+    Payload for rescheduling a scheduled gift voucher.
+    Desk staff only: PATCH /vouchers/{voucher_id}/schedule/
+    """
+    scheduled_delivery_at: datetime = Field(
+        ...,
+        description="New delivery datetime (ISO 8601). Interpreted as Asia/Kuwait if naive.",
+    )
+
+    @field_validator("scheduled_delivery_at", mode="before")
+    @classmethod
+    def validate_new_schedule(cls, v: Any) -> datetime:
+        if isinstance(v, str):
+            s = v.strip()
+            if s.endswith("Z"):
+                s = s[:-1]
+            try:
+                v = datetime.fromisoformat(s)
+            except Exception:
+                raise ValueError("scheduled_delivery_at must be an ISO 8601 datetime string or datetime object")
+        if not isinstance(v, datetime):
+            raise ValueError("scheduled_delivery_at must be an ISO 8601 datetime string or datetime object")
+
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+        elif v.tzinfo == timezone.utc:
+            v = v.replace(tzinfo=None).replace(tzinfo=ZoneInfo("Asia/Kuwait"))
+        else:
+            v = v.astimezone(ZoneInfo("Asia/Kuwait"))
+
+        now_kuwait = datetime.now(ZoneInfo("Asia/Kuwait"))
+        if v <= now_kuwait:
+            raise ValueError("scheduled_delivery_at must be in the future")
+
+        max_allowed = now_kuwait + timedelta(days=62)
+        if v > max_allowed:
+            raise ValueError("scheduled_delivery_at cannot be more than 2 months into the future")
+
+        return v
+
 

@@ -437,6 +437,23 @@ class GiftVoucherRepository:
         sequence = highest_sequence + 1
         return f"{date_prefix}{sequence:06d}"
 
+    async def list_overdue_scheduled(self, limit: int = 50) -> Sequence[GiftVoucher]:
+        """Fetch vouchers that are scheduled and whose scheduled_delivery_at is <= now."""
+        now_utc = datetime.now(tz=timezone.utc)
+        stmt = (
+            select(GiftVoucher)
+            .where(
+                and_(
+                    GiftVoucher.status == GiftVoucherStatus.SCHEDULED.value,
+                    GiftVoucher.scheduled_delivery_at <= now_utc,
+                )
+            )
+            .order_by(GiftVoucher.scheduled_delivery_at.asc())
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().all()
+
     # ── Write operations ──────────────────────────────────────────────────────
 
     @property

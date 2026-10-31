@@ -60,6 +60,20 @@ class SQSClient:
                 )
         return self._session
 
+    def _client_kwargs(self) -> dict[str, Any]:
+        client_kwargs: dict[str, Any] = {}
+        endpoint = (
+            getattr(self._settings, "sqs_endpoint_url", None)
+            or getattr(self._settings, "AWS_SQS_ENDPOINT_URL", "")
+            or getattr(self._settings, "AWS_ENDPOINT_URL", "")
+            or ""
+        )
+        if isinstance(endpoint, str):
+            endpoint = endpoint.split("#")[0].strip()
+        if endpoint:
+            client_kwargs["endpoint_url"] = endpoint
+        return client_kwargs
+
     async def send_message(
         self,
         queue_url: str,
@@ -112,7 +126,7 @@ class SQSClient:
             }
 
         session = self._get_session()
-        async with session.client("sqs") as sqs:
+        async with session.client("sqs", **self._client_kwargs()) as sqs:
             response: dict[str, Any] = await sqs.send_message(**kwargs)
 
         logger.info(
@@ -132,7 +146,12 @@ class SQSClient:
         Routes by default to AWS_SQS_NOTIFICATION_QUEUE_URL.
         Catches and logs any transport errors to prevent background task crashes.
         """
-        target_queue = queue_url or self._settings.AWS_SQS_NOTIFICATION_QUEUE_URL
+        target_queue = (
+            queue_url
+            or self._settings.AWS_SQS_NOTIFICATION_QUEUE_URL
+            or getattr(self._settings, "AWS_SQS_QUEUE_URL", "")
+            or getattr(self._settings, "AWS_SQS_URL", "")
+        )
         if not target_queue:
             logger.warning(
                 "sqs_notification_queue_url_not_configured_event_dropped",

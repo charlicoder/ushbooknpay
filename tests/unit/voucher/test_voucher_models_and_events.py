@@ -584,9 +584,11 @@ def test_validation_exception_handler_serializes_value_error_without_crashing():
     """Verify validation errors containing ValueError in ctx are serialized to JSON without TypeError."""
     from starlette.testclient import TestClient
     from app.main import app
-    from app.core.security import TokenPayload, require_authenticated_user
+    from app.core.security import TokenPayload, require_authenticated_user, get_optional_authenticated_user
 
-    app.dependency_overrides[require_authenticated_user] = lambda: TokenPayload(sub=str(uuid.uuid4()))
+    mock_user = TokenPayload(sub=str(uuid.uuid4()))
+    app.dependency_overrides[require_authenticated_user] = lambda: mock_user
+    app.dependency_overrides[get_optional_authenticated_user] = lambda: mock_user
     try:
         client = TestClient(app, raise_server_exceptions=False)
         # Send a request with an invalid payment_provider to trigger ValueError in validator
@@ -597,6 +599,7 @@ def test_validation_exception_handler_serializes_value_error_without_crashing():
                 "total_amount": "45.000",
                 "payment_provider": "unsupported_gateway",
             },
+            headers={"USH_TOKEN": "test-token", "X-USHSPA-TOKEN": "test-token"},
         )
         assert resp.status_code == 422
         data = resp.json()
@@ -605,6 +608,7 @@ def test_validation_exception_handler_serializes_value_error_without_crashing():
         assert "Invalid payment_provider" in str(data["error"]["detail"])
     finally:
         app.dependency_overrides.pop(require_authenticated_user, None)
+        app.dependency_overrides.pop(get_optional_authenticated_user, None)
 
 
 def test_gift_voucher_model_snapshot_with_delivery_fields():

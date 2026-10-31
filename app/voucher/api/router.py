@@ -29,6 +29,7 @@ Routes (all under /api/v1/vouchers/):
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -57,6 +58,7 @@ from app.voucher.interfaces.schemas import (
     GiftVoucherListItem,
     GiftVoucherPublicResponse,
     GiftVoucherResponse,
+    RescheduleVoucherRequest,
     UpdateGiftVoucherRequest,
     UpdateGiftVoucherStatusRequest,
     UpdateVoucherDeliveryStatusRequest,
@@ -151,6 +153,31 @@ def _extract_payment_number(v: Any) -> str | None:
     return None
 
 
+def _extract_delivery_mode(v: Any) -> str:
+    dm = getattr(v, "delivery_mode", None)
+    return dm if isinstance(dm, str) and dm else "on_activation"
+
+
+def _extract_scheduled_delivery_at(v: Any) -> Any:
+    sdt = getattr(v, "scheduled_delivery_at", None)
+    return sdt if isinstance(sdt, datetime) else None
+
+
+def _extract_delivered_at(v: Any) -> Any:
+    dat = getattr(v, "delivered_at", None)
+    return dat if isinstance(dat, datetime) else None
+
+
+def _extract_delivery_result(v: Any) -> dict[str, Any] | None:
+    dr = getattr(v, "delivery_result", None)
+    return dr if isinstance(dr, dict) else None
+
+
+def _extract_reschedule_count(v: Any) -> int:
+    rc = getattr(v, "reschedule_count", None)
+    return rc if isinstance(rc, int) else 0
+
+
 def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
     """Map ORM GiftVoucher → full GiftVoucherResponse."""
     delivery_status = _extract_delivery_status(v)
@@ -204,6 +231,11 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         payment_through=v.payment_through,
         invoice_number=_extract_invoice_number(v),
         payment_number=_extract_payment_number(v),
+        delivery_mode=_extract_delivery_mode(v),
+        scheduled_delivery_at=_extract_scheduled_delivery_at(v),
+        delivered_at=_extract_delivered_at(v),
+        delivery_result=_extract_delivery_result(v),
+        reschedule_count=_extract_reschedule_count(v),
         created_at=v.created_at,
         updated_at=v.updated_at,
         update_history=getattr(v, "update_history", None) or [],
@@ -246,6 +278,9 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
         gift_template=v.gift_template,
         public_token=v.public_token,
         secret_code=getattr(v, "secret_code", None),
+        delivery_mode=_extract_delivery_mode(v),
+        scheduled_delivery_at=_extract_scheduled_delivery_at(v),
+        delivered_at=_extract_delivered_at(v),
         created_at=v.created_at,
     )
 
@@ -297,6 +332,10 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         payment_through=v.payment_through,
         invoice_number=_extract_invoice_number(v),
         payment_number=_extract_payment_number(v),
+        delivery_mode=_extract_delivery_mode(v),
+        scheduled_delivery_at=_extract_scheduled_delivery_at(v),
+        delivered_at=_extract_delivered_at(v),
+        reschedule_count=_extract_reschedule_count(v),
         created_by=v.created_by,
         created_at=v.created_at,
         updated_at=v.updated_at,
@@ -496,6 +535,8 @@ async def create_gift_voucher(
             delivery_address=body.delivery_address,
             digital_product_data=body.digital_product_data,
             is_digital_gift_opened=body.is_digital_gift_opened,
+            delivery_mode=body.delivery_mode,
+            scheduled_delivery_at=body.scheduled_delivery_at,
         )
     except ValidationError as exc:
         raise HTTPException(
@@ -1687,5 +1728,126 @@ async def mark_voucher_digital_gift_opened(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},
     )
+
+
+# ── Scheduled Delivery Endpoints ──────────────────────────────────────────────
+
+
+@router.patch(
+    "/{voucher_id}/schedule/",
+    summary="Reschedule a scheduled gift voucher (Desk staff only)",
+    description=(
+        "Update the scheduled delivery datetime for a voucher in 'scheduled' status. "
+        "Allows dates up to 2 months from the moment of rescheduling. Requires USHSPA-TOKEN."
+    ),
+    response_model=dict[str, Any],
+)
+@router.patch(
+    "/{voucher_id}/schedule",
+    include_in_schema=False,
+)
+async def reschedule_gift_voucher(
+    voucher_id: uuid.UUID,
+    body: RescheduleVoucherRequest,
+    _: RequireAppToken,
+    session: DBSession,
+    request: Request,
+) -> JSONResponse:
+    """Reschedule delivery for a scheduled voucher (Desk staff only)."""
+    svc = GiftVoucherService(session)
+    actor_id = _resolve_api_requester(request, None)
+    try:
+        voucher = await svc.reschedule_voucher(
+            voucher_id,
+            body.scheduled_delivery_at,
+            actor_id=str(actor_id) if actor_id else "staff",
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+        ) from exc
+
+    data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
+@router.post(
+    "/{voucher_id}/schedule/activate/",
+    summary="Activate a scheduled gift voucher (Internal worker / SQS consumer)",
+    description=(
+        "Deliver/activate a voucher whose scheduled delivery time has arrived. "
+        "Transitions status from 'scheduled' to 'active', sets delivered_at, "
+        "and starts the 60-day validity period. Requires USHSPA-TOKEN."
+    ),
+    response_model=dict[str, Any],
+)
+@router.post(
+    "/{voucher_id}/schedule/activate",
+    include_in_schema=False,
+)
+async def activate_scheduled_gift_voucher(
+    voucher_id: uuid.UUID,
+    _: RequireAppToken,
+    session: DBSession,
+    request: Request,
+) -> JSONResponse:
+    """Activate and deliver a scheduled gift voucher."""
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    svc = GiftVoucherService(session)
+    try:
+        voucher = await svc.activate_scheduled_voucher(
+            voucher_id,
+            delivery_result=body.get("delivery_result"),
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+        ) from exc
+
+    data = _voucher_to_response(voucher)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
+@router.post(
+    "/schedule/reconcile/",
+    summary="Reconcile overdue scheduled gift vouchers (Safety net cron)",
+    description="Finds any vouchers still in 'scheduled' status whose delivery datetime has passed and activates them. Requires USHSPA-TOKEN.",
+    response_model=dict[str, Any],
+)
+@router.post(
+    "/schedule/reconcile",
+    include_in_schema=False,
+)
+async def reconcile_scheduled_gift_vouchers(
+    _: RequireAppToken,
+    session: DBSession,
+) -> JSONResponse:
+    """Reconcile overdue scheduled gift vouchers."""
+    svc = GiftVoucherService(session)
+    activated_ids = await svc.reconcile_overdue_scheduled_vouchers()
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "success": True,
+            "activated_count": len(activated_ids),
+            "activated_ids": activated_ids,
+        },
+    )
+
 
 

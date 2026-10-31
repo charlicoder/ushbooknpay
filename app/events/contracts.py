@@ -900,6 +900,9 @@ class VoucherActiveEvent(BaseEvent):
     id: str = ""
     voucher_number: str = ""
     status: str = "active"
+    delivery_mode: str = "on_activation"
+    scheduled_delivery_at: str | None = None
+    delivered_at: str | None = None
     gift_category: str = "service"
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
     delivery_status: str | None = None
@@ -961,7 +964,108 @@ class VoucherActiveEvent(BaseEvent):
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    delivery_result: dict[str, Any] = field(default_factory=dict)
+    reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class VoucherScheduledEvent(BaseEvent):
+    """
+    Fired when a gift voucher with delivery_mode='scheduled' has payment confirmed.
+    Voucher status becomes 'scheduled' instead of 'active'.
+    ushnotice handles this event to:
+      1. Create payment record / invoice
+      2. Send a nice short confirmation SMS to the sender in Arabic confirming the schedule.
+      3. Recipient receives NO SMS at this time.
+    """
+
+    event_name: str = field(default="Voucher.Scheduled", init=False)
+    event_type: str = field(default="voucher.scheduled", init=False)
+
+    # ── Voucher identity ──────────────────────────────────────────────
+    id: str = ""
+    voucher_number: str = ""
+    status: str = "scheduled"
+    delivery_mode: str = "scheduled"
+    scheduled_delivery_at: str | None = None
+    gift_category: str = "service"
+    ordered_items: list[dict[str, Any]] = field(default_factory=list)
+    delivery_status: str | None = None
+    delivery_address: dict[str, Any] = field(default_factory=dict)
+    digital_product_data: dict[str, Any] = field(default_factory=dict)
+    is_digital_gift_opened: bool = False
+    public_token: str = ""
+    secret_code: str = ""
+
+    # ── Service context ───────────────────────────────────────────────
+    service_id: str = ""
+    service_data: dict[str, Any] = field(default_factory=dict)
+    branch_id: str | None = None
+    branch_data: dict[str, Any] = field(default_factory=dict)
+    service_arrangement_id: str | None = None
+    service_arrangement_data: dict[str, Any] = field(default_factory=dict)
+    addons: list[dict[str, Any]] = field(default_factory=list)
+    extra_time: int = 0
+    price_for_extra_time: str | None = None
+
+    # ── Financial ─────────────────────────────────────────────────────
+    total_duration: int = 0
+    total_amount: str = ""
+    discount: str = "0.000"
+    currency: str = "KWD"
+
+    # ── Personalisation ───────────────────────────────────────────────
+    gift_message: str | None = None
+    gift_from: str | None = None
+    gift_template: str | None = None
+    expire_date: str | None = None
+
+    # ── Sender ────────────────────────────────────────────────────────
+    sender_id: str = ""
+    sender_data: dict[str, Any] = field(default_factory=dict)
+    sender_language: str = "ar"
+
+    # ── Recipient ─────────────────────────────────────────────────────
+    recipient_phone: str | None = None
+    recipient_id: str | None = None
+    recipient_data: dict[str, Any] = field(default_factory=dict)
+    recipient_language: str = "ar"
+
+    # ── Payment & timestamps ──────────────────────────────────────────
+    payment_id: str | None = None
+    payment_number: str | None = None
+    invoice_number: str | None = None
+    payment_data: dict[str, Any] = field(default_factory=dict)
+    payment_url: str | None = None
+    payment_provider: str | None = None
+    payment_through: str | None = None
+    booking_id: str | None = None
+    booking_data: dict[str, Any] = field(default_factory=dict)
+    redeemed_booking_id: str | None = None
+    redeemed_at: str | None = None
+    redeemed_by: str | None = None
+    created_by: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    delivery_result: dict[str, Any] = field(default_factory=dict)
+    reschedule_count: int = 0
+    update_history: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class VoucherDeliveryDueEvent(BaseEvent):
+    """
+    Sent to SQS by AWS EventBridge Scheduler when a scheduled voucher's delivery time is reached.
+    ushnotice consumes this event and calls ushbooknpay to activate the voucher.
+    """
+
+    event_name: str = field(default="Voucher.DeliveryDue", init=False)
+    event_type: str = field(default="voucher.delivery_due", init=False)
+
+    voucher_id: str = ""
+    scheduled_delivery_at: str | None = None
+    source: str = "aws_eventbridge_scheduler"
 
 
 @dataclass
@@ -980,6 +1084,9 @@ class VoucherPaymentPendingEvent(BaseEvent):
     id: str = ""
     voucher_number: str = ""
     status: str = "payment_pending"
+    delivery_mode: str = "on_activation"
+    scheduled_delivery_at: str | None = None
+    delivered_at: str | None = None
     gift_category: str = "service"
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
     delivery_status: str | None = None
@@ -1041,6 +1148,8 @@ class VoucherPaymentPendingEvent(BaseEvent):
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    delivery_result: dict[str, Any] = field(default_factory=dict)
+    reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
 
     # Note: secret_code intentionally omitted — not yet delivered at this stage
@@ -1062,6 +1171,9 @@ class VoucherRedeemedEvent(BaseEvent):
     id: str = ""
     voucher_number: str = ""
     status: str = "redeemed"
+    delivery_mode: str = "on_activation"
+    scheduled_delivery_at: str | None = None
+    delivered_at: str | None = None
     gift_category: str = "service"
     ordered_items: list[dict[str, Any]] = field(default_factory=list)
     delivery_status: str | None = None
@@ -1124,6 +1236,8 @@ class VoucherRedeemedEvent(BaseEvent):
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    delivery_result: dict[str, Any] = field(default_factory=dict)
+    reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
 
     # Note: secret_code intentionally omitted from redemption event
