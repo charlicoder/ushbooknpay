@@ -37,6 +37,7 @@ COPY --from=deps /install /usr/local
 # Copy application source (changing these files will NOT re-run pip install)
 COPY app/ ./app/
 COPY alembic/ ./alembic/
+COPY scripts/ ./scripts/
 COPY alembic.ini ./alembic.ini
 COPY pyproject.toml ./
 COPY requirements.txt ./
