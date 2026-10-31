@@ -209,3 +209,12 @@ uv run python -m scripts.import_appointments_csv scripts/data/appointment_list_2
 uv run python -m scripts.import_appointments_csv scripts/data/appointment_list_2026-10-23.csv --execute
 
 ```
+
+```
+# =====Repair voucher record:
+
+$docker exec ushbooknpay python3 /app/scripts/repair_voucher_records.py \
+    --voucher-number VOU/2026/10/000129 --env /app/.env
+
+
+```
