@@ -57,6 +57,7 @@ from app.booking.domain.sessions import (
     distinct_session_arrangements,
     get_booking_sessions,
     legacy_mirror,
+    normalise_addons,
     session_from_booking,
     session_window,
 )
@@ -917,6 +918,8 @@ class BookingService:
         effective_changed_user_data = change_by_user_data or created_by_user_data
         initial_status = booking.status
         initial_payment_status = booking.payment_status
+        initial_appointment_start = booking.appointment_start
+        initial_extra_minutes = booking.extra_minutes
 
         # ── Replace all sessions (multi-session) ─────────────────────────
         if sessions is not None:
@@ -1232,6 +1235,74 @@ class BookingService:
                         booking_id=str(booking.id),
                         error=str(pl_exc),
                     )
+
+        # ── Synchronize sessions if sessions was not explicitly supplied ────
+        _stored_sessions = [dict(s) for s in (getattr(booking, "sessions", None) or [])]
+        if sessions is None and _stored_sessions:
+            old_start = to_local_tz(initial_appointment_start) if initial_appointment_start else None
+            curr_start = to_local_tz(booking.appointment_start) if booking.appointment_start else None
+            time_delta = (curr_start - old_start) if (old_start and curr_start and curr_start != old_start) else timedelta(0)
+
+            if len(_stored_sessions) == 1:
+                s0 = dict(_stored_sessions[0])
+                if booking.appointment_start:
+                    s0["appointment_start"] = to_local_tz(booking.appointment_start).isoformat()
+                if booking.appointment_end:
+                    s0["appointment_end"] = to_local_tz(booking.appointment_end).isoformat()
+                if booking.therapist_id:
+                    s0["therapist_id"] = str(booking.therapist_id)
+                if booking.therapist_data is not None:
+                    s0["therapist_data"] = dict(booking.therapist_data)
+                if secondary_therapist_provided or secondary_therapist_id is not None:
+                    s0["secondary_therapist_id"] = str(booking.secondary_therapist_id) if booking.secondary_therapist_id else None
+                    s0["secondary_therapist_data"] = dict(booking.secondary_therapist_data) if (booking.secondary_therapist_id and booking.secondary_therapist_data) else None
+                if booking.service_arrangement_id:
+                    s0["service_arrangement_id"] = str(booking.service_arrangement_id)
+                if booking.service_arrangement_data is not None:
+                    s0["service_arrangement_data"] = dict(booking.service_arrangement_data)
+                s0["extra_minutes"] = int(booking.extra_minutes or 0)
+                if booking.price_for_extra_minutes is not None:
+                    s0["price_for_extra_minutes"] = f"{Decimal(str(booking.price_for_extra_minutes)):.3f}"
+                s0["total_session_duration"] = int(booking.total_duration or eff_total_duration)
+                if booking.addons is not None:
+                    s0["addons"] = normalise_addons(booking.addons)
+                if booking.addon_price is not None:
+                    s0["addons_price"] = f"{Decimal(str(booking.addon_price)):.3f}"
+                if booking.addons_duration is not None:
+                    s0["addons_duration"] = int(booking.addons_duration)
+                if booking.total_amount is not None:
+                    s0["session_price"] = f"{Decimal(str(booking.total_amount)):.3f}"
+                booking.sessions = [s0]
+            else:
+                # Multi-session: shift session times if start changed
+                prev_extra = int(initial_extra_minutes or 0)
+                curr_extra = int(booking.extra_minutes or 0)
+                extra_diff = curr_extra - prev_extra
+
+                for i, s in enumerate(_stored_sessions):
+                    s_st, s_en = session_window(s)
+                    if s_st and s_en:
+                        new_s_st = s_st + time_delta
+                        new_s_en = s_en + time_delta
+                        if i == 0 and booking.therapist_id:
+                            s["therapist_id"] = str(booking.therapist_id)
+                            if booking.therapist_data is not None:
+                                s["therapist_data"] = dict(booking.therapist_data)
+                        if i == 0 and (secondary_therapist_provided or secondary_therapist_id is not None):
+                            s["secondary_therapist_id"] = str(booking.secondary_therapist_id) if booking.secondary_therapist_id else None
+                            s["secondary_therapist_data"] = dict(booking.secondary_therapist_data) if (booking.secondary_therapist_id and booking.secondary_therapist_data) else None
+
+                        if extra_diff != 0 and i == len(_stored_sessions) - 1:
+                            s_extra = max(0, int(s.get("extra_minutes", 0)) + extra_diff)
+                            s["extra_minutes"] = s_extra
+                            s_dur = int(s.get("total_session_duration", 0)) + extra_diff
+                            s["total_session_duration"] = s_dur
+                            new_s_en = new_s_en + timedelta(minutes=extra_diff)
+                            if booking.price_for_extra_minutes is not None:
+                                s["price_for_extra_minutes"] = f"{Decimal(str(booking.price_for_extra_minutes)):.3f}"
+                        s["appointment_start"] = new_s_st.isoformat()
+                        s["appointment_end"] = new_s_en.isoformat()
+                booking.sessions = _stored_sessions
 
         # ── Status update & event emission ───────────────────────────────
         if status is not None and BookingStatus(booking.status) != status:

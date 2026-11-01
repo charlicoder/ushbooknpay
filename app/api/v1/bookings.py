@@ -685,6 +685,11 @@ async def create_booking(
     else:
         if booking_type_str in ("branch_service", "branch", "loyalty") and service_arrangement_id:
             # ── Branch booking: arrangement-level availability check ─────────
+            if not therapist_id_str and not therapist_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="At least one therapist ID must be provided to check appointment availability.",
+                )
             try:
                 avail_res = await ushauth.check_appointment_availability(
                     service_arrangement_id=service_arrangement_id,
