@@ -16,10 +16,11 @@ from app.common.utils import local_now
 import uuid
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import and_, cast, delete, func, or_, select, update, Date, text
+from sqlalchemy import and_, cast, delete, func, or_, select, update, Date, Text, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.booking.domain.sessions import therapist_busy_windows
 from app.booking.domain.value_objects import NON_BLOCKING_BOOKING_STATUSES, BookingStatus
 from app.booking.infrastructure.models import (
     Booking,
@@ -51,6 +52,30 @@ def _extract_sequence(existing_val: any) -> int:
         except ValueError:
             return 0
     return 0
+
+
+def _therapist_involved(therapist_ids: list[uuid.UUID]):
+    """
+    Coarse SQL filter: the booking mentions one of the therapists either in the
+    legacy mirror columns or in any of its stored sessions (JSONB).  Precise
+    per-session overlap is refined in Python with ``_overlaps_per_session``.
+    """
+    conds = [
+        Booking.therapist_id.in_(therapist_ids),
+        Booking.secondary_therapist_id.in_(therapist_ids),
+    ]
+    sessions_text = cast(Booking.sessions, Text)
+    for tid in therapist_ids:
+        conds.append(sessions_text.like(f"%{tid}%"))
+    return or_(*conds)
+
+
+def _overlaps_per_session(booking: Booking, therapist_id: uuid.UUID, start: datetime, end: datetime) -> bool:
+    """True when the therapist is occupied by ``booking`` inside [start, end) (session-wise)."""
+    for w_start, w_end in therapist_busy_windows(booking, therapist_id):
+        if w_start < end and w_end > start:
+            return True
+    return False
 
 
 class BookingRepository:
@@ -341,10 +366,7 @@ class BookingRepository:
             select(Booking)
             .where(
                 and_(
-                    or_(
-                        Booking.therapist_id == therapist_id,
-                        Booking.secondary_therapist_id == therapist_id,
-                    ),
+                    _therapist_involved([therapist_id]),
                     Booking.appointment_start < end,
                     Booking.appointment_end > start,
                     Booking.status.notin_(
@@ -355,7 +377,10 @@ class BookingRepository:
             .order_by(Booking.appointment_start)
         )
         result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+        return [
+            b for b in result.scalars().all()
+            if _overlaps_per_session(b, therapist_id, start, end)
+        ]
 
     async def get_active_bookings_for_therapists_in_range(
         self,
@@ -375,10 +400,7 @@ class BookingRepository:
             select(Booking)
             .where(
                 and_(
-                    or_(
-                        Booking.therapist_id.in_(therapist_ids),
-                        Booking.secondary_therapist_id.in_(therapist_ids),
-                    ),
+                    _therapist_involved(therapist_ids),
                     Booking.appointment_start < end,
                     Booking.appointment_end > start,
                     Booking.status.notin_(
@@ -403,12 +425,9 @@ class BookingRepository:
 
         Called during booking creation inside a locked transaction to prevent double-booking.
         """
-        stmt = select(Booking.id).where(
+        stmt = select(Booking).where(
             and_(
-                or_(
-                    Booking.therapist_id == therapist_id,
-                    Booking.secondary_therapist_id == therapist_id,
-                ),
+                _therapist_involved([therapist_id]),
                 Booking.appointment_start < end,
                 Booking.appointment_end > start,
                 Booking.status.notin_(
@@ -418,10 +437,14 @@ class BookingRepository:
         )
         if exclude_booking_id:
             stmt = stmt.where(Booking.id != exclude_booking_id)
-        stmt = stmt.limit(1)
 
+        # A therapist is blocked only for the sessions he/she serves, not for the
+        # whole booking span, so candidates are refined session by session.
         result = await self._session.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        for candidate in result.scalars().all():
+            if _overlaps_per_session(candidate, therapist_id, start, end):
+                return True
+        return False
 
     async def get_busy_therapist_ids_in_range(
         self,
@@ -436,12 +459,9 @@ class BookingRepository:
             return set()
 
         # 1. Conflicting active bookings (either the primary or the secondary therapist)
-        stmt_bookings = select(Booking.therapist_id, Booking.secondary_therapist_id).where(
+        stmt_bookings = select(Booking).where(
             and_(
-                or_(
-                    Booking.therapist_id.in_(therapist_ids),
-                    Booking.secondary_therapist_id.in_(therapist_ids),
-                ),
+                _therapist_involved(therapist_ids),
                 Booking.appointment_start < end,
                 Booking.appointment_end > start,
                 Booking.status.notin_(
@@ -452,11 +472,12 @@ class BookingRepository:
         res_bookings = await self._session.execute(stmt_bookings)
         requested = set(therapist_ids)
         busy_ids: set[uuid.UUID] = set()
-        for primary_id, secondary_id in res_bookings.all():
-            if primary_id in requested:
-                busy_ids.add(primary_id)
-            if secondary_id is not None and secondary_id in requested:
-                busy_ids.add(secondary_id)
+        for bk in res_bookings.scalars().all():
+            for t_id in requested:
+                if t_id in busy_ids:
+                    continue
+                if _overlaps_per_session(bk, t_id, start, end):
+                    busy_ids.add(t_id)
 
         # 2. Conflicting unexpired temporary holds
         now = utcnow()

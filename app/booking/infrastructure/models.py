@@ -106,6 +106,17 @@ class Booking(Base):
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
 
+    # ── Sessions (multi-session booking) ──────────────────────────────────
+    # Ordered list (max 3) of sessions. Each session = one therapist (+ optional
+    # secondary), one arrangement, services, add-ons, extra minutes, durations,
+    # prices and a tz-aware start/end. All sessions share the appointment date and
+    # never overlap. The legacy single-session columns mirror these (see
+    # app.booking.domain.sessions.legacy_mirror). Empty for legacy rows – readers
+    # synthesize one session via get_booking_sessions().
+    sessions: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+
     # ── Service Arrangement Reference & Snapshot ──────────────────────────
     service_arrangement_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True

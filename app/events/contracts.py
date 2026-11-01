@@ -137,6 +137,8 @@ class BookingCreatedEvent(BaseEvent):
     service_id: str = ""
     service_name: str = ""
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
     secondary_therapist_id: str = ""
@@ -183,6 +185,8 @@ class BookingStatusUpdatedEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     # Multi-service bookings: full ordered list; flat service_* fields = primary service
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
@@ -267,6 +271,8 @@ class BookingConfirmedEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     # Multi-service bookings: full ordered list; flat service_* fields = primary service
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
@@ -347,6 +353,8 @@ class BookingPaymentPendingEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     # Multi-service bookings: full ordered list; flat service_* fields = primary service
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
@@ -427,6 +435,8 @@ class BookingCancelledEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     # Multi-service bookings: full ordered list; flat service_* fields = primary service
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
@@ -614,6 +624,8 @@ class BookingCompletedEvent(BaseEvent):
     service_arrangement_data: dict[str, Any] = field(default_factory=dict)
     # Multi-service bookings: full ordered list; flat service_* fields = primary service
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     therapist_id: str = ""
     therapist_name: str = ""
     therapist_data: dict[str, Any] = field(default_factory=dict)
@@ -738,6 +750,8 @@ class BookingUpdatedEvent(BaseEvent):
     branch_id: str = ""
     service_arrangement_id: str = ""
     services: list[dict[str, Any]] = field(default_factory=list)
+    # Multi-session bookings: compact per-session payload (see cache_sessions_payload).
+    sessions: list[dict[str, Any]] = field(default_factory=list)
     source: str = ""
     reason: str = ""
     booking_number: str = ""

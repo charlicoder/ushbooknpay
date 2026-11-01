@@ -77,6 +77,7 @@ def _build_one(
     db_service: dict[str, Any],
     db_arrangement: dict[str, Any],
     is_loyalty_booking: bool,
+    full_details: bool = False,
 ) -> dict[str, Any]:
     """Merge one request item with ushauth data into a stored service entry."""
     item_sd = item.service_data or {}
@@ -171,6 +172,13 @@ def _build_one(
         "loyalty_points": loyalty_points,
         "price_in_points": price_in_points,
     }
+    if full_details:
+        # Sessions store the FULL service details (ushauth is the source of truth);
+        # keys computed above / supplied by the client keep precedence.
+        service_data = {**db_service, **service_data}
+        for key in ("extra_minutes", "price_for_extra_minutes"):
+            if key in db_service and db_service[key] is not None:
+                service_data[key] = db_service[key]
 
     arrangement_type = (
         item.arrangement_type
@@ -209,13 +217,17 @@ async def resolve_service_entries(
     items: list[Any],
     *,
     is_loyalty_booking: bool = False,
+    full_details: bool = False,
+    validate: bool | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build the ordered list of stored service entries for a booking request.
 
     Raises :class:`ServiceValidationError` when the services are inconsistent:
     a service is not offered by its arrangement, or the arrangements belong to
-    different branches.
+    different branches.  ``full_details`` stores the complete ushauth service
+    record in ``service_data`` (used by sessions); ``validate`` forces the
+    cross-service checks even for a single item (default: only when >1 item).
     """
     service_ids = list(dict.fromkeys(str(i.service_id) for i in items if i.service_id))
     arrangement_ids = list(
@@ -231,9 +243,9 @@ async def resolve_service_entries(
             if item.service_arrangement_id
             else {}
         )
-        entries.append(_build_one(item, pos, db_service, db_arr, is_loyalty_booking))
+        entries.append(_build_one(item, pos, db_service, db_arr, is_loyalty_booking, full_details))
 
-    if len(items) > 1:
+    if validate if validate is not None else len(items) > 1:
         _validate_consistency(items, db_arrangements)
     return entries
 

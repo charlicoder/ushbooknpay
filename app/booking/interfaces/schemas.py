@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 from app.booking.domain.services_snapshot import MAX_SERVICES_PER_BOOKING
+from app.booking.domain.sessions import MAX_SESSIONS_PER_BOOKING
 from app.booking.domain.value_objects import (
     BookingPaymentGateway,
     BookingPaymentProvider,
@@ -115,6 +116,104 @@ class BookingServiceResponse(BaseModel):
     base_price: str | None = None
     duration_minutes: int = 0
     position: int = 0
+    session_id: str | None = None
+
+
+class BookingSessionItem(BaseModel):
+    """
+    One session inside a booking request.
+
+    A session = one therapist (+ optional secondary for couple/double rooms), one
+    arrangement, one or more services, add-ons and extra minutes, and a start time.
+    The date is fixed per booking (booking-level ``appointment_date``); durations,
+    prices and the end time are computed by the server.
+    """
+
+    session_id: uuid.UUID | None = Field(default=None, alias="sessionId")
+    therapist_id: uuid.UUID = Field(alias="therapistId")
+    therapist_name: str | None = Field(default=None, alias="therapistName", max_length=255)
+    therapist_data: dict[str, Any] | None = Field(default=None, alias="therapistData")
+    secondary_therapist_id: uuid.UUID | None = Field(default=None, alias="secondaryTherapistId")
+    secondary_therapist_name: str | None = Field(
+        default=None, alias="secondaryTherapistName", max_length=255
+    )
+    secondary_therapist_data: dict[str, Any] | None = Field(
+        default=None, alias="secondaryTherapistData"
+    )
+    service_arrangement_id: uuid.UUID | None = Field(default=None, alias="serviceArrangementId")
+    arrangement_name: str | None = Field(default=None, alias="arrangementName", max_length=255)
+    arrangement_type: str | None = Field(default=None, alias="arrangementType", max_length=100)
+    room_name: str | None = Field(default=None, alias="roomName", max_length=255)
+    service_arrangement_data: dict[str, Any] | None = Field(
+        default=None, alias="serviceArrangementData"
+    )
+    services: list[BookingServiceItem] = Field(min_length=1, max_length=MAX_SERVICES_PER_BOOKING)
+    addons: list[dict[str, Any]] | None = Field(default=None, alias="selectedAddons")
+    extra_minutes: int = Field(default=0, alias="extraMinutes", ge=0, le=1440)
+    appointment_time: str | None = Field(default=None, alias="appointmentTime")
+    appointment_start: LocalDateTime | None = Field(default=None, alias="appointmentStart")
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    @field_validator(
+        "session_id", "secondary_therapist_id", "service_arrangement_id", mode="before"
+    )
+    @classmethod
+    def _empty_uuid_to_none(cls, v: Any) -> Any:
+        if v == "" or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
+    @field_validator("appointment_time", mode="before")
+    @classmethod
+    def _clean_time(cls, v: Any) -> Any:
+        import re as _re
+
+        if not v:
+            return None
+        s = str(v).strip()
+        if s.endswith("Z"):
+            s = s[:-1]
+        s = _re.sub(r"[+-]\d{2}:\d{2}$", "", s).split(".")[0]
+        return s if len(s.split(":")) == 3 else f"{s}:00"
+
+    @field_validator("therapist_data", "secondary_therapist_data", "service_arrangement_data")
+    @classmethod
+    def _limit_snapshots(cls, v: dict[str, Any] | None, info: Any) -> dict[str, Any] | None:
+        return _check_snapshot_size(v, info.field_name)
+
+    @model_validator(mode="after")
+    def _need_start(self) -> "BookingSessionItem":
+        if not (self.appointment_time or self.appointment_start):
+            raise ValueError("Each session needs appointment_time (or appointment_start).")
+        return self
+
+
+class BookingSessionResponse(BaseModel):
+    """One session in booking responses (mirrors ``bookings.sessions``)."""
+
+    session_id: str
+    position: int = 0
+    therapist_id: str | None = None
+    therapist_data: dict[str, Any] | None = None
+    secondary_therapist_id: str | None = None
+    secondary_therapist_data: dict[str, Any] | None = None
+    service_arrangement_id: str | None = None
+    service_arrangement_data: dict[str, Any] | None = None
+    service_name: str | None = None
+    services: list[dict[str, Any]] = Field(default_factory=list)
+    service_ids: list[str] = Field(default_factory=list)
+    addons: list[dict[str, Any]] = Field(default_factory=list)
+    extra_minutes: int = 0
+    price_for_extra_minutes: str = "0.000"
+    services_duration: int = 0
+    addons_duration: int = 0
+    total_session_duration: int = 0
+    services_price: str = "0.000"
+    addons_price: str = "0.000"
+    session_price: str = "0.000"
+    appointment_start: str | None = None
+    appointment_end: str | None = None
 
 
 class PricingBreakdownSchema(BaseModel):
@@ -175,6 +274,19 @@ class CreateBookingRequest(BaseModel):
             "Services to book together (same branch and therapist). "
             "Each item carries service_id, service_arrangement_id, service_data, "
             "service_arrangement_data, etc."
+        ),
+    )
+    # Multi-session bookings: 1..3 sessions, each with its own therapist, arrangement,
+    # services, add-ons, extra minutes and start time. When present it wins over the
+    # flat/``services`` fields (which are then derived from it). Optional: legacy
+    # clients that omit it keep working (one session is synthesized server side).
+    sessions: list[BookingSessionItem] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_SESSIONS_PER_BOOKING,
+        description=(
+            "Sessions of this booking (max 3). All sessions share the booking appointment_date "
+            "and must not overlap."
         ),
     )
     service_id: uuid.UUID | None = Field(default=None, alias="serviceId")
@@ -507,6 +619,45 @@ class CreateBookingRequest(BaseModel):
           back-fill any empty legacy flat field from ``services[0]`` so code that
           still reads ``body.service_id`` etc. keeps working.
         """
+        if self.sessions:
+            # Sessions win: derive the flat ``services`` list (all services of all
+            # sessions, each tagged with its session's arrangement) so legacy code that
+            # reads ``body.services`` / ``body.service_id`` keeps working. The same
+            # service may legitimately appear in two sessions, so no duplicate check.
+            flat: list[BookingServiceItem] = []
+            for s_idx, sess in enumerate(self.sessions):
+                for i_idx, item in enumerate(sess.services):
+                    if item.service_id is None:
+                        raise ValueError(
+                            f"sessions[{s_idx}].services[{i_idx}].service_id is required."
+                        )
+                    flat.append(
+                        item.model_copy(
+                            update={
+                                "service_arrangement_id": sess.service_arrangement_id
+                                or item.service_arrangement_id
+                            }
+                        )
+                    )
+            self.services = flat
+            first_sess = self.sessions[0]
+            if self.therapist_id is None:
+                self.therapist_id = first_sess.therapist_id
+            if self.secondary_therapist_id is None:
+                self.secondary_therapist_id = first_sess.secondary_therapist_id
+            first = flat[0]
+            for flat_name, val in (
+                ("service_id", first.service_id),
+                ("service_name", first.service_name),
+                ("service_category", first.service_category),
+                ("service_data", first.service_data),
+                ("service_arrangement_id", first.service_arrangement_id),
+                ("service_arrangement_data", first.service_arrangement_data),
+            ):
+                if val is not None:
+                    setattr(self, flat_name, val)
+            return self
+
         if not self.services:
             self.services = [
                 BookingServiceItem(
@@ -699,6 +850,15 @@ class UpdateBookingRequest(BaseModel):
         min_length=1,
         max_length=MAX_SERVICES_PER_BOOKING,
         description="Replace the full list of booked services (same branch and therapist).",
+    )
+    sessions: list[BookingSessionItem] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_SESSIONS_PER_BOOKING,
+        description=(
+            "Replace the full list of sessions (max 3). Totals, legacy mirror columns and the "
+            "appointment cache are recomputed from it. All sessions share the booking date."
+        ),
     )
     appointment_date: str | None = Field(
         default=None,
@@ -1120,6 +1280,8 @@ class BookingListItem(BaseModel):
     service_arrangement_id: str | None = None
     service_arrangement_data: dict[str, Any] | None = None
     services: list[BookingServiceResponse] = Field(default_factory=list)
+    sessions: list[BookingSessionResponse] = Field(default_factory=list)
+    session_count: int = 1
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
     # Second therapist for couple_room / double_room bookings (null otherwise)
@@ -1205,6 +1367,8 @@ class BookingDetailResponse(BaseModel):
     service_arrangement_id: str | None = None
     service_arrangement_data: dict[str, Any] | None = None
     services: list[BookingServiceResponse] = Field(default_factory=list)
+    sessions: list[BookingSessionResponse] = Field(default_factory=list)
+    session_count: int = 1
     therapist_id: str
     therapist_data: dict[str, Any] | None = None
     # Second therapist for couple_room / double_room bookings (null otherwise)
@@ -1293,6 +1457,8 @@ class CreateBookingDataResponse(BaseModel):
     booking_number: str | None = None
     customer_id: str
     services: list[BookingServiceResponse] = Field(default_factory=list)
+    sessions: list[BookingSessionResponse] = Field(default_factory=list)
+    session_count: int = 1
     final_amount: str
     total_amount: str | None = None
     total_price: str | None = None

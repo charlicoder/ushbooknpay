@@ -77,8 +77,11 @@ def build_service_entry(
         else svc.get("base_duration") or svc.get("duration_minutes"),
         0,
     )
+    s_name = str(svc.get("name") or svc.get("service_name") or "")
     return {
         "service_id": _to_str_id(service_id) or "",
+        "name": s_name,
+        "service_name": s_name,
         "service_data": svc,
         "service_arrangement_id": _to_str_id(service_arrangement_id),
         "service_arrangement_data": dict(service_arrangement_data or {}),

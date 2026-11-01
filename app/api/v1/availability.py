@@ -131,9 +131,16 @@ async def get_availability(
     # Group bookings by therapist (a couple/double booking blocks both therapists)
     from collections import defaultdict
     bookings_by_therapist: dict[str, list] = defaultdict(list)
+    # Each therapist is only blocked for the session(s) he/she serves, so the
+    # busy intervals are derived per session (see therapist_busy_windows).
+    from app.booking.domain.sessions import therapist_busy_windows
+    busy_windows_by_therapist: dict[str, list[tuple]] = defaultdict(list)
     for bk in all_bookings:
-        for assigned_id in bk.therapist_ids:
-            bookings_by_therapist[str(assigned_id)].append(bk)
+        for t_uuid in therapist_uuids:
+            wins = therapist_busy_windows(bk, t_uuid)
+            if wins:
+                bookings_by_therapist[str(t_uuid)].append(bk)
+                busy_windows_by_therapist[str(t_uuid)].extend(wins)
 
     # Fetch temporary holds
     all_holds = []
@@ -163,7 +170,8 @@ async def get_availability(
         schedule = therapist_raw.get("schedule", [])
 
         booking_intervals = [
-            Interval(b.appointment_start, b.appointment_end) for b in t_bookings
+            Interval(w_start, w_end)
+            for w_start, w_end in busy_windows_by_therapist.get(t_id_str, [])
         ]
         home_booking_intervals: list[Interval] = []
         hold_intervals = [

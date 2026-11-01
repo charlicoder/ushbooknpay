@@ -521,6 +521,7 @@ class USHAuthClient:
         services: list[dict[str, Any]] | None = None,
         secondary_therapist_id: str | None = None,
         secondary_therapist_name: str | None = None,
+        sessions: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """
@@ -563,6 +564,8 @@ class USHAuthClient:
             payload["secondary_therapist_id"] = str(secondary_therapist_id)
             if secondary_therapist_name:
                 payload["secondary_therapist_name"] = str(secondary_therapist_name)
+        if sessions:
+            payload["sessions"] = sessions
 
         return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
 
@@ -611,6 +614,7 @@ class USHAuthClient:
         service_id: str | None = None,
         customer_id: str | None = None,
         booking_type: str | None = None,
+        sessions: list[dict[str, Any]] | None = None,
         **extra_fields: Any,
     ) -> dict[str, Any]:
         """
@@ -662,6 +666,8 @@ class USHAuthClient:
             payload["customer_id"] = str(customer_id)
         if booking_type is not None:
             payload["booking_type"] = str(booking_type)
+        if sessions is not None:
+            payload["sessions"] = sessions
         payload.update(extra_fields)
 
         return await self._post("/api/v1/update-appointment-cache-by-booking-id/", json_data=payload)

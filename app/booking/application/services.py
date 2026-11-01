@@ -50,6 +50,16 @@ from app.booking.domain.services_snapshot import (
     total_services_price,
 )
 from app.booking.domain.state_machine import BookingStateMachine
+from app.booking.domain.sessions import (
+    MAX_SESSIONS_PER_BOOKING,
+    cache_payload_for,
+    cache_sessions_payload,
+    distinct_session_arrangements,
+    get_booking_sessions,
+    legacy_mirror,
+    session_from_booking,
+    session_window,
+)
 
 
 @asynccontextmanager
@@ -308,6 +318,8 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         # Multi-service: full ordered list. The flat service_* fields above always
         # describe the primary service (services[0]) for backward compatibility.
         "services": services_event,
+        # Multi-session: compact per-session payload ([] for legacy bookings).
+        "sessions": cache_payload_for(booking),
         "therapist_id": str(booking.therapist_id) if booking.therapist_id else "",
         "therapist_name": therapist_name,
         "therapist_data": therapist_dict,
@@ -592,6 +604,7 @@ class BookingService:
         created_by_user_data: dict | None = None,
         created_by: str | None = None,
         source: str | None = None,
+        sessions: list[dict] | None = None,
     ) -> Booking:
         """
         Create a new booking.
@@ -604,6 +617,11 @@ class BookingService:
         ``services`` is the ordered list of service entries (same branch + therapist);
         the legacy single-service arguments are accepted for backward compatibility and
         wrapped into a one-item list. The legacy columns mirror ``services[0]``.
+
+        ``sessions`` (optional, already validated/computed by ``plan_sessions``) are the
+        persisted sessions of the booking; when given, every session's therapist(s) are
+        checked for overlap in its own window and one temporary hold is created per session.
+        The caller passes the legacy mirror values (window, durations, services …) as usual.
         """
         if not services:
             if service_id is None:
@@ -635,17 +653,28 @@ class BookingService:
         # Couple/double bookings occupy two therapists: both must be free.
         if secondary_therapist_id and secondary_therapist_id == therapist_id:
             raise ValidationError("The secondary therapist must differ from the primary therapist.")
-        for assigned_therapist_id in filter(None, (therapist_id, secondary_therapist_id)):
-            is_conflicting = await self._repo.check_therapist_overlap(
-                assigned_therapist_id,
-                appointment_start,
-                appointment_end,
-            )
-            if is_conflicting:
-                raise DoubleBookingError(
-                    f"Therapist {assigned_therapist_id} is already booked for the requested slot.",
-                    code="DOUBLE_BOOKING",
+        if sessions:
+            # Per-session windows (a therapist may serve several non-overlapping sessions).
+            for sess in sessions:
+                s_start, s_end = session_window(sess)
+                for t_id in filter(None, (sess.get("therapist_id"), sess.get("secondary_therapist_id"))):
+                    if await self._repo.check_therapist_overlap(uuid.UUID(str(t_id)), s_start, s_end):
+                        raise DoubleBookingError(
+                            f"Therapist {t_id} is already booked for the requested slot.",
+                            code="DOUBLE_BOOKING",
+                        )
+        else:
+            for assigned_therapist_id in filter(None, (therapist_id, secondary_therapist_id)):
+                is_conflicting = await self._repo.check_therapist_overlap(
+                    assigned_therapist_id,
+                    appointment_start,
+                    appointment_end,
                 )
+                if is_conflicting:
+                    raise DoubleBookingError(
+                        f"Therapist {assigned_therapist_id} is already booked for the requested slot.",
+                        code="DOUBLE_BOOKING",
+                    )
 
         # ── Create Booking ────────────────────────────────────────────────
         booking = Booking(
@@ -654,6 +683,7 @@ class BookingService:
             branch_id=branch_id,
             branch_data=branch_data or {},
             services=services,
+            sessions=list(sessions) if sessions else [],
             service_id=service_id,
             service_data=primary["service_data"],
             service_arrangement_id=service_arrangement_id,
@@ -708,7 +738,22 @@ class BookingService:
         booking = await self._repo.create(booking)
 
         # ── Temporary hold (only for unconfirmed branch bookings with a service arrangement; skip for draft) ─
-        if service_arrangement_id is not None and booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.DRAFT.value):
+        if sessions and booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.DRAFT.value):
+            for sess in sessions:
+                if not sess.get("service_arrangement_id"):
+                    continue
+                s_start, s_end = session_window(sess)
+                await self._repo.create_hold(
+                    TemporaryHold(
+                        booking_id=booking.id,
+                        therapist_id=uuid.UUID(str(sess["therapist_id"])),
+                        service_arrangement_id=uuid.UUID(str(sess["service_arrangement_id"])),
+                        appointment_start=s_start,
+                        appointment_end=s_end,
+                        expires_at=utcnow() + timedelta(minutes=self._settings.TEMPORARY_HOLD_MINUTES),
+                    )
+                )
+        elif service_arrangement_id is not None and booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.DRAFT.value):
             hold = TemporaryHold(
                 booking_id=booking.id,
                 therapist_id=therapist_id,
@@ -768,6 +813,7 @@ class BookingService:
                     service_id=str(booking.service_id),
                     service_name=joined_service_name(services) or str(service_dict.get("name") or ""),
                     services=cache_services_payload(services),
+                    sessions=cache_payload_for(booking),
                     therapist_id=str(booking.therapist_id),
                     therapist_name=str(therapist_dict.get("name") or therapist_dict.get("full_name") or ""),
                     secondary_therapist_id=str(booking.secondary_therapist_id) if booking.secondary_therapist_id else "",
@@ -854,16 +900,63 @@ class BookingService:
         price_for_extra_minutes: Decimal | str | float | None = None,
         total_duration: int | None = None,
         total_amount: Decimal | str | float | None = None,
+        sessions: list[dict] | None = None,
     ) -> Booking:
         """
         Update booking fields (status, payment_status, payment_data, timing, therapist, notes, addons, pricing).
         Follows REST standard for partial/full update.
+
+        ``sessions`` (already validated/computed by ``plan_sessions``) replaces all sessions of
+        the booking: every session is checked for therapist overlap (ignoring this booking) and
+        the legacy mirror columns (therapist, arrangement, services, add-ons, window, durations)
+        are rewritten from them. Pricing totals are passed by the caller through the usual
+        ``total_amount`` / ``addon_price`` / ``price_for_extra_minutes`` parameters.
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
         effective_changed_by = changed_by or created_by_user
         effective_changed_user_data = change_by_user_data or created_by_user_data
         initial_status = booking.status
         initial_payment_status = booking.payment_status
+
+        # ── Replace all sessions (multi-session) ─────────────────────────
+        if sessions is not None:
+            if not sessions or len(sessions) > MAX_SESSIONS_PER_BOOKING:
+                raise ValidationError(
+                    f"A booking must contain between 1 and {MAX_SESSIONS_PER_BOOKING} sessions."
+                )
+            for sess in sessions:
+                s_start, s_end = session_window(sess)
+                for t_id in filter(None, (sess.get("therapist_id"), sess.get("secondary_therapist_id"))):
+                    if await self._repo.check_therapist_overlap(
+                        uuid.UUID(str(t_id)), s_start, s_end, exclude_booking_id=booking.id
+                    ):
+                        raise DoubleBookingError(
+                            f"Therapist {t_id} is already booked for {s_start.isoformat()}.",
+                            code="DOUBLE_BOOKING",
+                        )
+            mirror = legacy_mirror(sessions)
+            _primary = primary_fields(mirror["services"])
+            booking.sessions = list(sessions)
+            booking.services = mirror["services"]
+            booking.service_id = _primary["service_id"]
+            booking.service_data = _primary["service_data"]
+            booking.service_arrangement_id = _primary["service_arrangement_id"]
+            booking.service_arrangement_data = _primary["service_arrangement_data"]
+            booking.therapist_id = uuid.UUID(str(mirror["therapist_id"]))
+            booking.therapist_data = mirror["therapist_data"]
+            sec_id = mirror.get("secondary_therapist_id")
+            booking.secondary_therapist_id = uuid.UUID(str(sec_id)) if sec_id else None
+            booking.secondary_therapist_data = mirror.get("secondary_therapist_data") if sec_id else None
+            booking.addons = mirror["addons"]
+            booking.appointment_start = mirror["appointment_start"]
+            booking.appointment_end = mirror["appointment_end"]
+            booking.appointment_date = local_midnight(mirror["appointment_start"])
+            booking.duration_minutes = mirror["duration_minutes"] or booking.duration_minutes
+            booking.extra_minutes = mirror["extra_minutes"]
+            booking.addons_duration = mirror["addons_duration"]
+            booking.total_duration = mirror["total_duration"]
+            booking.base_price = mirror["services_price"]
+            booking.arrangement_price = mirror["services_price"]
 
         # ── Replace the booked services (multi-service) ──────────────────
         if services is not None:
@@ -1314,6 +1407,96 @@ class BookingService:
         except Exception as inv_err:
             logger.warning("ensure_booking_invoice_failed", booking_id=str(booking.id), error=str(inv_err))
         return None
+
+    # ── Change the therapist of a single session ───────────────────────────
+
+    async def change_session_therapist(
+        self,
+        booking_id: uuid.UUID,
+        session_id: str,
+        *,
+        therapist_id: uuid.UUID | None = None,
+        therapist_data: dict | None = None,
+        secondary_therapist_id: uuid.UUID | None = None,
+        secondary_therapist_data: dict | None = None,
+        secondary_provided: bool = False,
+    ) -> Booking:
+        """
+        Re-assign the (primary and/or secondary) therapist of ONE session.
+
+        Only that session's own window is checked for overlap (other bookings, other
+        sessions of this booking are ignored), so the other sessions are untouched.
+        The legacy mirror columns are refreshed from the sessions afterwards.
+        """
+        booking = await self._repo.get_by_id(booking_id, for_update=True)
+        sessions = [dict(s) for s in get_booking_sessions(booking)]
+        target = next(
+            (s for s in sessions if str(s.get("session_id")) == str(session_id)),
+            None,
+        )
+        if target is None:
+            raise ValidationError(f"Session {session_id} not found in booking.")
+
+        new_primary = str(therapist_id) if therapist_id else target.get("therapist_id")
+        new_secondary = (
+            (str(secondary_therapist_id) if secondary_therapist_id else None)
+            if secondary_provided
+            else target.get("secondary_therapist_id")
+        )
+        if new_secondary and new_secondary == new_primary:
+            raise ValidationError("The secondary therapist must differ from the primary therapist.")
+
+        s_start, s_end = session_window(target)
+        for t_id in filter(None, (new_primary, new_secondary)):
+            if t_id in (target.get("therapist_id"), target.get("secondary_therapist_id")):
+                continue  # unchanged assignment
+            if await self._repo.check_therapist_overlap(
+                uuid.UUID(str(t_id)), s_start, s_end, exclude_booking_id=booking.id
+            ):
+                raise DoubleBookingError(
+                    f"Therapist {t_id} is already booked for the requested slot.",
+                    code="DOUBLE_BOOKING",
+                )
+
+        old_primary = target.get("therapist_id")
+        if therapist_id:
+            target["therapist_id"] = str(therapist_id)
+            target["therapist_data"] = dict(therapist_data or {})
+        if secondary_provided:
+            target["secondary_therapist_id"] = new_secondary
+            target["secondary_therapist_data"] = (
+                dict(secondary_therapist_data or {}) if new_secondary else None
+            )
+
+        booking.sessions = sessions  # new list object → JSONB change is persisted
+        mirror = legacy_mirror(sessions)
+        booking.therapist_id = uuid.UUID(str(mirror["therapist_id"]))
+        booking.therapist_data = mirror["therapist_data"]
+        sec_id = mirror.get("secondary_therapist_id")
+        booking.secondary_therapist_id = uuid.UUID(str(sec_id)) if sec_id else None
+        booking.secondary_therapist_data = mirror.get("secondary_therapist_data") if sec_id else None
+
+        # Move this session's temporary hold (if any) to the new therapist
+        if therapist_id and old_primary and str(old_primary) != str(therapist_id):
+            from app.booking.infrastructure.models import TemporaryHold as _Hold
+
+            await self._session.execute(
+                update(_Hold)
+                .where(
+                    _Hold.booking_id == booking.id,
+                    _Hold.therapist_id == uuid.UUID(str(old_primary)),
+                    _Hold.appointment_start == s_start,
+                )
+                .values(therapist_id=therapist_id)
+            )
+
+        await self._repo.update(booking)
+        logger.info(
+            "booking_session_therapist_changed",
+            booking_id=str(booking.id),
+            session_id=str(session_id),
+        )
+        return booking
 
     # ── Use Case 3: Confirm Booking (after payment success) ────────────────
 

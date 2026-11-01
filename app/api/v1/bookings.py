@@ -30,6 +30,13 @@ from app.booking.domain.value_objects import BookingStatus, PaymentStatus, Prici
 from app.payment.infrastructure.models import Payment
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
 from app.booking.application.multi_service import ServiceValidationError, resolve_service_entries
+from app.booking.application.session_planner import (
+    SessionAvailabilityError,
+    SessionPlan,
+    plan_sessions,
+    totals_as_decimals,
+)
+from app.booking.domain.sessions import SessionValidationError
 from app.booking.application.multi_therapist import (
     entries_required_therapists,
     parse_uuid,
@@ -46,12 +53,17 @@ from app.booking.domain.services_snapshot import (
     total_services_duration,
     total_services_price,
 )
+from app.booking.domain.sessions import (
+    cache_sessions_payload,
+    get_booking_sessions,
+)
 from app.booking.interfaces.schemas import (
     AddonSchema,
     BookingDetailResponse,
     BookingListItem,
     BookingListResponse,
     BookingServiceResponse,
+    BookingSessionResponse,
     CancelBookingRequest,
     CreateBookingDataResponse,
     CreateBookingRequest,
@@ -73,6 +85,7 @@ from app.core.exceptions import (
     GatewayTimeoutError,
     NotFoundError,
     USHBaseError,
+    ValidationError as CoreValidationError,
 )
 from app.core.logging import get_logger
 
@@ -102,9 +115,45 @@ def _services_out(b: object) -> list[BookingServiceResponse]:
                 base_price=str(e["base_price"]) if e.get("base_price") is not None else None,
                 duration_minutes=int(e.get("duration_minutes") or 0),
                 position=idx,
+                session_id=str(e["session_id"]) if e.get("session_id") else None,
             )
         )
     return out
+
+
+def _sessions_out(b: object) -> list[BookingSessionResponse]:
+    """Map the booking's sessions to response items (legacy rows → 1 synthesized session)."""
+    try:
+        out: list[BookingSessionResponse] = []
+        for idx, s in enumerate(get_booking_sessions(b)):
+            payload = dict(s)
+            payload["session_id"] = str(payload.get("session_id") or "")
+            payload["position"] = idx
+            payload["service_ids"] = [str(x) for x in (payload.get("service_ids") or [])]
+            if not payload.get("service_name"):
+                names = [
+                    str(
+                        (e.get("service_data") or {}).get("name")
+                        or (e.get("service_data") or {}).get("service_name")
+                        or e.get("name")
+                        or e.get("service_name")
+                        or ""
+                    )
+                    for e in payload.get("services") or []
+                ]
+                payload["service_name"] = " + ".join(n for n in names if n)
+            out.append(BookingSessionResponse(**payload))
+        return out
+    except Exception as exc:  # never break a booking response because of sessions
+        logger.warning("sessions_out_failed", error=str(exc))
+        return []
+
+
+def _session_count(b: object) -> int:
+    try:
+        return max(len(get_booking_sessions(b)), 1)
+    except Exception:
+        return 1
 
 
 def _secondary_therapist_id_out(b: object) -> str | None:
@@ -145,6 +194,8 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         service_arrangement_id=str(b.service_arrangement_id) if b.service_arrangement_id else None,
         service_arrangement_data=b.service_arrangement_data,
         services=_services_out(b),
+        sessions=_sessions_out(b),
+        session_count=_session_count(b),
         therapist_id=str(b.therapist_id),
         therapist_data=b.therapist_data,
         secondary_therapist_id=_secondary_therapist_id_out(b),
@@ -245,6 +296,8 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         service_arrangement_id=str(b.service_arrangement_id) if getattr(b, "service_arrangement_id", None) and isinstance(b.service_arrangement_id, (str, uuid.UUID)) else None,
         service_arrangement_data=raw_arr_data,
         services=_services_out(b),
+        sessions=_sessions_out(b),
+        session_count=_session_count(b),
         therapist_id=str(b.therapist_id),
         therapist_data=b.therapist_data if isinstance(getattr(b, "therapist_data", None), dict) else {},
         secondary_therapist_id=_secondary_therapist_id_out(b),
@@ -490,21 +543,51 @@ async def create_booking(
         if not body.payment_through:
             body.payment_through = "ushspa"
 
-    # ── Resolve every requested service (concurrent ushauth look-ups) ────
-    # All services share the booking's branch and therapist.
-    try:
-        service_entries = await resolve_service_entries(
-            ushauth,
-            body.services or [],
-            is_loyalty_booking=bool(is_loyalty_booking),
-        )
-    except ServiceValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        )
+    # ── Resolve services: multi-session path or legacy flat path ─────────
+    _session_plan: SessionPlan | None = None
+    _svcs_price: Decimal | None = None  # set by multi-session pricing branch
+    fallback_base: Decimal | None = None  # set by legacy pricing branch
 
-    if len(service_entries) > 1:
+    if body.sessions:
+        # ── NEW: multi-session booking ───────────────────────────────────
+        try:
+            _session_plan = await plan_sessions(
+                ushauth,
+                body.sessions,
+                appointment_date=appointment_date,
+                is_loyalty_booking=bool(is_loyalty_booking),
+                check_availability=True,
+                branch_id=str(body.branch_id) if body.branch_id else None,
+            )
+        except SessionValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+        except SessionAvailabilityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            )
+        service_entries = _session_plan.service_entries
+    else:
+        # ── LEGACY: flat multi-service booking ───────────────────────────
+        try:
+            service_entries = await resolve_service_entries(
+                ushauth,
+                body.services or [],
+                is_loyalty_booking=bool(is_loyalty_booking),
+            )
+        except ServiceValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+
+    if _session_plan is not None:
+        # Multi-session: totals come from the plan
+        duration = int(_session_plan.totals["total_duration"])
+    elif len(service_entries) > 1:
         # Never reserve less than the sum of the booked services' durations.
         duration = max(int(body.total_duration or 0), total_services_duration(service_entries)) or 60
     else:
@@ -586,134 +669,144 @@ async def create_booking(
     selected_secondary_therapist_id: uuid.UUID | None = None
 
     # ── 2. Check appointment availability in ushauth microservice ───────
-    # branch → check-appointment-availability (validates arrangement + therapist)
-    # home   → check-booking-therapists-availability (validates therapist only)
+    # For multi-session bookings availability is already checked per-session
+    # inside plan_sessions(). For legacy flat bookings we check here as usual.
     selected_therapist_id: uuid.UUID | None = None
 
-    if booking_type_str in ("branch_service", "branch", "loyalty") and service_arrangement_id:
-        # ── Branch booking: arrangement-level availability check ─────────
-        try:
-            avail_res = await ushauth.check_appointment_availability(
-                service_arrangement_id=service_arrangement_id,
-                appointment_date=appointment_date,
-                appointment_time=appointment_time,
-                duration=duration,
-                therapist_id=therapist_id_str,
-                therapist_ids=therapist_ids if therapist_ids else None,
-                required_therapists=required_therapists,
-                allow_single_therapist=allow_single_therapist,
-                branch_id=str(body.branch_id) if body.branch_id else None,
-                service_id=str(service_entries[0].get("service_id")) if service_entries else None,
-            )
-        except GatewayTimeoutError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Availability check timed out: {str(exc)}",
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.error("check_availability_failed", error=str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to check appointment availability: {str(exc)}",
-            )
-
-        if avail_res.get("available") != "yes":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="The selected service arrangement or therapist is not available for the requested date and time.",
-            )
-
-        selected_therapist_id_str = avail_res.get("therapist_id")
-        if not selected_therapist_id_str:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="No available therapist was found for the requested time slot.",
-            )
-
-        try:
-            selected_therapist_id = uuid.UUID(str(selected_therapist_id_str))
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Invalid therapist ID received from availability service: {selected_therapist_id_str}",
-            )
-
-        # ushauth is authoritative about how many therapists the arrangement needs
-        required_therapists = max(required_therapists, int(avail_res.get("required_therapists") or 1))
-        if required_therapists > 1:
-            available_ids = unique_ids(
-                [selected_therapist_id_str, *(avail_res.get("therapist_ids") or []), avail_res.get("secondary_therapist_id")]
-            )
-            selected_secondary_therapist_id = parse_uuid(available_ids[1]) if len(available_ids) > 1 else None
-            if not selected_secondary_therapist_id or selected_secondary_therapist_id == selected_therapist_id:
+    if _session_plan is not None:
+        # Multi-session: derive therapist info from session 0 for legacy fields
+        _first_s = _session_plan.sessions[0]
+        _ts0_str = _first_s.get("therapist_id")
+        selected_therapist_id = uuid.UUID(_ts0_str) if _ts0_str else None
+        _sec0_str = _first_s.get("secondary_therapist_id")
+        selected_secondary_therapist_id = uuid.UUID(_sec0_str) if _sec0_str else None
+        required_therapists = 1
+        service_arrangement_id = _first_s.get("service_arrangement_id") or service_arrangement_id
+    else:
+        if booking_type_str in ("branch_service", "branch", "loyalty") and service_arrangement_id:
+            # ── Branch booking: arrangement-level availability check ─────────
+            try:
+                avail_res = await ushauth.check_appointment_availability(
+                    service_arrangement_id=service_arrangement_id,
+                    appointment_date=appointment_date,
+                    appointment_time=appointment_time,
+                    duration=duration,
+                    therapist_id=therapist_id_str,
+                    therapist_ids=therapist_ids if therapist_ids else None,
+                    required_therapists=required_therapists,
+                    allow_single_therapist=allow_single_therapist,
+                    branch_id=str(body.branch_id) if body.branch_id else None,
+                    service_id=str(service_entries[0].get("service_id")) if service_entries else None,
+                )
+            except GatewayTimeoutError as exc:
                 raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Two available therapists are required for a couple/double room at the requested time slot.",
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail=f"Availability check timed out: {str(exc)}",
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.error("check_availability_failed", error=str(exc))
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to check appointment availability: {str(exc)}",
                 )
 
-    elif booking_type_str in ("home_service", "home"):
-        # ── Home booking: therapist-only availability check ──────────────
-        if not therapist_id_str:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="therapistId is required for home bookings.",
-            )
+            if avail_res.get("available") != "yes":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="The selected service arrangement or therapist is not available for the requested date and time.",
+                )
 
-        try:
-            avail_res = await ushauth.check_booking_therapist_availability(
-                therapist_id=therapist_id_str,
-                appointment_date=appointment_date,
-                appointment_time=appointment_time,
-                duration=duration,
-            )
-        except GatewayTimeoutError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail=f"Therapist availability check timed out: {str(exc)}",
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logger.error("check_home_availability_failed", error=str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to check therapist availability: {str(exc)}",
-            )
+            selected_therapist_id_str = avail_res.get("therapist_id")
+            if not selected_therapist_id_str:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="No available therapist was found for the requested time slot.",
+                )
 
-        if avail_res.get("available") != "yes":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="The selected therapist is not available for the requested date and time.",
-            )
+            try:
+                selected_therapist_id = uuid.UUID(str(selected_therapist_id_str))
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Invalid therapist ID received from availability service: {selected_therapist_id_str}",
+                )
 
-        try:
-            selected_therapist_id = uuid.UUID(therapist_id_str)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Invalid therapistId: {therapist_id_str}",
-            )
+            # ushauth is authoritative about how many therapists the arrangement needs
+            required_therapists = max(required_therapists, int(avail_res.get("required_therapists") or 1))
+            if required_therapists > 1:
+                available_ids = unique_ids(
+                    [selected_therapist_id_str, *(avail_res.get("therapist_ids") or []), avail_res.get("secondary_therapist_id")]
+                )
+                selected_secondary_therapist_id = parse_uuid(available_ids[1]) if len(available_ids) > 1 else None
+                if not selected_secondary_therapist_id or selected_secondary_therapist_id == selected_therapist_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Two available therapists are required for a couple/double room at the requested time slot.",
+                    )
 
-    else:
-        # ── Fallback: no arrangement and not explicitly home ─────────────
-        # Use the therapist provided by the client without an availability check.
-        if not therapist_id_str:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="therapistId is required when no service arrangement is provided.",
-            )
-        try:
-            selected_therapist_id = uuid.UUID(therapist_id_str)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Invalid therapistId: {therapist_id_str}",
-            )
+        elif booking_type_str in ("home_service", "home"):
+            # ── Home booking: therapist-only availability check ──────────────
+            if not therapist_id_str:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="therapistId is required for home bookings.",
+                )
+
+            try:
+                avail_res = await ushauth.check_booking_therapist_availability(
+                    therapist_id=therapist_id_str,
+                    appointment_date=appointment_date,
+                    appointment_time=appointment_time,
+                    duration=duration,
+                )
+            except GatewayTimeoutError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                    detail=f"Therapist availability check timed out: {str(exc)}",
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                logger.error("check_home_availability_failed", error=str(exc))
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Failed to check therapist availability: {str(exc)}",
+                )
+
+            if avail_res.get("available") != "yes":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="The selected therapist is not available for the requested date and time.",
+                )
+
+            try:
+                selected_therapist_id = uuid.UUID(therapist_id_str)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid therapistId: {therapist_id_str}",
+                )
+
+        else:
+            # ── Fallback: no arrangement and not explicitly home ─────────────
+            # Use the therapist provided by the client without an availability check.
+            if not therapist_id_str:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="therapistId is required when no service arrangement is provided.",
+                )
+            try:
+                selected_therapist_id = uuid.UUID(therapist_id_str)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid therapistId: {therapist_id_str}",
+                )
 
     # ── 2b. Multi-service: remaining arrangements, same therapist & window ─
-    if booking_type_str in ("branch_service", "branch", "loyalty") and selected_therapist_id:
+    if _session_plan is None and booking_type_str in ("branch_service", "branch", "loyalty") and selected_therapist_id:
         extra_arrangement_ids = [
             a for a in distinct_arrangement_ids(service_entries) if a != service_arrangement_id
         ]
@@ -759,71 +852,102 @@ async def create_booking(
     # ── 4. Build start and end datetime ─────────────────────────────────
     # The customer's chosen date/time is Asia/Kuwait local time. Store it as a
     # real timezone-aware instant (e.g. 2026-10-10T10:00:00+03:00).
-    try:
-        naive_dt = datetime.fromisoformat(f"{appointment_date}T{appointment_time}")
-        appointment_start = to_local_tz(naive_dt)
-    except Exception:
-        appointment_start = to_local_tz(body.appointment_start) or local_now()
-    appointment_end = appointment_start + timedelta(minutes=duration)
+    if _session_plan is not None:
+        # Multi-session: use the mirror values computed by the planner
+        appointment_start = _session_plan.mirror["appointment_start"]
+        appointment_end = _session_plan.mirror["appointment_end"]
+    else:
+        try:
+            naive_dt = datetime.fromisoformat(f"{appointment_date}T{appointment_time}")
+            appointment_start = to_local_tz(naive_dt)
+        except Exception:
+            appointment_start = to_local_tz(body.appointment_start) or local_now()
+        appointment_end = appointment_start + timedelta(minutes=duration)
 
     # ── 5. Build pricing and addons ─────────────────────────────────────
     # Single service: legacy client price. Multi-service: sum of the services' prices.
-    fallback_base = (
-        body.base_price
-        if len(service_entries) == 1
-        else (total_services_price(service_entries) or None)
-    )
-    if body.pricing_details:
-        arr_price = str(
-            body.pricing_details.get("arrangement_price")
-            or body.pricing_details.get("arrangement")
-            or body.pricing_details.get("base_price")
-            or body.pricing_details.get("base")
-            or fallback_base
-            or "0"
-        )
-        add_price = str(
-            body.pricing_details.get("addons_price")
-            or body.pricing_details.get("addons")
-            or body.addons_price
-            or "0"
-        )
-        ext_price = str(
-            body.pricing_details.get("extra_time_price")
-            or body.pricing_details.get("extratime")
-            or body.extra_price
-            or "0"
-        )
-        tot_price = str(
-            body.pricing_details.get("total_price")
-            or body.pricing_details.get("total")
-            or body.total_price
-            or "0"
-        )
-        curr = str(body.pricing_details.get("currency") or body.currency or "KWD")
-    else:
-        arr_price = str(fallback_base or body.total_price or "0")
-        add_price = str(body.addons_price or "0")
-        ext_price = str(body.extra_price or "0")
-        tot_price = str(body.total_price or fallback_base or "0")
+    if _session_plan is not None:
+        # Multi-session: server computes prices from session planner (source of truth)
+        _svcs_price, _add_price_dec, _ext_price_dec = totals_as_decimals(_session_plan)
+        _tot_price_dec = _svcs_price + _add_price_dec + _ext_price_dec
+        arr_price = str(_svcs_price)
+        add_price = str(_add_price_dec)
+        ext_price = str(_ext_price_dec)
+        tot_price = str(_tot_price_dec)
         curr = body.currency or "KWD"
+        disc_price = str(
+            body.discount
+            or (body.pricing_details.get("discount") if body.pricing_details else None)
+            or (body.pricing_details.get("discount_amount") if body.pricing_details else None)
+            or "0"
+        )
+        pricing = PricingBreakdown(
+            arrangement_price=Decimal(arr_price),
+            price_for_extra_minutes=Decimal(ext_price),
+            addon_price=Decimal(add_price),
+            discount=Decimal(disc_price),
+            tax=Decimal("0.000"),
+            fees=Decimal("0.000"),
+            total=Decimal(tot_price),
+            currency=curr,
+        )
+    else:
+        fallback_base = (
+            body.base_price
+            if len(service_entries) == 1
+            else (total_services_price(service_entries) or None)
+        )
+        if body.pricing_details:
+            arr_price = str(
+                body.pricing_details.get("arrangement_price")
+                or body.pricing_details.get("arrangement")
+                or body.pricing_details.get("base_price")
+                or body.pricing_details.get("base")
+                or fallback_base
+                or "0"
+            )
+            add_price = str(
+                body.pricing_details.get("addons_price")
+                or body.pricing_details.get("addons")
+                or body.addons_price
+                or "0"
+            )
+            ext_price = str(
+                body.pricing_details.get("extra_time_price")
+                or body.pricing_details.get("extratime")
+                or body.extra_price
+                or "0"
+            )
+            tot_price = str(
+                body.pricing_details.get("total_price")
+                or body.pricing_details.get("total")
+                or body.total_price
+                or "0"
+            )
+            curr = str(body.pricing_details.get("currency") or body.currency or "KWD")
+        else:
+            arr_price = str(fallback_base or body.total_price or "0")
+            add_price = str(body.addons_price or "0")
+            ext_price = str(body.extra_price or "0")
+            tot_price = str(body.total_price or fallback_base or "0")
+            curr = body.currency or "KWD"
 
-    disc_price = str(
-        body.discount
-        or (body.pricing_details.get("discount") if body.pricing_details else None)
-        or (body.pricing_details.get("discount_amount") if body.pricing_details else None)
-        or "0"
-    )
-    pricing = PricingBreakdown(
-        arrangement_price=Decimal(arr_price),
-        price_for_extra_minutes=Decimal(ext_price),
-        addon_price=Decimal(add_price),
-        discount=Decimal(disc_price),
-        tax=Decimal("0.000"),
-        fees=Decimal("0.000"),
-        total=Decimal(tot_price),
-        currency=curr,
-    )
+        disc_price = str(
+            body.discount
+            or (body.pricing_details.get("discount") if body.pricing_details else None)
+            or (body.pricing_details.get("discount_amount") if body.pricing_details else None)
+            or "0"
+        )
+        pricing = PricingBreakdown(
+            arrangement_price=Decimal(arr_price),
+            price_for_extra_minutes=Decimal(ext_price),
+            addon_price=Decimal(add_price),
+            discount=Decimal(disc_price),
+            tax=Decimal("0.000"),
+            fees=Decimal("0.000"),
+            total=Decimal(tot_price),
+            currency=curr,
+        )
 
     addon_records = []
     if body.selected_addons:
@@ -970,9 +1094,10 @@ async def create_booking(
             extra_minutes=int(body.extra_minutes or 0),
             total_duration=body.total_duration,
             addons_duration=int(body.addons_duration or 0) if body.addons_duration is not None else None,
-            base_price=Decimal(str(fallback_base)) if fallback_base is not None else None,
+            base_price=Decimal(str(_svcs_price)) if _session_plan is not None else (Decimal(str(fallback_base)) if fallback_base is not None else None),
             pricing=pricing,
             addons=addon_records,
+            sessions=_session_plan.sessions if _session_plan is not None else None,
             customer_notes=body.customer_notes or body.customer_message or None,
             payment_id=body.payment_id,
             payment_provider=body.payment_provider,
@@ -1220,46 +1345,49 @@ async def create_booking(
         except Exception as p_err:
             logger.warning("auto_create_loyalty_payment_failed", booking_id=str(booking.id), error=str(p_err))
 
-    # ── 7b. If status is draft, create appointment_cache with status=confirmed, payment_status=pending ──
-    if booking.status == BookingStatus.DRAFT.value:
-        try:
-            appt_date_str = appointment_start.strftime("%Y-%m-%d")
-            appt_time_str = appointment_start.strftime("%H:%M:%S")
-            cache_booking_type = "home" if booking_type_str in ("home_service", "home") else "branch"
-            cust_name = f"{customer_data.get('first_name', '')} {customer_data.get('last_name', '')}".strip()
+    # ── 7b. Create appointment_cache in ushauth immediately on booking creation ──
+    try:
+        appt_date_str = appointment_start.strftime("%Y-%m-%d")
+        appt_time_str = appointment_start.strftime("%H:%M:%S")
+        cache_booking_type = "home" if booking_type_str in ("home_service", "home") else "branch"
+        cust_name = f"{customer_data.get('first_name', '')} {customer_data.get('last_name', '')}".strip()
 
-            await ushauth.create_appointment_cache(
-                service_arrangement_id=str(body.service_arrangement_id) if body.service_arrangement_id else None,
-                therapist_id=str(selected_therapist_id),
-                booking_id=str(booking.id),
-                appointment_date=appt_date_str,
-                appointment_time=appt_time_str,
-                booking_type=cache_booking_type,
-                duration=duration,
-                status="confirmed",
-                payment_status="pending",
-                customer_id=str(customer_id) if customer_id else None,
-                customer_name=cust_name or None,
-                branch_id=str(body.branch_id) if body.branch_id else None,
-                branch_name=branch_name or None,
-                service_id=service_entries[0]["service_id"] or None,
-                service_name=service_name or None,
-                services=cache_services_payload(service_entries),
-                secondary_therapist_id=str(selected_secondary_therapist_id) if selected_secondary_therapist_id else None,
-                secondary_therapist_name=(secondary_therapist_data or {}).get("name") or None,
-            )
-            logger.info(
-                "appointment_cache_created_for_draft_booking",
-                booking_id=str(booking.id),
-                status="confirmed",
-                payment_status="pending",
-            )
-        except Exception as exc:
-            logger.warning(
-                "appointment_cache_creation_failed_for_draft_booking",
-                booking_id=str(booking.id),
-                error=str(exc),
-            )
+        _initial_cache_status = "confirmed" if str(booking.status or "").lower() in ("confirmed", "draft") else str(booking.status or "confirmed").lower()
+        _initial_cache_payment_status = "paid" if str(booking.payment_status or "").lower() in ("success", "paid") else "pending"
+
+        await ushauth.create_appointment_cache(
+            service_arrangement_id=str(body.service_arrangement_id) if body.service_arrangement_id else None,
+            therapist_id=str(selected_therapist_id),
+            booking_id=str(booking.id),
+            appointment_date=appt_date_str,
+            appointment_time=appt_time_str,
+            booking_type=cache_booking_type,
+            duration=duration,
+            status=_initial_cache_status,
+            payment_status=_initial_cache_payment_status,
+            customer_id=str(customer_id) if customer_id else None,
+            customer_name=cust_name or None,
+            branch_id=str(body.branch_id) if body.branch_id else None,
+            branch_name=branch_name or None,
+            service_id=service_entries[0]["service_id"] or None,
+            service_name=service_name or None,
+            services=cache_services_payload(service_entries),
+            secondary_therapist_id=str(selected_secondary_therapist_id) if selected_secondary_therapist_id else None,
+            secondary_therapist_name=(secondary_therapist_data or {}).get("name") or None,
+            sessions=cache_sessions_payload(_session_plan.sessions) if _session_plan is not None else None,
+        )
+        logger.info(
+            "appointment_cache_created_for_booking",
+            booking_id=str(booking.id),
+            status=_initial_cache_status,
+            payment_status=_initial_cache_payment_status,
+        )
+    except Exception as exc:
+        logger.warning(
+            "appointment_cache_creation_failed_for_booking",
+            booking_id=str(booking.id),
+            error=str(exc),
+        )
 
     # ── 8. Return success response ──────────────────────────────────────
     return CreateBookingResponse(
@@ -1275,7 +1403,7 @@ async def create_booking(
             discount=str(booking.discount),
             arrangement_price=str(booking.arrangement_price),
             addon_price=str(booking.addon_price),
-            currency=booking.currency,
+            currency=str(booking.currency) if isinstance(getattr(booking, "currency", None), str) else "KWD",
             pricing=PricingBreakdownSchema(
                 arrangement_price=str(booking.arrangement_price),
                 price_for_extra_minutes=str(booking.price_for_extra_minutes),
@@ -1284,7 +1412,7 @@ async def create_booking(
                 tax=str(booking.tax),
                 fees=str(booking.fees),
                 total=str(booking.total_amount),
-                currency=booking.currency,
+                currency=str(booking.currency) if isinstance(getattr(booking, "currency", None), str) else "KWD",
             ),
             status=booking.status,
             payment_status=booking.payment_status,
@@ -1455,6 +1583,91 @@ async def get_booking(
     )
 
 
+class ChangeSessionTherapistRequest(BaseModel):
+    """Re-assign the therapist(s) of one session of a booking."""
+
+    therapist_id: uuid.UUID | None = None
+    therapist_data: dict | None = None
+    secondary_therapist_id: uuid.UUID | None = None
+    secondary_therapist_data: dict | None = None
+
+
+@router.patch(
+    "/{booking_id}/sessions/{session_id}/therapist/",
+    summary="Change the therapist of a single session",
+    response_model=None,
+)
+async def change_session_therapist(
+    booking_id: uuid.UUID,
+    session_id: str,
+    body: ChangeSessionTherapistRequest,
+    current_user: CurrentUser,
+    booking_service: BookingServiceDep,
+    ushauth: USHAuthDep,
+) -> JSONResponse:
+    """Change therapist of one session; only that session's window is availability-checked."""
+    therapist_data = body.therapist_data
+    if body.therapist_id and not therapist_data:
+        try:
+            t_raw = await ushauth.get_therapist(str(body.therapist_id))
+            therapist_data = t_raw.get("data") if isinstance(t_raw.get("data"), dict) else t_raw
+        except Exception:
+            pass
+    if therapist_data and isinstance(therapist_data, dict):
+        t_name = therapist_display_name(therapist_data)
+        if t_name:
+            therapist_data.setdefault("name", t_name)
+            therapist_data.setdefault("therapist_name", t_name)
+            therapist_data.setdefault("full_name", t_name)
+
+    secondary_data = body.secondary_therapist_data
+    if body.secondary_therapist_id and not secondary_data:
+        try:
+            s_raw = await ushauth.get_therapist(str(body.secondary_therapist_id))
+            secondary_data = s_raw.get("data") if isinstance(s_raw.get("data"), dict) else s_raw
+        except Exception:
+            pass
+    if secondary_data and isinstance(secondary_data, dict):
+        s_name = therapist_display_name(secondary_data)
+        if s_name:
+            secondary_data.setdefault("name", s_name)
+            secondary_data.setdefault("therapist_name", s_name)
+            secondary_data.setdefault("full_name", s_name)
+
+    try:
+        updated = await booking_service.change_session_therapist(
+            booking_id,
+            session_id,
+            therapist_id=body.therapist_id,
+            therapist_data=therapist_data,
+            secondary_therapist_id=body.secondary_therapist_id,
+            secondary_therapist_data=secondary_data,
+            secondary_provided="secondary_therapist_id" in body.model_fields_set,
+        )
+    except DoubleBookingError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except CoreValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    # Keep the ushauth appointment cache in sync (per-session rows)
+    try:
+        await ushauth.update_appointment_cache_by_booking_id(
+            booking_id=str(booking_id),
+            therapist_id=str(updated.therapist_id) if updated.therapist_id else None,
+            sessions=cache_sessions_payload(get_booking_sessions(updated)),
+        )
+    except Exception as exc:
+        logger.warning(
+            "appointment_cache_update_on_session_therapist_change_failed",
+            booking_id=str(booking_id),
+            error=str(exc),
+        )
+
+    return JSONResponse(
+        content={"success": True, "data": _booking_to_detail(updated).model_dump(mode="json")}
+    )
+
+
 @router.patch(
     "/{booking_id}/",
     summary="Update booking (partial)",
@@ -1549,8 +1762,44 @@ async def update_booking(
                 detail=str(exc),
             )
 
+    # ── Multi-session update path ─────────────────────────────────────────
+    _upd_session_plan: SessionPlan | None = None
+    if body.sessions:
+        _upd_appt_date = (
+            body.appointment_date
+            or (booking.appointment_start.strftime("%Y-%m-%d") if booking.appointment_start else None)
+        )
+        if _upd_appt_date is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="appointment_date is required when updating sessions.",
+            )
+        try:
+            _upd_session_plan = await plan_sessions(
+                ushauth,
+                body.sessions,
+                appointment_date=_upd_appt_date,
+                is_loyalty_booking=str(getattr(booking, "booking_type", "")) == "loyalty",
+                check_availability=True,
+                branch_id=str(body.branch_id) if body.branch_id else str(getattr(booking, "branch_id", "") or ""),
+                exclude_booking_id=str(booking_id),
+            )
+        except SessionValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            )
+        except SessionAvailabilityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            )
+        new_service_entries = _upd_session_plan.service_entries
+
     target_start = to_local_tz(body.appointment_start)
-    if target_start is None and body.appointment_date and body.appointment_time:
+    if _upd_session_plan is not None:
+        target_start = _upd_session_plan.mirror["appointment_start"]
+    elif target_start is None and body.appointment_date and body.appointment_time:
         try:
             naive_dt = datetime.fromisoformat(f"{body.appointment_date}T{body.appointment_time}")
             target_start = to_local_tz(naive_dt)
@@ -1606,6 +1855,7 @@ async def update_booking(
         price_for_extra_minutes=body.price_for_extra_minutes or body.extra_price,
         total_duration=body.total_duration,
         total_amount=body.total_amount or body.total_price,
+        sessions=_upd_session_plan.sessions if _upd_session_plan is not None else None,
     )
 
     if body.payment_number:
@@ -1709,6 +1959,7 @@ async def update_booking(
             branch_id=str(updated.branch_id) if updated.branch_id else None,
             service_arrangement_id=str(updated.service_arrangement_id) if updated.service_arrangement_id else None,
             services=cache_services_payload(get_booking_services(updated)),
+            sessions=cache_sessions_payload(_upd_session_plan.sessions) if _upd_session_plan is not None else (cache_sessions_payload(get_booking_sessions(updated)) if get_booking_sessions(updated) else None),
             **_cache_extra,
         )
         logger.info(
