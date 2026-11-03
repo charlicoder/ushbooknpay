@@ -960,6 +960,14 @@ class BookingService:
             booking.total_duration = mirror["total_duration"]
             booking.base_price = mirror["services_price"]
             booking.arrangement_price = mirror["services_price"]
+            if total_amount is None:
+                new_subtotal = (
+                    mirror["services_price"]
+                    + (Decimal(str(addon_price)) if addon_price is not None else (booking.addon_price or Decimal(0)))
+                    + (Decimal(str(price_for_extra_minutes)) if price_for_extra_minutes is not None else (booking.price_for_extra_minutes or Decimal(0)))
+                )
+                existing_discount = Decimal(str(booking.discount or 0))
+                booking.total_amount = max(Decimal(0), new_subtotal - existing_discount)
 
         # ── Replace the booked services (multi-service) ──────────────────
         if services is not None:

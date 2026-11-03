@@ -216,5 +216,13 @@ uv run python -m scripts.import_appointments_csv scripts/data/appointment_list_2
 $docker exec ushbooknpay python3 /app/scripts/repair_voucher_records.py \
     --voucher-number VOU/2026/10/000129 --env /app/.env
 
+```
 
+```
+Rollout:
+========
+Deploy the ushauth migration, then run python manage.py rebuild_slot_ledger --days 90.
+Watch the logs for availability_ledger_mismatch. Once it stays clean, set AVAILABILITY_LEDGER_MODE=on.
+Optionally run rebuild_slot_ledger from cron every 10 minutes.
+Later, set APPOINTMENT_CACHE_ENFORCE_CONFLICTS=true. Check for existing double-bookings first, because re-syncing an already-overbooked booking would then return 409.
 ```

@@ -37,6 +37,18 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def is_retryable_upstream_error(exc: BaseException) -> bool:
+    """True for transient ushauth failures that are worth replaying later."""
+    if isinstance(exc, (GatewayTimeoutError, httpx.TransportError)):
+        return True
+    if isinstance(exc, (NotFoundError, AuthorizationError)):
+        return False
+    if isinstance(exc, GatewayError):
+        status = getattr(exc, "upstream_status", None)
+        return status is None or status >= 500 or status == 429
+    return False
+
+
 class USHAuthClient:
     """
     Async HTTP client for ushauth API.
@@ -138,10 +150,44 @@ class USHAuthClient:
                     f"ushauth authentication/authorization failed for {path}",
                     detail=exc.response.text[:500],
                 )
-            raise GatewayError(
+            gateway_err = GatewayError(
                 f"ushauth returned {exc.response.status_code} for {path}",
                 detail=exc.response.text[:500],
             )
+            gateway_err.upstream_status = exc.response.status_code  # type: ignore[attr-defined]
+            raise gateway_err
+
+    async def _post_reliable(
+        self,
+        path: str,
+        json_data: dict[str, Any],
+        booking_id: str,
+    ) -> dict[str, Any]:
+        """
+        POST to ushauth; on a *retryable* failure persist the request in the
+        appointment-cache outbox so it is replayed until acknowledged, then
+        re-raise so existing callers keep their current error handling.
+
+        Retryable: timeouts, connection errors and upstream 5xx / 429.
+        Permanent (4xx such as validation or 404) failures are not queued.
+        """
+        if self._settings.CACHE_OUTBOX_ENABLED:
+            from app.booking.application.cache_outbox_relay import (
+                enqueue_cache_request,
+                has_pending_for_booking,
+            )
+
+            # Keep per-booking ordering: if an earlier request is still queued,
+            # queue this one behind it instead of racing ahead of it.
+            if await has_pending_for_booking(booking_id):
+                await enqueue_cache_request(path, json_data, booking_id, "queued behind pending request")
+                return {"success": True, "queued": True}
+        try:
+            return await self._post(path, json_data=json_data)
+        except Exception as exc:
+            if self._settings.CACHE_OUTBOX_ENABLED and is_retryable_upstream_error(exc):
+                await enqueue_cache_request(path, json_data, booking_id, str(exc))
+            raise
 
     async def _get_cached(
         self, cache_key: str, path: str, params: dict | None = None
@@ -567,7 +613,9 @@ class USHAuthClient:
         if sessions:
             payload["sessions"] = sessions
 
-        return await self._post("/api/v1/create-appointment-cache/", json_data=payload)
+        return await self._post_reliable(
+            "/api/v1/create-appointment-cache/", payload, str(booking_id)
+        )
 
     async def update_appointment_cache_status_by_booking_id(
         self,
@@ -585,16 +633,19 @@ class USHAuthClient:
         }
         if payment_status is not None:
             payload["payment_status"] = str(payment_status)
-        return await self._post("/api/v1/update-appointment-cache-status-by-booking-id/", json_data=payload)
+        return await self._post_reliable(
+            "/api/v1/update-appointment-cache-status-by-booking-id/", payload, str(booking_id)
+        )
 
     async def delete_appointment_cache_by_booking_id(self, booking_id: str) -> dict[str, Any]:
         """
         Delete appointment cache record(s) for a booking (frees the slot immediately).
         POST /api/v1/delete-appointment-cache-by-booking-id/
         """
-        return await self._post(
+        return await self._post_reliable(
             "/api/v1/delete-appointment-cache-by-booking-id/",
-            json_data={"booking_id": str(booking_id)},
+            {"booking_id": str(booking_id)},
+            str(booking_id),
         )
 
     async def update_appointment_cache_by_booking_id(
@@ -670,7 +721,9 @@ class USHAuthClient:
             payload["sessions"] = sessions
         payload.update(extra_fields)
 
-        return await self._post("/api/v1/update-appointment-cache-by-booking-id/", json_data=payload)
+        return await self._post_reliable(
+            "/api/v1/update-appointment-cache-by-booking-id/", payload, str(booking_id)
+        )
 
     # ── Shop: Product catalogue ───────────────────────────────────────────
 

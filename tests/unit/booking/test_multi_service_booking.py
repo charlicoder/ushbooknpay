@@ -623,3 +623,44 @@ async def test_update_booking_swaps_therapists_when_primary_reassigned_to_second
             secondary_therapist_id=t1,
             secondary_therapist_provided=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_update_booking_sessions_updates_total_amount_without_adding_discount():
+    svc = _service()
+    tid = uuid.uuid4()
+    booking = _orm_booking([_entry(S1, A1, "Massage")])
+    booking.therapist_id = tid
+    booking.discount = Decimal("5.000")
+    booking.total_amount = Decimal("35.000")  # 40 - 5 = 35
+    svc._repo.get_by_id = AsyncMock(return_value=booking)
+    svc._repo.update = AsyncMock(side_effect=lambda b: b)
+
+    # Session with 2 services totaling 70 KWD (40 + 30)
+    new_sessions = [
+        {
+            "session_id": str(uuid.uuid4()),
+            "therapist_id": str(tid),
+            "therapist_data": {"id": str(tid), "name": "Therapist"},
+            "services": [
+                {"service_id": str(S1), "name": "Service 1", "base_price": "40.000", "base_duration": 60, "duration_minutes": 60},
+                {"service_id": str(S2), "name": "Service 2", "base_price": "30.000", "base_duration": 60, "duration_minutes": 60},
+            ],
+            "total_session_duration": 120,
+            "duration_minutes": 120,
+            "session_price": "70.000",
+            "services_price": "70.000",
+            "appointment_start": datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc),
+            "appointment_end": datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc),
+        }
+    ]
+
+    updated = await svc.update_booking(
+        booking_id=booking.id,
+        sessions=new_sessions,
+    )
+    # Total amount should be 70 - 5 = 65, discount remains 5
+    assert updated.base_price == Decimal("70.000")
+    assert updated.discount == Decimal("5.000")
+    assert updated.total_amount == Decimal("65.000")
+

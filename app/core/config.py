@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     USHNOTICE_BASE_PATH: str = "/unotice"
     GATEWAY_TIMEOUT: int = Field(default=10, ge=1, le=60)
 
+    # Durable retry queue for ushauth appointment-cache writes (see
+    # app/booking/infrastructure/cache_outbox.py).
+    CACHE_OUTBOX_ENABLED: bool = True
+    CACHE_OUTBOX_POLL_SECONDS: int = Field(default=15, ge=1, le=600)
+    CACHE_OUTBOX_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
+    CACHE_OUTBOX_MAX_ATTEMPTS: int = Field(default=12, ge=1, le=100)
     # Direct inter-service URL for ushauth (bypasses the API gateway).
     # Set this to the ushauth container/host URL (e.g. http://host.docker.internal:8002).
     # When set, all inter-service calls to ushauth use this URL directly instead of

@@ -31,6 +31,7 @@ from pydantic import ValidationError
 
 from app.api.v1.router import api_router
 from app.booking.infrastructure.models import Booking, BookingStatusHistory, TemporaryHold  # noqa: F401
+from app.booking.infrastructure.cache_outbox import AppointmentCacheOutbox  # noqa: F401
 from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction  # noqa: F401
 from app.common.redis_client import close_redis, get_redis
 from app.core.config import get_settings
@@ -131,10 +132,29 @@ async def lifespan(app: FastAPI):
     # Initialise SQS client
     get_sqs_client()
 
+    # Replay failed ushauth appointment-cache writes until acknowledged.
+    relay_task: asyncio.Task | None = None
+    if settings.CACHE_OUTBOX_ENABLED:
+        from app.api.deps import get_http_client
+        from app.booking.application.cache_outbox_relay import run_relay_forever
+        from app.integrations.ushauth_client import USHAuthClient
+
+        def _relay_client() -> USHAuthClient:
+            return USHAuthClient(http_client=get_http_client(), redis_client=get_redis(), settings=settings)
+
+        relay_task = asyncio.create_task(run_relay_forever(_relay_client))
+
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────
     logger.info("service_shutting_down")
+
+    if relay_task is not None:
+        relay_task.cancel()
+        try:
+            await relay_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     await close_redis()
     await dispose_engine()
