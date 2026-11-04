@@ -918,6 +918,11 @@ class BookingService:
         effective_changed_user_data = change_by_user_data or created_by_user_data
         initial_status = booking.status
         initial_payment_status = booking.payment_status
+        # A parked booking holds no slot: edits that keep it parked must not be blocked by (or
+        # check) the availability of its old date/time. Re-activating it does check.
+        _remain_parked = str(getattr(initial_status, "value", initial_status) or "").lower() == BookingStatus.PARKED.value and (
+            status is None or status == BookingStatus.PARKED
+        )
         initial_appointment_start = booking.appointment_start
         initial_extra_minutes = booking.extra_minutes
 
@@ -928,6 +933,8 @@ class BookingService:
                     f"A booking must contain between 1 and {MAX_SESSIONS_PER_BOOKING} sessions."
                 )
             for sess in sessions:
+                if _remain_parked:
+                    break
                 s_start, s_end = session_window(sess)
                 for t_id in filter(None, (sess.get("therapist_id"), sess.get("secondary_therapist_id"))):
                     if await self._repo.check_therapist_overlap(
@@ -1027,6 +1034,8 @@ class BookingService:
         ):
             # Check overlap against other bookings for all assigned therapists
             for assigned_tid in filter(None, (target_therapist_id, target_secondary_therapist_id)):
+                if _remain_parked:
+                    break
                 is_conflicting = await self._repo.check_therapist_overlap(
                     assigned_tid,
                     target_start,
@@ -1315,6 +1324,16 @@ class BookingService:
         # ── Status update & event emission ───────────────────────────────
         if status is not None and BookingStatus(booking.status) != status:
             old_status = BookingStatus(booking.status)
+            if status == BookingStatus.PARKED:
+                _eff_ps = str(
+                    getattr(payment_status, "value", payment_status)
+                    or getattr(booking.payment_status, "value", booking.payment_status)
+                    or ""
+                ).lower()
+                if _eff_ps not in ("success", "paid", "rewarded"):
+                    raise ValidationError("Only paid bookings can be parked.")
+                if old_status not in (BookingStatus.CONFIRMED, BookingStatus.RESCHEDULE_APPROVED):
+                    raise ValidationError("Only confirmed bookings can be parked.")
             try:
                 machine = BookingStateMachine(old_status)
                 machine.transition_to(status)
@@ -1334,7 +1353,7 @@ class BookingService:
                     f"{booking.internal_notes or ''}\n[{utcnow().isoformat()}] Status changed to {status.value} by {source}: {reason}"
                 ).strip()
 
-            if status in (BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN, BookingStatus.IN_PROGRESS, BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED):
+            if status in (BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN, BookingStatus.IN_PROGRESS, BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED, BookingStatus.PARKED):
                 await self._repo.delete_hold(booking_id)
 
             if status in (BookingStatus.REFUNDED, "refunded"):
@@ -1379,6 +1398,16 @@ class BookingService:
                     change_by_user_data=effective_changed_user_data,
                 )
 
+            # Parked: release the slot by removing the appointment cache rows, so the
+            # therapist / room schedules and availability treat the time as free.
+            if status == BookingStatus.PARKED:
+                try:
+                    ushauth = self._get_ushauth_client()
+                    if ushauth is not None:
+                        await ushauth.delete_appointment_cache_by_booking_id(booking_id=str(booking.id))
+                except Exception as exc:
+                    logger.warning("release_appointment_cache_on_park_failed", booking_id=str(booking.id), error=str(exc))
+
             # Sync appointment cache and cancel open payment links on cancellation
             if status in (BookingStatus.CANCELLED, "cancelled"):
                 await self._cancel_booking_payment_links(booking)
@@ -1407,8 +1436,15 @@ class BookingService:
             # Only dispatch status event for active bookings (CONFIRMED, PAYMENT_PENDING, COMPLETED),
             # never re-dispatch if already CANCELLED, and never if the source is ushnotice.
             is_internal_source = str(source).lower() in ("ushnotice", "notice", "system_sync")
+            # Plain booking edits (no status / payment-status transition) must not re-dispatch
+            # status events, otherwise customers receive SMS/WhatsApp for every update.
+            _payment_status_changed = (
+                str(getattr(booking.payment_status, "value", booking.payment_status) or "").lower()
+                != str(getattr(initial_payment_status, "value", initial_payment_status) or "").lower()
+            )
             if (
                 not is_internal_source
+                and _payment_status_changed
                 and current_status in (BookingStatus.CONFIRMED, BookingStatus.PAYMENT_PENDING, BookingStatus.COMPLETED)
             ):
                 await self._dispatch_status_event(
@@ -2136,6 +2172,10 @@ class BookingService:
                     previous_payment_status=old_payment_status.value if hasattr(old_payment_status, "value") else str(old_payment_status or ""),
                 )
             )
+            return
+        elif new_status in (BookingStatus.PARKED, "parked"):
+            # Parking releases the slot directly (see update_booking); no customer notification.
+            logger.info("skipping_sqs_event_for_parked_status", booking_id=ev_data.get("booking_id"))
             return
         elif new_status in (BookingStatus.NO_SHOW, "no_show"):
             await self._enqueue_event(

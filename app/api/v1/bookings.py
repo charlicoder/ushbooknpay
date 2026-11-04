@@ -56,6 +56,7 @@ from app.booking.domain.services_snapshot import (
 from app.booking.domain.sessions import (
     cache_sessions_payload,
     get_booking_sessions,
+    session_window,
 )
 from app.booking.interfaces.schemas import (
     AddonSchema,
@@ -1698,6 +1699,8 @@ async def update_booking(
     """Update a booking resource."""
     booking = await booking_service.get_booking(booking_id)
     prev_secondary_therapist = _secondary_therapist_id_out(booking)
+    was_parked = str(booking.status or "").lower() == BookingStatus.PARKED.value
+    parked_time_changed = True  # refined below when sessions are supplied
 
     # Check permission if called by non-admin customer
     user_id = uuid.UUID(current_user.sub)
@@ -1780,15 +1783,26 @@ async def update_booking(
                 detail="appointment_date is required when updating sessions.",
             )
         try:
-            _upd_session_plan = await plan_sessions(
-                ushauth,
-                body.sessions,
+            _plan_kwargs = dict(
                 appointment_date=_upd_appt_date,
                 is_loyalty_booking=str(getattr(booking, "booking_type", "")) == "loyalty",
-                check_availability=True,
                 branch_id=str(body.branch_id) if body.branch_id else str(getattr(booking, "branch_id", "") or ""),
                 exclude_booking_id=str(booking_id),
             )
+            if was_parked:
+                # Parked bookings hold no slot. Only a real change of the session start times
+                # (a reschedule) re-activates the booking and needs an availability check.
+                _upd_session_plan = await plan_sessions(ushauth, body.sessions, check_availability=False, **_plan_kwargs)
+                try:
+                    _old_starts = [session_window(s)[0] for s in get_booking_sessions(booking)]
+                    _new_starts = [session_window(s)[0] for s in _upd_session_plan.sessions]
+                    parked_time_changed = _old_starts != _new_starts
+                except Exception:
+                    parked_time_changed = True
+                if parked_time_changed:
+                    _upd_session_plan = await plan_sessions(ushauth, body.sessions, check_availability=True, **_plan_kwargs)
+            else:
+                _upd_session_plan = await plan_sessions(ushauth, body.sessions, check_availability=True, **_plan_kwargs)
         except SessionValidationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1811,9 +1825,16 @@ async def update_booking(
         except Exception:
             pass
 
+    # Rescheduling a parked booking (new date/time or sessions) re-activates it
+    _effective_status = body.status
+    if was_parked and not body.status and parked_time_changed and (
+        body.sessions or body.appointment_start or (body.appointment_date and body.appointment_time)
+    ):
+        _effective_status = BookingStatus.CONFIRMED
+
     updated = await booking_service.update_booking(
         booking_id=booking_id,
-        status=body.status,
+        status=_effective_status,
         payment_status=body.payment_status,
         payment_id=body.payment_id,
         payment_provider=body.payment_provider,
@@ -1918,7 +1939,10 @@ async def update_booking(
     )
 
     # ── Sync appointment cache in ushauth directly ─────────────────────────
+    # A parked booking has no cache rows (its slot is released), nothing to sync.
     try:
+        if str(updated.status or "").lower() == BookingStatus.PARKED.value:
+            raise RuntimeError("booking is parked – appointment cache sync skipped")
         _b_status = str(updated.status).lower().strip() if updated.status else None
         _p_status = str(updated.payment_status).lower().strip() if updated.payment_status else None
         _STATUS_NORM = {

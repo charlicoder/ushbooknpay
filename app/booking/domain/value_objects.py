@@ -38,6 +38,7 @@ class BookingStatus(str, Enum):
     REFUNDED = "refunded"
     COMPLETED = "completed"
     NO_SHOW = "no_show"
+    PARKED = "parked"  # paid booking whose appointment slot has been released
 
 
 # Statuses that no longer occupy a therapist's time slot.
@@ -52,6 +53,7 @@ NON_BLOCKING_BOOKING_STATUSES: frozenset[str] = frozenset(
         BookingStatus.NO_SHOW.value,
         BookingStatus.REFUNDED.value,
         BookingStatus.PAYMENT_FAILED.value,
+        BookingStatus.PARKED.value,
     }
 )
 

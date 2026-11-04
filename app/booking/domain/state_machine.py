@@ -43,6 +43,7 @@ VALID_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
             BookingStatus.REFUNDED,
             BookingStatus.COMPLETED,
             BookingStatus.NO_SHOW,
+            BookingStatus.PARKED,
         }
     ),
     BookingStatus.CHECKED_IN: frozenset(
@@ -71,6 +72,10 @@ VALID_TRANSITIONS: dict[BookingStatus, frozenset[BookingStatus]] = {
         }
     ),
     BookingStatus.RESCHEDULE_APPROVED: frozenset(
+        {BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.REFUNDED}
+    ),
+    # Parked: paid booking with no appointment slot; re-activated by rescheduling
+    BookingStatus.PARKED: frozenset(
         {BookingStatus.CONFIRMED, BookingStatus.CANCELLED, BookingStatus.REFUNDED}
     ),
     # Terminal states
