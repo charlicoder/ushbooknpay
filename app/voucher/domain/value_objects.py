@@ -20,7 +20,8 @@ class GiftVoucherStatus(str, Enum):
     scheduled       — payment confirmed, delivery scheduled for a future datetime;
                       cannot be redeemed until the scheduler activates it
     active          — payment confirmed; voucher is valid and can be redeemed
-    redeemed        — recipient has used the voucher to book a service
+    partially_redeemed — some (not all) gifted services were used in one or more bookings
+    redeemed        — recipient has used the voucher to book a service (all services used)
     fulfilled       — the booked appointment has been completed
     expired         — voucher passed its expire_date without redemption
     cancelled       — manually cancelled (admin or sender)
@@ -30,6 +31,7 @@ class GiftVoucherStatus(str, Enum):
     PAYMENT_PENDING = "payment_pending"
     SCHEDULED = "scheduled"
     ACTIVE = "active"
+    PARTIALLY_REDEEMED = "partially_redeemed"
     REDEEMED = "redeemed"
     FULFILLED = "fulfilled"
     EXPIRED = "expired"

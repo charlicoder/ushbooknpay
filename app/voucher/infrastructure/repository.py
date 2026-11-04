@@ -335,7 +335,7 @@ class GiftVoucherRepository:
             if st == "available":
                 base = base.where(
                     and_(
-                        GiftVoucher.status == GiftVoucherStatus.ACTIVE.value,
+                        GiftVoucher.status.in_([GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.PARTIALLY_REDEEMED.value]),
                         or_(GiftVoucher.expire_date.is_(None), GiftVoucher.expire_date > func.now()),
                     )
                 )
@@ -344,7 +344,7 @@ class GiftVoucherRepository:
         elif available_only:
             base = base.where(
                 and_(
-                    GiftVoucher.status == GiftVoucherStatus.ACTIVE.value,
+                    GiftVoucher.status.in_([GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.PARTIALLY_REDEEMED.value]),
                     or_(GiftVoucher.expire_date.is_(None), GiftVoucher.expire_date > func.now()),
                 )
             )

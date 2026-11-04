@@ -52,6 +52,11 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.voucher.domain.services_snapshot import (
+    remaining_service_ids,
+    voucher_redemptions_of,
+    voucher_services_of,
+)
 from app.voucher.domain.value_objects import (
     GiftCategory,
     GiftVoucherStatus,
@@ -137,6 +142,17 @@ class GiftVoucher(Base):
     service_arrangement_data: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True, default=dict
     )
+
+    # ── Multi-service support ─────────────────────────────────────────────
+    # Ordered list of gifted services, each with its own add-ons / extra time:
+    # [{"service_id", "service_data", "addons", "extra_time", "price_for_extra_time", "position"}]
+    # NULL/empty on legacy vouchers: they are read as a single entry built from the legacy
+    # single-service columns below (see app.voucher.domain.services_snapshot).
+    services: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=list)
+
+    # ── Partial redemption history ────────────────────────────────────────
+    # One record per booking created from this voucher (see services_snapshot).
+    redemptions: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=list)
 
     # ── Add-ons & timing ──────────────────────────────────────────────────
     # Format: [{"addon_id": "uuid", "name": "...", "price": "0.000", "duration": 30}]
@@ -363,6 +379,9 @@ class GiftVoucher(Base):
             "payment_number": self.payment_number,
             "service_id": str(self.service_id) if self.service_id else None,
             "service_data": self.service_data or {},
+            "services": voucher_services_of(self),
+            "redemptions": voucher_redemptions_of(self),
+            "remaining_service_ids": remaining_service_ids(self),
             "branch_id": str(self.branch_id) if self.branch_id else None,
             "branch_data": self.branch_data or {},
             "service_arrangement_id": str(self.service_arrangement_id) if self.service_arrangement_id else None,

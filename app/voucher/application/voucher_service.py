@@ -39,6 +39,13 @@ from app.events.contracts import (
 from app.events.scheduler_client import get_scheduler_client
 from app.events.sqs_client import get_sqs_client
 from app.shop.domain.state_machine import DeliveryStateMachine, InvalidDeliveryTransitionError
+from app.voucher.domain.services_snapshot import (
+    mirror_legacy_fields,
+    normalise_services,
+    services_duration,
+    used_service_ids,
+    voucher_services_of,
+)
 from app.voucher.domain.state_machine import GiftVoucherStateMachine
 from app.voucher.domain.value_objects import (
     DeliveryStatus,
@@ -73,6 +80,7 @@ class GiftVoucherService:
         *,
         service_id: uuid.UUID | None = None,
         service_data: dict[str, Any] | None = None,
+        services: list[dict[str, Any]] | None = None,
         total_amount: Decimal,
         discount: Decimal = Decimal("0.000"),
         sender_id: uuid.UUID,
@@ -179,16 +187,24 @@ class GiftVoucherService:
             except (TypeError, ValueError):
                 return 0
 
-        _svc = service_data or {}
-        _computed_duration = (
-            (_to_int(_svc.get("duration_minutes")) or _to_int(_svc.get("duration")))
-            + sum(
-                (_to_int(a.get("duration_minutes")) or _to_int(a.get("duration")))
-                for a in (addons or [])
-                if isinstance(a, dict)
-            )
-            + _to_int(extra_time)
+        # Multi-service: wrap the legacy single-service fields when no list is given, then
+        # mirror the legacy columns from the list so old consumers keep working.
+        service_entries = normalise_services(
+            services,
+            service_id=service_id,
+            service_data=service_data,
+            addons=addons,
+            extra_time=extra_time,
+            price_for_extra_time=price_for_extra_time,
         )
+        if services and service_entries:
+            _mirror = mirror_legacy_fields(service_entries)
+            service_id = _mirror["service_id"]
+            service_data = _mirror["service_data"]
+            addons = _mirror["addons"]
+            extra_time = _mirror["extra_time"]
+            price_for_extra_time = _mirror["price_for_extra_time"]
+        _computed_duration = services_duration(service_entries)
         total_duration = max(_to_int(total_duration), _computed_duration)
 
         initial_status = status or GiftVoucherStatus.CREATED.value
@@ -220,6 +236,7 @@ class GiftVoucherService:
             is_digital_gift_opened=is_digital_gift_opened,
             service_id=service_id,
             service_data=service_data or {},
+            services=service_entries,
             branch_id=branch_id,
             branch_data=branch_data or {},
             service_arrangement_id=service_arrangement_id,
@@ -590,6 +607,61 @@ class GiftVoucherService:
         old_status = voucher.status
         target_status: GiftVoucherStatus | None = None
 
+        # ── 0. Partial redemption: record which services were used by a booking and derive
+        # the status (partially_redeemed while services remain, redeemed once all are used).
+        redemption = updates.pop("redemption", None)
+        if redemption:
+            if old_status not in (GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.PARTIALLY_REDEEMED.value):
+                raise ValidationError("Only active or partially redeemed vouchers can be redeemed.")
+            all_ids = [str(e["service_id"]) for e in voucher_services_of(voucher) if e.get("service_id")]
+            already_used = used_service_ids(voucher)
+            new_ids: list[str] = []
+            used_entries: list[dict[str, Any]] = []
+            for item in redemption.get("services") or []:
+                sid = str((item or {}).get("service_id") or "")
+                if sid not in all_ids:
+                    raise ValidationError(f"Service {sid or '?'} is not part of this voucher.")
+                if sid in already_used or sid in new_ids:
+                    raise ValidationError(f"Service {sid} has already been redeemed.")
+                new_ids.append(sid)
+                used_entries.append(
+                    {
+                        "service_id": sid,
+                        "service_name": item.get("service_name"),
+                        "addon_ids": [str(a) for a in (item.get("addon_ids") or [])],
+                        "extra_time": max(int(item.get("extra_time") or 0), 0),
+                    }
+                )
+            if not new_ids:
+                raise ValidationError("A redemption must include at least one service.")
+
+            now_utc = datetime.now(tz=timezone.utc)
+            voucher.redemptions = [
+                *list(voucher.redemptions or []),
+                {
+                    "booking_id": str(updates.get("booking_id") or redemption.get("booking_id") or "") or None,
+                    "booking_number": redemption.get("booking_number"),
+                    "redeemed_at": now_utc.isoformat(),
+                    "redeemed_by": str(updates.get("redeemed_by") or "") or None,
+                    "services": used_entries,
+                },
+            ]
+            # Details of the latest redemption
+            voucher.redeemed_at = now_utc
+            if updates.get("booking_id") is not None:
+                voucher.redeemed_booking_id = updates["booking_id"]
+                voucher.booking_id = updates["booking_id"]
+            if updates.get("booking_data") is not None:
+                voucher.booking_data = updates["booking_data"]
+            if updates.get("redeemed_by") is not None:
+                voucher.redeemed_by = updates["redeemed_by"]
+            all_used = already_used | set(new_ids)
+            updates["status"] = (
+                GiftVoucherStatus.REDEEMED.value
+                if all(i in all_used for i in all_ids)
+                else GiftVoucherStatus.PARTIALLY_REDEEMED.value
+            )
+
         # ── 1. Status transition validation ──────────────────────────────
         if "status" in updates and updates["status"] is not None:
             new_status_str = updates["status"]
@@ -659,8 +731,19 @@ class GiftVoucherService:
                 VoucherPaymentThrough.normalise(through) if through else None
             )
 
+        # ── 3b. Multi-service replacement ────────────────────────────────
+        if updates.get("services"):
+            _entries = normalise_services(updates["services"])
+            if _entries:
+                voucher.services = _entries
+                for _k, _v in mirror_legacy_fields(_entries).items():
+                    setattr(voucher, _k, _v)
+                if updates.get("total_duration") is None:
+                    voucher.total_duration = services_duration(_entries)
+
         # ── 4. Apply all remaining field updates ─────────────────────────
         skip_keys = {
+            "services",
             "status",
             "delivery_status",
             "gift_category",

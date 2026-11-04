@@ -56,8 +56,51 @@ class RecipientDetails(BaseModel):
 # ── Request schemas ───────────────────────────────────────────────────────────
 
 
+class VoucherServiceItem(BaseModel):
+    """One gifted service of a (multi-service) voucher, with its own add-ons / extra time."""
+
+    service_id: uuid.UUID | None = Field(default=None, description="UUID of the gifted service.")
+    service_data: dict[str, Any] | None = Field(
+        default_factory=dict,
+        description="Snapshot of service metadata (name, duration_minutes, base_price, ...).",
+    )
+    addons: list[dict[str, Any]] | None = Field(
+        default_factory=list,
+        description='Add-ons of THIS service: [{"addon_id": "...", "name": "...", "price": "0.000", "duration_minutes": 15}]',
+    )
+    extra_time: int = Field(default=0, ge=0, description="Extra time (minutes) for THIS service.")
+    price_for_extra_time: Decimal | None = Field(default=None, description="Price of the extra time for this service.")
+
+    @field_validator("service_id", mode="before")
+    @classmethod
+    def _blank_service_id(cls, v: Any) -> Any:
+        return None if (isinstance(v, str) and not v.strip()) else v
+
+    @field_validator("service_data", mode="before")
+    @classmethod
+    def _service_data_dict(cls, v: Any) -> dict[str, Any]:
+        return v if isinstance(v, dict) else {}
+
+    @field_validator("addons", mode="before")
+    @classmethod
+    def _addons_list(cls, v: Any) -> list[dict[str, Any]]:
+        return v if isinstance(v, list) else []
+
+    model_config = {"extra": "allow"}
+
+
 class CreateGiftVoucherRequest(BaseModel):
     """POST /api/v1/vouchers/ — create a new gift voucher."""
+
+    # ── Multiple services (optional). When omitted, the legacy single-service fields below
+    # (service_id / service_data / addons / extra_time / price_for_extra_time) are used. ──
+    services: list[VoucherServiceItem] | None = Field(
+        default=None,
+        description=(
+            "Gifted services, each with its own add-ons and extra time. "
+            "Backward compatible: legacy single-service fields still work."
+        ),
+    )
 
     # ── Service & branch ──────────────────────────────────────────────
     service_id: uuid.UUID | None = Field(
@@ -703,6 +746,10 @@ class UpdateGiftVoucherRequest(BaseModel):
         default=None,
         description="Optional update to whether the digital gift has been opened.",
     )
+    services: list[VoucherServiceItem] | None = Field(
+        default=None,
+        description="Replace the gifted services (multi-service vouchers).",
+    )
     service_id: uuid.UUID | None = Field(
         default=None,
         description="UUID of the service being gifted.",
@@ -829,6 +876,15 @@ class UpdateGiftVoucherRequest(BaseModel):
         default=None,
         description="UUID of the user redeeming the voucher.",
     )
+    redemption: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Partial redemption: {\"booking_number\": ..., \"services\": [{\"service_id\", \"service_name\", "
+            "\"addon_ids\": [...], \"extra_time\": n}]}. Together with booking_id/booking_data it records the "
+            "services used by that booking. The status is derived: partially_redeemed while gifted "
+            "services remain, redeemed once all are used."
+        ),
+    )
 
     @field_validator(
         "branch_id",
@@ -949,6 +1005,10 @@ class GiftVoucherResponse(BaseModel):
     is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
+    # All gifted services (legacy vouchers are returned as a single entry)
+    services: list[dict[str, Any]] = Field(default_factory=list)
+    redemptions: list[dict[str, Any]] = Field(default_factory=list)
+    remaining_service_ids: list[str] = Field(default_factory=list)
     branch_id: uuid.UUID | None
     branch_data: dict[str, Any]
     service_arrangement_id: uuid.UUID | None
@@ -1020,6 +1080,7 @@ class GiftVoucherPublicResponse(BaseModel):
     is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
+    services: list[dict[str, Any]] = Field(default_factory=list)
     branch_id: uuid.UUID | None
     branch_data: dict[str, Any]
     service_arrangement_id: uuid.UUID | None
@@ -1062,6 +1123,10 @@ class GiftVoucherListItem(BaseModel):
     is_digital_gift_opened: bool = False
     service_id: uuid.UUID | None = None
     service_data: dict[str, Any]
+    services: list[dict[str, Any]] = Field(default_factory=list)
+    redemptions: list[dict[str, Any]] = Field(default_factory=list)
+    remaining_service_ids: list[str] = Field(default_factory=list)
+    addons: list[dict[str, Any]] = Field(default_factory=list)
     service_arrangement_id: uuid.UUID | None = None
     service_arrangement_data: dict[str, Any] = Field(default_factory=dict)
     branch_id: uuid.UUID | None

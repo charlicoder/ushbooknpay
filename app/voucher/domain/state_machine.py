@@ -9,7 +9,8 @@ any illegal transition attempt.
 Valid transitions:
   created         → payment_pending | active | cancelled
   payment_pending → active | payment_pending | cancelled
-  active          → redeemed | expired | cancelled
+  active          → partially_redeemed | redeemed | expired | cancelled
+  partially_redeemed → redeemed | expired | cancelled
   redeemed        → fulfilled
   fulfilled       → (terminal)
   expired         → (terminal)
@@ -42,6 +43,14 @@ _TRANSITIONS: dict[GiftVoucherStatus, frozenset[GiftVoucherStatus]] = {
         GiftVoucherStatus.CANCELLED,
     }),
     GiftVoucherStatus.ACTIVE: frozenset({
+        GiftVoucherStatus.PARTIALLY_REDEEMED,
+        GiftVoucherStatus.REDEEMED,
+        GiftVoucherStatus.EXPIRED,
+        GiftVoucherStatus.CANCELLED,
+    }),
+    # Some gifted services used; more bookings may follow until every service is used.
+    GiftVoucherStatus.PARTIALLY_REDEEMED: frozenset({
+        GiftVoucherStatus.PARTIALLY_REDEEMED,
         GiftVoucherStatus.REDEEMED,
         GiftVoucherStatus.EXPIRED,
         GiftVoucherStatus.CANCELLED,

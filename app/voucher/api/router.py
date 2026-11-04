@@ -49,6 +49,11 @@ from app.core.security import (
     verify_ushspa_token,
 )
 from app.voucher.application.voucher_service import GiftVoucherService
+from app.voucher.domain.services_snapshot import (
+    remaining_service_ids,
+    voucher_redemptions_of,
+    voucher_services_of,
+)
 from app.voucher.domain.value_objects import DeliveryStatus, get_delivery_status_label
 from app.voucher.infrastructure.models import GiftVoucher
 from app.voucher.interfaces.schemas import (
@@ -195,6 +200,9 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
+        services=voucher_services_of(v),
+        redemptions=voucher_redemptions_of(v),
+        remaining_service_ids=remaining_service_ids(v),
         branch_id=v.branch_id,
         branch_data=v.branch_data or {},
         service_arrangement_id=v.service_arrangement_id,
@@ -261,6 +269,7 @@ def _voucher_to_public(v: GiftVoucher) -> GiftVoucherPublicResponse:
         is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
+        services=voucher_services_of(v),
         branch_id=v.branch_id,
         branch_data=v.branch_data or {},
         service_arrangement_id=v.service_arrangement_id,
@@ -302,6 +311,10 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         is_digital_gift_opened=_extract_is_digital_gift_opened(v),
         service_id=v.service_id,
         service_data=v.service_data or {},
+        services=voucher_services_of(v),
+        redemptions=voucher_redemptions_of(v),
+        remaining_service_ids=remaining_service_ids(v),
+        addons=v.addons or [],
         service_arrangement_id=v.service_arrangement_id,
         service_arrangement_data=v.service_arrangement_data or {},
         branch_id=v.branch_id,
@@ -498,6 +511,7 @@ async def create_gift_voucher(
         voucher = await svc.create_voucher(
             service_id=body.service_id,
             service_data=body.service_data,
+            services=[sv.model_dump(mode="json") for sv in body.services] if body.services else None,
             branch_id=body.branch_id,
             branch_data=body.branch_data,
             service_arrangement_id=body.service_arrangement_id,
@@ -1516,7 +1530,9 @@ async def update_gift_voucher(
     actor_id = _resolve_api_requester(request)
 
     # ── Auto-resolve redeemed_by if transitioning to redeemed ────────────
-    if updates.get("status") == "redeemed" and updates.get("redeemed_by") is None:
+    if (
+        updates.get("status") in ("redeemed", "partially_redeemed") or updates.get("redemption")
+    ) and updates.get("redeemed_by") is None:
         redeemed_by = _resolve_api_requester(request, body.redeemed_by)
         booking_ref = updates.get("booking_id") or body.booking_id
         if redeemed_by is None and booking_ref is not None:

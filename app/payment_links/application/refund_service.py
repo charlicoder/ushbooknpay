@@ -151,6 +151,7 @@ class PaymentLinkRefundService:
         ).scalar_one_or_none()
         if voucher is not None and voucher.status in (
             GiftVoucherStatus.REDEEMED.value,
+            GiftVoucherStatus.PARTIALLY_REDEEMED.value,
             GiftVoucherStatus.FULFILLED.value,
         ):
             raise ValidationError("A redeemed gift voucher cannot be refunded.")

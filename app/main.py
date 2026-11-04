@@ -115,6 +115,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;",
                 "ALTER TABLE refunds ADD COLUMN IF NOT EXISTS failure_reason TEXT;",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_refunds_idempotency_key ON refunds (idempotency_key);",
+                "ALTER TABLE gift_vouchers ADD COLUMN IF NOT EXISTS services JSONB;",
+                "ALTER TABLE gift_vouchers ADD COLUMN IF NOT EXISTS redemptions JSONB;",
             ):
                 try:
                     await conn.execute(sa.text(_ddl))

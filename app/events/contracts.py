@@ -929,6 +929,7 @@ class VoucherActiveEvent(BaseEvent):
     # ── Service context ───────────────────────────────────────────────
     service_id: str = ""
     service_data: dict[str, Any] = field(default_factory=dict)
+    services: list[dict[str, Any]] = field(default_factory=list)  # multi-service vouchers
     branch_id: str | None = None
     branch_data: dict[str, Any] = field(default_factory=dict)
     service_arrangement_id: str | None = None
@@ -1015,6 +1016,7 @@ class VoucherScheduledEvent(BaseEvent):
     # ── Service context ───────────────────────────────────────────────
     service_id: str = ""
     service_data: dict[str, Any] = field(default_factory=dict)
+    services: list[dict[str, Any]] = field(default_factory=list)  # multi-service vouchers
     branch_id: str | None = None
     branch_data: dict[str, Any] = field(default_factory=dict)
     service_arrangement_id: str | None = None
@@ -1114,6 +1116,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
     # ── Service context ───────────────────────────────────────────────
     service_id: str = ""
     service_data: dict[str, Any] = field(default_factory=dict)
+    services: list[dict[str, Any]] = field(default_factory=list)  # multi-service vouchers
     branch_id: str | None = None
     branch_data: dict[str, Any] = field(default_factory=dict)
     service_arrangement_id: str | None = None
@@ -1200,6 +1203,7 @@ class VoucherRedeemedEvent(BaseEvent):
     # ── Service context ───────────────────────────────────────────────
     service_id: str = ""
     service_data: dict[str, Any] = field(default_factory=dict)
+    services: list[dict[str, Any]] = field(default_factory=list)  # multi-service vouchers
     branch_id: str | None = None
     branch_data: dict[str, Any] = field(default_factory=dict)
     service_arrangement_id: str | None = None
