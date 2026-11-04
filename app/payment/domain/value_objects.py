@@ -24,42 +24,33 @@ class PaymentTransactionStatus(str, Enum):
 class PaymentProvider(str, Enum):
     """Supported payment providers / gateways used to process the transaction."""
 
-    MYFATOORAH = "MyFatoorah"
-    PAYMENTLINK = "PaymentLink"
-    DIRECTLINK = "DirectLink"
-    DEEMA = "Deema"
-    KNET_CARD = "KNET Card"
-    TAP_KNET = "Tap KNET"
-    TAP_CARD = "Tap Card"
-    TAP_APPLE_PAY = "Tap Apple Pay"
-    OTHER = "Other"
+    # Canonical values (see app.common.payment_attribution). Legacy names are kept as aliases of
+    # the canonical member so existing references keep working.
+    MYFATOORAH = "myfatoorah"
+    PAYMENTLINK = "myfatoorah"
+    DIRECTLINK = "myfatoorah"
+    TAP = "tap"
+    DEEMA = "tap"
+    TAP_KNET = "tap"
+    TAP_CARD = "tap"
+    TAP_APPLE_PAY = "tap"
+    KNET_POS = "knet_pos"
+    KNET_CARD = "knet_pos"
+    BOUBYAN = "boubyan"
+    OTHER = "other"  # unclear provider: stored as NULL
 
     @classmethod
     def normalise(cls, value: str) -> "PaymentProvider":
-        """Case-insensitive / alias normalisation."""
-        if not value:
+        """Case-insensitive / alias normalisation to the canonical provider."""
+        from app.common.payment_attribution import normalise_provider
+
+        canonical = normalise_provider(value)
+        if canonical is None:
+            # historic behaviour: bare "knet" / "card" meant the KNET card terminal
+            if (value or "").strip().lower() in {"knet", "card"}:
+                return cls.KNET_POS
             return cls.OTHER
-        v = value.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-        mapping = {
-            "myfatoorah": cls.MYFATOORAH,
-            "myfatora": cls.MYFATOORAH,
-            "fatoorah": cls.MYFATOORAH,
-            "paymentlink": cls.PAYMENTLINK,
-            "directlink": cls.DIRECTLINK,
-            "direct": cls.DIRECTLINK,
-            "deema": cls.DEEMA,
-            "deemapaymentlink": cls.DEEMA,
-            "deemalink": cls.DEEMA,
-            "tapdeema": cls.DEEMA,
-            "tapknet": cls.TAP_KNET,
-            "tapcard": cls.TAP_CARD,
-            "tapapplepay": cls.TAP_APPLE_PAY,
-            "knetcard": cls.KNET_CARD,
-            "knet": cls.KNET_CARD,
-            "card": cls.KNET_CARD,
-            "other": cls.OTHER,
-        }
-        return mapping.get(v, cls.OTHER)
+        return cls(canonical)
 
 
 class PaymentThrough(str, Enum):
@@ -68,26 +59,15 @@ class PaymentThrough(str, Enum):
     USHSPA = "ushspa"
     USHWEB = "ushweb"
     USHDESK = "ushdesk"
-    DESK = "desk"
-    OTHER = "other"
+    DESK = "ushdesk"  # legacy alias of USHDESK
+    OTHER = "other"  # unclear channel: stored as NULL
 
     @classmethod
     def normalise(cls, value: str) -> "PaymentThrough":
-        if not value:
-            return cls.OTHER
-        v = value.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-        mapping = {
-            "ushspa": cls.USHSPA,
-            "app": cls.USHSPA,
-            "ushweb": cls.USHWEB,
-            "web": cls.USHWEB,
-            "ushdesk": cls.USHDESK,
-            "desk": cls.USHDESK,
-            "pos": cls.USHDESK,
-            "counter": cls.USHDESK,
-            "other": cls.OTHER,
-        }
-        return mapping.get(v, cls.OTHER)
+        from app.common.payment_attribution import normalise_through
+
+        canonical = normalise_through(value)
+        return cls(canonical) if canonical else cls.OTHER
 
 
 class PaymentGateway(str, Enum):

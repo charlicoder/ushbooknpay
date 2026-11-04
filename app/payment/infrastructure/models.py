@@ -86,6 +86,8 @@ class Payment(Base):
 
     branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     branch_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Denormalised from branch_data for per-branch reports / analytics
+    branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     service_arrangement_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     service_arrangement_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -207,6 +209,7 @@ class Payment(Base):
         Index("ix_payments_sender_id", "sender_id"),
         Index("ix_payments_service_id", "service_id"),
         Index("ix_payments_branch_id", "branch_id"),
+        Index("ix_payments_branch_created", "branch_id", "created_at"),
         Index("ix_payments_service_arrangement_id", "service_arrangement_id"),
         Index("ix_payments_booking_id", "booking_id"),
         Index("ix_payments_voucher_id", "voucher_id"),

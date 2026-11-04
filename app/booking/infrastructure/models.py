@@ -92,6 +92,8 @@ class Booking(Base):
     # ── Branch Reference & Snapshot ───────────────────────────────────────
     branch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     branch_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
+    # Denormalised from branch_data for per-branch reports / analytics
+    branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # ── Service Reference & Snapshot ──────────────────────────────────────
     service_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -306,6 +308,7 @@ class Booking(Base):
         Index("ix_bookings_customer_id", "customer_id"),
         # Fast lookup by branch + date (availability queries)
         Index("ix_bookings_branch_date", "branch_id", "appointment_date"),
+        Index("ix_bookings_branch_created", "branch_id", "created_at"),
         # Fast lookup by therapist + date (availability queries)
         Index("ix_bookings_therapist_date", "therapist_id", "appointment_date"),
         # Same for the second therapist of couple/double bookings (sparse index)

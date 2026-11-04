@@ -259,7 +259,11 @@ class GiftVoucherRepository:
         if is_digital_gift_opened is not None:
             base = base.where(GiftVoucher.is_digital_gift_opened == is_digital_gift_opened)
         if payment_through:
-            base = base.where(GiftVoucher.payment_through == payment_through.strip().lower())
+            from app.common.payment_attribution import normalise_through
+
+            base = base.where(
+                GiftVoucher.payment_through == (normalise_through(payment_through) or payment_through.strip().lower())
+            )
         if sender_id:
             base = base.where(GiftVoucher.sender_id == sender_id)
         if service_id:

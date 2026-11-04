@@ -117,6 +117,8 @@ async def lifespan(app: FastAPI):
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_refunds_idempotency_key ON refunds (idempotency_key);",
                 "ALTER TABLE gift_vouchers ADD COLUMN IF NOT EXISTS services JSONB;",
                 "ALTER TABLE gift_vouchers ADD COLUMN IF NOT EXISTS redemptions JSONB;",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS branch_name VARCHAR(255);",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS branch_name VARCHAR(255);",
             ):
                 try:
                     await conn.execute(sa.text(_ddl))
@@ -171,6 +173,11 @@ async def lifespan(app: FastAPI):
 def create_application() -> FastAPI:
     """Create and configure the FastAPI application."""
     settings = get_settings()
+
+    # Canonical payment_through / payment_provider / payment_method on every write
+    from app.common.payment_attribution_listeners import register_payment_attribution_listeners
+
+    register_payment_attribution_listeners()
 
     app = FastAPI(
         title="USHSPA Booking & Payment Service",

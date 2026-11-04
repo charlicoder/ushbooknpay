@@ -110,38 +110,27 @@ class VoucherPaymentProvider(str, Enum):
     Other       — Any other provider not listed above
     """
 
-    MYFATOORAH = "MyFatoorah"
-    DIRECTLINK = "DirectLink"
-    DEEMA = "Deema"
-    OTHER = "Other"
+    # Canonical values (see app.common.payment_attribution); legacy names are aliases.
+    MYFATOORAH = "myfatoorah"
+    DIRECTLINK = "myfatoorah"
+    TAP = "tap"
+    DEEMA = "tap"
+    KNET_POS = "knet_pos"
+    BOUBYAN = "boubyan"
+    OTHER = "other"  # unclear provider: stored as NULL
 
     @classmethod
     def normalise(cls, val: str | None) -> str | None:
-        """
-        Normalise provider string to canonical PascalCase value.
-        Handles case insensitivity ('directlink' -> 'DirectLink'),
-        separators ('direct_link' -> 'DirectLink'), and common aliases ('myfatora' -> 'MyFatoorah').
-        """
+        """Normalise to the canonical provider (myfatoorah | tap | knet_pos | boubyan)."""
+        from app.common.payment_attribution import normalise_provider
+
         if not val or not str(val).strip():
             return None
-        cleaned = str(val).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
-        lookup = {
-            "myfatoorah": cls.MYFATOORAH.value,
-            "myfatora": cls.MYFATOORAH.value,
-            "fatoorah": cls.MYFATOORAH.value,
-            "directlink": cls.DIRECTLINK.value,
-            "direct": cls.DIRECTLINK.value,
-            "deema": cls.DEEMA.value,
-            "deemapaymentlink": cls.DEEMA.value,
-            "deemalink": cls.DEEMA.value,
-            "tapdeema": cls.DEEMA.value,
-            "other": cls.OTHER.value,
-        }
-        if cleaned in lookup:
-            return lookup[cleaned]
-        for member in cls:
-            if member.value.lower() == cleaned:
-                return member.value
+        canonical = normalise_provider(val)
+        if canonical:
+            return canonical
+        if str(val).strip().lower() == "other":
+            return cls.OTHER.value
         return str(val).strip()
 
 
@@ -156,33 +145,17 @@ class VoucherPaymentThrough(str, Enum):
 
     USHSPA = "ushspa"
     USHWEB = "ushweb"
-    DESK = "desk"
+    USHDESK = "ushdesk"
+    DESK = "ushdesk"  # legacy alias of USHDESK
 
     @classmethod
     def normalise(cls, val: str | None) -> str | None:
-        """
-        Normalise payment_through string to canonical value ('ushspa', 'ushweb', or 'desk').
-        Handles case insensitivity ('DESK' -> 'desk') and common aliases ('app' -> 'ushspa').
-        """
+        """Normalise to the canonical channel ('ushspa' | 'ushweb' | 'ushdesk')."""
+        from app.common.payment_attribution import normalise_through
+
         if not val or not str(val).strip():
             return None
-        cleaned = str(val).strip().lower().replace("_", "").replace("-", "").replace(" ", "")
-        lookup = {
-            "ushspa": cls.USHSPA.value,
-            "ushweb": cls.USHWEB.value,
-            "app": cls.USHSPA.value,
-            "web": cls.USHSPA.value,
-            "desk": cls.DESK.value,
-            "pos": cls.DESK.value,
-            "reception": cls.DESK.value,
-            "frontdesk": cls.DESK.value,
-        }
-        if cleaned in lookup:
-            return lookup[cleaned]
-        for member in cls:
-            if member.value.lower() == cleaned:
-                return member.value
-        return str(val).strip()
+        return normalise_through(val) or str(val).strip()
 
 
 from app.shop.domain.value_objects import (
