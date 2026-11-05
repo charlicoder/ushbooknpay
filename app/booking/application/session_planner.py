@@ -26,6 +26,11 @@ from decimal import Decimal
 from typing import Any
 
 from app.booking.application.multi_service import resolve_service_entries
+from app.booking.application.package_rules import (
+    apply_package_context,
+    resolve_package_context,
+    validate_package_exclusivity,
+)
 from app.booking.application.multi_therapist import (
     entries_required_therapists,
     parse_uuid,
@@ -34,6 +39,8 @@ from app.booking.application.multi_therapist import (
 )
 from app.booking.domain.services_snapshot import _to_decimal, _to_int
 from app.booking.domain.sessions import (
+    MAX_PACKAGE_SESSIONS_PER_BOOKING,
+    MAX_SESSIONS_PER_BOOKING,
     SessionValidationError,
     booking_totals,
     build_session,
@@ -132,6 +139,7 @@ async def _build_one_session(
     position: int,
     appointment_date: str,
     is_loyalty_booking: bool,
+    package_ctx: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     arr_id = item.service_arrangement_id
     svc_items = [
@@ -142,6 +150,7 @@ async def _build_one_session(
     entries = await resolve_service_entries(
         ushauth, svc_items, is_loyalty_booking=is_loyalty_booking, full_details=True, validate=True
     )
+    apply_package_context(entries, svc_items, position, package_ctx or {})
 
     db_arr: dict[str, Any] = {}
     if arr_id:
@@ -199,6 +208,24 @@ async def _check_session_availability(
     """Raise SessionAvailabilityError if the session's room / therapist(s) are not free."""
     arr_id = session.get("service_arrangement_id")
     if not arr_id:
+        # Roomless session (e.g. home service): only the therapist(s) need to be free.
+        # Skipped on edits – the endpoint cannot exclude the booking's own rows.
+        if exclude_booking_id:
+            return
+        r_start, _ = session_window(session)
+        assert r_start is not None
+        for tid in unique_ids([session.get("therapist_id"), session.get("secondary_therapist_id")]):
+            res = await ushauth.check_booking_therapist_availability(
+                therapist_id=str(tid),
+                appointment_date=appointment_date,
+                appointment_time=r_start.strftime("%H:%M:%S"),
+                duration=_to_int(session.get("total_session_duration")),
+            )
+            if res.get("available") != "yes":
+                raise SessionAvailabilityError(
+                    f"Session {int(session.get('position', 0)) + 1}: the selected therapist is not "
+                    f"available at {r_start.strftime('%H:%M')}."
+                )
         return
     start, _ = session_window(session)
     assert start is not None
@@ -256,16 +283,21 @@ async def plan_sessions(
     from app.booking.application.multi_service import ServiceValidationError
 
     try:
+        package_ctx = await resolve_package_context(ushauth, items)
         built = await asyncio.gather(
             *(
-                _build_one_session(ushauth, it, idx, appointment_date, is_loyalty_booking)
+                _build_one_session(ushauth, it, idx, appointment_date, is_loyalty_booking, package_ctx)
                 for idx, it in enumerate(items)
             )
         )
     except ServiceValidationError as exc:
         raise SessionValidationError(str(exc)) from exc
 
-    sessions = validate_sessions(list(built))
+    validate_package_exclusivity(list(built))
+    sessions = validate_sessions(
+        list(built),
+        max_sessions=MAX_PACKAGE_SESSIONS_PER_BOOKING if package_ctx else MAX_SESSIONS_PER_BOOKING,
+    )
     day = appointment_date.split("T")[0]
     if session_window(sessions[0])[0].date().isoformat() != day:  # type: ignore[union-attr]
         raise SessionValidationError(f"Session times must be on the booking date ({day}).")

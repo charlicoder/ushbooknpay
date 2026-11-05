@@ -92,6 +92,19 @@ class VoucherServiceItem(BaseModel):
 class CreateGiftVoucherRequest(BaseModel):
     """POST /api/v1/vouchers/ — create a new gift voucher."""
 
+    @model_validator(mode="after")
+    def _package_must_stand_alone(self) -> "CreateGiftVoucherRequest":
+        """A package voucher holds exactly one package: never combined with other services."""
+        items = self.services or []
+        if len(items) > 1:
+            flags = [
+                str((it.service_data or {}).get("is_packaged_services", "")).strip().lower() in ("true", "1", "yes")
+                for it in items
+            ]
+            if any(flags):
+                raise ValueError("A package cannot be combined with other services or packages in one gift voucher.")
+        return self
+
     # ── Multiple services (optional). When omitted, the legacy single-service fields below
     # (service_id / service_data / addons / extra_time / price_for_extra_time) are used. ──
     services: list[VoucherServiceItem] | None = Field(

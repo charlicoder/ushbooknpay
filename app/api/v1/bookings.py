@@ -518,6 +518,11 @@ async def create_booking(
         if hasattr(body.booking_type, "value")
         else str(body.booking_type or "branch_service")
     )
+    # The bookings.booking_type CHECK constraint only allows the canonical values;
+    # map legacy aliases ("home" / "branch") sent by older clients.
+    booking_type_str = {"home": "home_service", "branch": "branch_service"}.get(
+        booking_type_str.strip().lower(), booking_type_str.strip().lower()
+    ) or "branch_service"
 
     # ── Detect loyalty redemption booking ─────────────────────────────
     is_loyalty_booking = (
@@ -982,6 +987,12 @@ async def create_booking(
         body.branch_address
         or (body.branch_data.get("branch_address") or body.branch_data.get("address") if body.branch_data else "")
     )
+    _is_home_booking = booking_type_str == "home_service"
+    if _is_home_booking:
+        # Home service bookings are not tied to a branch: store "Home Service" instead of the
+        # therapist's branch name so lists / invoices / events show the right location.
+        branch_name = "Home Service"
+        branch_address = branch_address or "Home Service"
     branch_data = {
         "id": str(body.branch_id) if body.branch_id else "",
         "name": branch_name,
@@ -990,6 +1001,9 @@ async def create_booking(
         "branch_address": branch_address,
         **(body.branch_data or {}),
     }
+    if _is_home_booking:
+        branch_data["name"] = branch_name
+        branch_data["branch_name"] = branch_name
 
     therapist_name = (
         body.therapist_name

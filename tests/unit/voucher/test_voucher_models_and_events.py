@@ -166,8 +166,8 @@ def test_create_voucher_request_with_sender_and_payment_data():
     assert req.created_by == created_by
     assert req.payment_id == "100624710000000255"
     assert req.payment_data == {"invoiceId": "100624710000000255", "provider": "myfatoorah"}
-    assert req.payment_provider == "MyFatoorah"
-    assert req.payment_through == "desk"
+    assert req.payment_provider == "myfatoorah"
+    assert req.payment_through == "ushdesk"
     assert req.status == "active"
     assert req.expire_date == datetime(2026, 12, 31, tzinfo=timezone.utc)
 
@@ -484,7 +484,7 @@ def test_create_voucher_empty_booking_id_and_lowercase_payment_provider():
         payment_through="ushspa",
     )
     assert req.booking_id is None
-    assert req.payment_provider == "DirectLink"
+    assert req.payment_provider == "myfatoorah"
     assert req.payment_through == "ushspa"
 
 
@@ -534,26 +534,26 @@ def test_payment_provider_and_through_normalisation():
     """Verify provider and channel case-insensitivity and alias normalization."""
     from app.voucher.domain.value_objects import VoucherPaymentProvider, VoucherPaymentThrough
 
-    assert VoucherPaymentProvider.normalise("directlink") == "DirectLink"
-    assert VoucherPaymentProvider.normalise("DIRECTLINK") == "DirectLink"
-    assert VoucherPaymentProvider.normalise("direct_link") == "DirectLink"
-    assert VoucherPaymentProvider.normalise("direct-link") == "DirectLink"
-    assert VoucherPaymentProvider.normalise("myfatoorah") == "MyFatoorah"
-    assert VoucherPaymentProvider.normalise("myfatora") == "MyFatoorah"
-    assert VoucherPaymentProvider.normalise("fatoorah") == "MyFatoorah"
-    assert VoucherPaymentProvider.normalise("deema") == "Deema"
-    assert VoucherPaymentProvider.normalise("other") == "Other"
+    assert VoucherPaymentProvider.normalise("directlink") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("DIRECTLINK") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("direct_link") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("direct-link") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("myfatoorah") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("myfatora") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("fatoorah") == "myfatoorah"
+    assert VoucherPaymentProvider.normalise("deema") == "tap"
+    assert VoucherPaymentProvider.normalise("other") == "other"
     assert VoucherPaymentProvider.normalise("") is None
     assert VoucherPaymentProvider.normalise(None) is None
 
     assert VoucherPaymentThrough.normalise("ushspa") == "ushspa"
     assert VoucherPaymentThrough.normalise("USHSPA") == "ushspa"
     assert VoucherPaymentThrough.normalise("app") == "ushspa"
-    assert VoucherPaymentThrough.normalise("web") == "ushspa"
-    assert VoucherPaymentThrough.normalise("desk") == "desk"
-    assert VoucherPaymentThrough.normalise("DESK") == "desk"
-    assert VoucherPaymentThrough.normalise("pos") == "desk"
-    assert VoucherPaymentThrough.normalise("reception") == "desk"
+    assert VoucherPaymentThrough.normalise("web") == "ushweb"
+    assert VoucherPaymentThrough.normalise("desk") == "ushdesk"
+    assert VoucherPaymentThrough.normalise("DESK") == "ushdesk"
+    assert VoucherPaymentThrough.normalise("pos") == "ushdesk"
+    assert VoucherPaymentThrough.normalise("reception") == "ushdesk"
     assert VoucherPaymentThrough.normalise("") is None
     assert VoucherPaymentThrough.normalise(None) is None
 
@@ -576,8 +576,8 @@ def test_update_voucher_status_empty_strings_and_normalisation():
     assert req.payment_id is None
     assert req.payment_url is None
     assert req.payment_data is None
-    assert req.payment_provider == "DirectLink"
-    assert req.payment_through == "desk"
+    assert req.payment_provider == "myfatoorah"
+    assert req.payment_through == "ushdesk"
 
 
 def test_validation_exception_handler_serializes_value_error_without_crashing():

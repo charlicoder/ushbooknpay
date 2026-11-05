@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 from app.booking.domain.services_snapshot import MAX_SERVICES_PER_BOOKING
-from app.booking.domain.sessions import MAX_SESSIONS_PER_BOOKING
+from app.booking.domain.sessions import MAX_PACKAGE_SESSIONS_PER_BOOKING, MAX_SESSIONS_PER_BOOKING
 from app.booking.domain.value_objects import (
     BookingPaymentGateway,
     BookingPaymentProvider,
@@ -86,9 +86,12 @@ class BookingServiceItem(BaseModel):
         default=None, alias="arrangementPriceInPoints", ge=0
     )
 
+    # Set when this service is a component of a packaged service booked by its parts.
+    package_id: uuid.UUID | None = Field(default=None, alias="packageId")
+
     model_config = {"populate_by_name": True, "extra": "ignore"}
 
-    @field_validator("service_id", "service_arrangement_id", mode="before")
+    @field_validator("service_id", "service_arrangement_id", "package_id", mode="before")
     @classmethod
     def _empty_uuid_to_none(cls, v: Any) -> Any:
         if v == "" or (isinstance(v, str) and not v.strip()):
@@ -283,7 +286,7 @@ class CreateBookingRequest(BaseModel):
     sessions: list[BookingSessionItem] | None = Field(
         default=None,
         min_length=1,
-        max_length=MAX_SESSIONS_PER_BOOKING,
+        max_length=MAX_PACKAGE_SESSIONS_PER_BOOKING,  # >3 only allowed for package bookings (planner enforces)
         description=(
             "Sessions of this booking (max 3). All sessions share the booking appointment_date "
             "and must not overlap."
@@ -854,7 +857,7 @@ class UpdateBookingRequest(BaseModel):
     sessions: list[BookingSessionItem] | None = Field(
         default=None,
         min_length=1,
-        max_length=MAX_SESSIONS_PER_BOOKING,
+        max_length=MAX_PACKAGE_SESSIONS_PER_BOOKING,  # >3 only allowed for package bookings (planner enforces)
         description=(
             "Replace the full list of sessions (max 3). Totals, legacy mirror columns and the "
             "appointment cache are recomputed from it. All sessions share the booking date."

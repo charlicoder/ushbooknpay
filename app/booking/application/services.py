@@ -51,6 +51,7 @@ from app.booking.domain.services_snapshot import (
 )
 from app.booking.domain.state_machine import BookingStateMachine
 from app.booking.domain.sessions import (
+    MAX_PACKAGE_SESSIONS_PER_BOOKING,
     MAX_SESSIONS_PER_BOOKING,
     cache_payload_for,
     cache_sessions_payload,
@@ -928,9 +929,9 @@ class BookingService:
 
         # ── Replace all sessions (multi-session) ─────────────────────────
         if sessions is not None:
-            if not sessions or len(sessions) > MAX_SESSIONS_PER_BOOKING:
+            if not sessions or len(sessions) > MAX_PACKAGE_SESSIONS_PER_BOOKING:
                 raise ValidationError(
-                    f"A booking must contain between 1 and {MAX_SESSIONS_PER_BOOKING} sessions."
+                    f"A booking must contain between 1 and {MAX_PACKAGE_SESSIONS_PER_BOOKING} sessions."
                 )
             for sess in sessions:
                 if _remain_parked:
@@ -940,8 +941,18 @@ class BookingService:
                     if await self._repo.check_therapist_overlap(
                         uuid.UUID(str(t_id)), s_start, s_end, exclude_booking_id=booking.id
                     ):
+                        clash = await self._repo.find_therapist_overlap(
+                            uuid.UUID(str(t_id)), s_start, s_end, exclude_booking_id=booking.id
+                        )
+                        t_name = (
+                            (sess.get("therapist_data") or {}).get("name")
+                            or (sess.get("therapist_data") or {}).get("therapist_name")
+                            or f"Therapist {t_id}"
+                        )
                         raise DoubleBookingError(
-                            f"Therapist {t_id} is already booked for {s_start.isoformat()}.",
+                            f"{t_name} is already booked between {to_local_tz(s_start).strftime('%H:%M')} and "
+                            f"{to_local_tz(s_end).strftime('%H:%M')} (booking {getattr(clash, 'booking_number', None) or 'another booking'}). "
+                            "Choose a different time or therapist for this session.",
                             code="DOUBLE_BOOKING",
                         )
             mirror = legacy_mirror(sessions)
@@ -1023,6 +1034,13 @@ class BookingService:
         target_addons_dur = addons_duration if isinstance(addons_duration, int) else (raw_addons_dur if isinstance(raw_addons_dur, int) else 0)
         eff_total_duration = total_duration if isinstance(total_duration, int) else (booking.duration_minutes + target_extra + target_addons_dur)
         target_end = target_start + timedelta(minutes=eff_total_duration)
+        if sessions is not None:
+            # Sessions were just validated per session (each therapist is only blocked for the
+            # sessions he/she serves) and the booking window mirrored from them above. Do not
+            # re-check the whole booking span against the primary therapist: that raised false
+            # double-bookings for the gaps between sessions served by other therapists.
+            target_start = to_local_tz(booking.appointment_start)
+            target_end = to_local_tz(booking.appointment_end)
 
         if (
             therapist_id is not None
@@ -1034,7 +1052,7 @@ class BookingService:
         ):
             # Check overlap against other bookings for all assigned therapists
             for assigned_tid in filter(None, (target_therapist_id, target_secondary_therapist_id)):
-                if _remain_parked:
+                if _remain_parked or sessions is not None:
                     break
                 is_conflicting = await self._repo.check_therapist_overlap(
                     assigned_tid,

@@ -179,17 +179,17 @@ def test_payment_provider_enum_values():
     """Verify PaymentProvider enum values and normalise helper."""
     from app.payment.domain.value_objects import PaymentProvider
 
-    assert PaymentProvider.MYFATOORAH.value == "MyFatoorah"
-    assert PaymentProvider.DIRECTLINK.value == "DirectLink"
-    assert PaymentProvider.DEEMA.value == "Deema"
-    assert PaymentProvider.OTHER.value == "Other"
+    assert PaymentProvider.MYFATOORAH.value == "myfatoorah"
+    assert PaymentProvider.DIRECTLINK.value == "myfatoorah"
+    assert PaymentProvider.DEEMA.value == "tap"
+    assert PaymentProvider.OTHER.value == "other"
 
     # Normalise
     assert PaymentProvider.normalise("myfatoorah") == PaymentProvider.MYFATOORAH
     assert PaymentProvider.normalise("myfatora") == PaymentProvider.MYFATOORAH
     assert PaymentProvider.normalise("directlink") == PaymentProvider.DIRECTLINK
     assert PaymentProvider.normalise("deema") == PaymentProvider.DEEMA
-    assert PaymentProvider.normalise("tap") == PaymentProvider.OTHER
+    assert PaymentProvider.normalise("tap") == PaymentProvider.TAP
 
 
 def test_payment_through_enum_values():
@@ -197,7 +197,7 @@ def test_payment_through_enum_values():
     from app.payment.domain.value_objects import PaymentThrough
 
     assert PaymentThrough.USHSPA.value == "ushspa"
-    assert PaymentThrough.DESK.value == "desk"
+    assert PaymentThrough.DESK.value == "ushdesk"
     assert PaymentThrough.OTHER.value == "other"
 
     assert PaymentThrough.normalise("ushspa") == PaymentThrough.USHSPA

@@ -90,7 +90,7 @@ def test_create_booking_request_schema():
     }
     req = CreateBookingRequest(**req_dict)
     assert req.payment_id == "PAY-12345"
-    assert req.payment_provider == "MyFatoorah"
+    assert req.payment_provider == "myfatoorah"
     assert req.payment_gateway == "KNET"
     assert req.payment_through == "ushspa"
     assert req.payment_method == "KNET"
@@ -114,7 +114,7 @@ def test_update_booking_request_schema():
         created_by_user_data={"id": "user-456", "name": "Desk Staff"},
     )
     assert req.payment_id == "PAY-999"
-    assert req.payment_provider == "PaymentLink"
+    assert req.payment_provider == "myfatoorah"
     assert req.payment_gateway == "TAP"
     assert req.payment_through == "ushdesk"
     assert req.payment_method == "VISA"
@@ -137,7 +137,7 @@ def test_update_booking_status_request_schema():
         payment_url="https://pay.link/done",
     )
     assert req.payment_id == "PAY-CONFIRM"
-    assert req.payment_provider == "Deema"
+    assert req.payment_provider == "tap"
     assert req.payment_gateway == "Other"
     assert req.payment_through == "other"
     assert req.payment_method == "Split"
@@ -338,7 +338,7 @@ async def test_create_booking_endpoint_passes_payment_and_user_fields():
     # Verify kwargs passed to service
     _, kwargs = mock_service.create_booking.call_args
     assert kwargs["payment_id"] == "PAY-INVOICE-123"
-    assert kwargs["payment_provider"] == "MyFatoorah"
+    assert kwargs["payment_provider"] == "myfatoorah"
     assert kwargs["payment_gateway"] == "KNET"
     assert kwargs["payment_through"] == "ushspa"
     assert kwargs["payment_method"] == "KNET"
@@ -443,7 +443,7 @@ async def test_update_booking_endpoint_passes_payment_and_user_fields():
     # Verify kwargs passed to service
     _, kwargs = mock_service.update_booking.call_args
     assert kwargs["payment_id"] == "PAY-UPDATED-555"
-    assert kwargs["payment_provider"] == "PaymentLink"
+    assert kwargs["payment_provider"] == "myfatoorah"
     assert kwargs["payment_gateway"] == "TAP"
     assert kwargs["payment_through"] == "ushdesk"
     assert kwargs["payment_method"] == "KNET"

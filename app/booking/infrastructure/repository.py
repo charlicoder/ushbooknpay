@@ -425,6 +425,18 @@ class BookingRepository:
 
         Called during booking creation inside a locked transaction to prevent double-booking.
         """
+        return (
+            await self.find_therapist_overlap(therapist_id, start, end, exclude_booking_id=exclude_booking_id)
+        ) is not None
+
+    async def find_therapist_overlap(
+        self,
+        therapist_id: uuid.UUID,
+        start: datetime,
+        end: datetime,
+        exclude_booking_id: uuid.UUID | None = None,
+    ) -> "Booking | None":
+        """Return the first active booking overlapping [start, end) for the therapist, else None."""
         stmt = select(Booking).where(
             and_(
                 _therapist_involved([therapist_id]),
@@ -443,8 +455,8 @@ class BookingRepository:
         result = await self._session.execute(stmt)
         for candidate in result.scalars().all():
             if _overlaps_per_session(candidate, therapist_id, start, end):
-                return True
-        return False
+                return candidate
+        return None
 
     async def get_busy_therapist_ids_in_range(
         self,

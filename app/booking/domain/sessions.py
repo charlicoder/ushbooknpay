@@ -32,6 +32,8 @@ from app.booking.domain.services_snapshot import (
 from app.common.utils import to_local_tz
 
 MAX_SESSIONS_PER_BOOKING = 3
+# Bookings that include a package booked by its parts may use more sessions.
+MAX_PACKAGE_SESSIONS_PER_BOOKING = 5
 
 
 class SessionValidationError(ValueError):
