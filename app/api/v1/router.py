@@ -15,6 +15,7 @@ from app.api.v1 import (
     payments,
     refunds,
     therapist_analytics,
+    workforce_internal,
 )
 from app.gifts.api.router import router as gifts_router
 from app.loyalty.api.router import router as loyalty_router
@@ -32,6 +33,7 @@ api_router.include_router(availability.router)
 api_router.include_router(bookings.router)
 api_router.include_router(customer_analytics.router)
 api_router.include_router(therapist_analytics.router)
+api_router.include_router(workforce_internal.router)
 api_router.include_router(payments.router)
 api_router.include_router(refunds.router)
 api_router.include_router(payment_links_router)
