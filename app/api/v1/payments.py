@@ -568,6 +568,17 @@ async def create_payment(
     )
     service_data = body.service_data or (booking.service_data if booking else None) or None
     branch_data = body.branch_data or (booking.branch_data if booking else None) or None
+    if booking is not None and str(getattr(booking, "booking_type", "") or "") == "home_service" and booking.branch_data:
+        # Home service is not tied to a branch: keep the booking's "Home Service" snapshot
+        branch_data = booking.branch_data
+        branch_id = None
+    resolved_branch_name = None
+    if isinstance(branch_data, dict):
+        resolved_branch_name = str(branch_data.get("name") or branch_data.get("branch_name") or "").strip() or None
+    if not resolved_branch_name and booking is not None:
+        resolved_branch_name = str(getattr(booking, "branch_name", "") or "").strip() or None
+    if not resolved_branch_name and booking is not None and str(getattr(booking, "booking_type", "") or "") == "home_service":
+        resolved_branch_name = "Home Service"
     service_arrangement_data = body.service_arrangement_data or (
         booking.service_arrangement_data if booking else None
     ) or None
@@ -726,6 +737,7 @@ async def create_payment(
         service_data=service_data,
         branch_id=branch_id,
         branch_data=branch_data,
+        branch_name=resolved_branch_name,
         service_arrangement_id=service_arrangement_id,
         service_arrangement_data=service_arrangement_data,
         addons=addons,
@@ -902,6 +914,7 @@ async def list_payments(
     sender_id: uuid.UUID | None = Query(default=None),
     service_id: uuid.UUID | None = Query(default=None),
     branch_id: uuid.UUID | None = Query(default=None),
+    branch_name_filter: str | None = Query(default=None, alias="branch_name"),
     recipient_id: uuid.UUID | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     payment_provider_filter: str | None = Query(default=None, alias="payment_provider"),
@@ -941,8 +954,36 @@ async def list_payments(
         conditions.append(Payment.sender_id == (uuid.UUID(str(sender_id)) if isinstance(sender_id, str) else sender_id))
     if service_id and isinstance(service_id, (uuid.UUID, str)):
         conditions.append(Payment.service_id == (uuid.UUID(str(service_id)) if isinstance(service_id, str) else service_id))
+    branch_uuid: uuid.UUID | None = None
     if branch_id and isinstance(branch_id, (uuid.UUID, str)):
-        conditions.append(Payment.branch_id == (uuid.UUID(str(branch_id)) if isinstance(branch_id, str) else branch_id))
+        branch_uuid = uuid.UUID(str(branch_id)) if isinstance(branch_id, str) else branch_id
+
+    if branch_uuid and branch_name_filter and isinstance(branch_name_filter, str) and branch_name_filter.strip():
+        bn_norm = branch_name_filter.strip().lower()
+        name_conds = [
+            Payment.branch_id == branch_uuid,
+            func.lower(Payment.branch_name) == bn_norm,
+            func.lower(Payment.branch_data["name"].as_string()) == bn_norm,
+            func.lower(Payment.branch_data["branch_name"].as_string()) == bn_norm,
+        ]
+        if bn_norm in ("home service", "home_service", "home"):
+            name_conds.append(Payment.payment_for == "home_service")
+            name_conds.append(func.lower(Payment.booking_data["booking_type"].as_string()).in_(["home_service", "home"]))
+        conditions.append(or_(*name_conds))
+    elif branch_uuid:
+        conditions.append(Payment.branch_id == branch_uuid)
+    elif branch_name_filter and isinstance(branch_name_filter, str) and branch_name_filter.strip():
+        # Payments without a branch id (e.g. Home Service) are matched by the branch name snapshot
+        bn_norm = branch_name_filter.strip().lower()
+        name_conds = [
+            func.lower(Payment.branch_name) == bn_norm,
+            func.lower(Payment.branch_data["name"].as_string()) == bn_norm,
+            func.lower(Payment.branch_data["branch_name"].as_string()) == bn_norm,
+        ]
+        if bn_norm in ("home service", "home_service", "home"):
+            name_conds.append(Payment.payment_for == "home_service")
+            name_conds.append(func.lower(Payment.booking_data["booking_type"].as_string()).in_(["home_service", "home"]))
+        conditions.append(or_(*name_conds))
     if recipient_id and isinstance(recipient_id, (uuid.UUID, str)):
         conditions.append(Payment.recipient_id == (uuid.UUID(str(recipient_id)) if isinstance(recipient_id, str) else recipient_id))
     if status_filter and isinstance(status_filter, str):
