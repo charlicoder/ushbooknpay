@@ -140,6 +140,8 @@ class Payment(Base):
     voucher_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     product_order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # Course subscription purchase (payment_for='course_subscription')
+    course_subscription_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     product_order_items: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # list of ordered items
 
     # ── Invoice & Transaction Identifiers ─────────────────────────────────
@@ -214,6 +216,7 @@ class Payment(Base):
         Index("ix_payments_booking_id", "booking_id"),
         Index("ix_payments_voucher_id", "voucher_id"),
         Index("ix_payments_product_order_id", "product_order_id"),
+        Index("ix_payments_course_subscription_id", "course_subscription_id"),
         Index("ix_payments_recipient_id", "recipient_id"),
         Index("ix_payments_status", "status"),
         Index("ix_payments_paid_at", "paid_at"),

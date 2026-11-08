@@ -27,7 +27,7 @@ from sqlalchemy import select, update
 
 from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession, RequireAppToken, USHAuthDep
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
-from app.payment.infrastructure.models import Payment
+from app.payment.infrastructure.models import Payment, PaymentStatusHistory
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
 from app.booking.application.multi_service import ServiceValidationError, resolve_service_entries
 from app.booking.application.session_planner import (
@@ -89,6 +89,14 @@ from app.core.exceptions import (
     ValidationError as CoreValidationError,
 )
 from app.core.logging import get_logger
+from app.course.domain.value_objects import (
+    COURSE_BOOKING_TYPE,
+    COURSE_EXTRAS_NOT_ALLOWED,
+    COURSE_PAYMENT_METHOD,
+    COURSE_PAYMENT_PROVIDER,
+    COURSE_PAYMENT_TYPE,
+    CourseError,
+)
 
 logger = get_logger(__name__)
 
@@ -177,6 +185,23 @@ def _therapist_ids_out(b: object) -> list[str]:
     return ids
 
 
+def _course_subscription_id_out(b: object) -> str | None:
+    raw = getattr(b, "course_subscription_id", None)
+    return str(raw) if isinstance(raw, (str, uuid.UUID)) and raw else None
+
+
+def _course_data_out(b: object) -> dict | None:
+    raw = getattr(b, "course_data", None)
+    return raw if isinstance(raw, dict) else None
+
+
+def _course_http_error(exc: CourseError) -> HTTPException:
+    """Keep the course error code in the standard error envelope (HTTPException handler)."""
+    http_exc = HTTPException(status_code=int(exc.status_code), detail=exc.message)
+    http_exc.code = exc.code  # type: ignore[attr-defined]
+    return http_exc
+
+
 def _booking_to_list_item(b: object) -> BookingListItem:
     """Map ORM Booking to BookingListItem."""
     b_type = getattr(b, "booking_type", "branch")
@@ -232,6 +257,8 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         reward_id=str(b.reward_id) if getattr(b, "reward_id", None) and isinstance(getattr(b, "reward_id", None), (str, uuid.UUID)) else None,
         voucher_id=str(b.voucher_id) if getattr(b, "voucher_id", None) and isinstance(getattr(b, "voucher_id", None), (str, uuid.UUID)) else None,
         voucher_data=getattr(b, "voucher_data", None) if isinstance(getattr(b, "voucher_data", None), dict) else None,
+        course_subscription_id=_course_subscription_id_out(b),
+        course_data=_course_data_out(b),
         created_at=b.created_at,
         created_by_user=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
         created_by_user_data=getattr(b, "created_by_user_data", None) if isinstance(getattr(b, "created_by_user_data", None), dict) else None,
@@ -349,6 +376,8 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         reward_id=str(b.reward_id) if getattr(b, "reward_id", None) and isinstance(getattr(b, "reward_id", None), (str, uuid.UUID)) else None,
         voucher_id=str(b.voucher_id) if getattr(b, "voucher_id", None) and isinstance(getattr(b, "voucher_id", None), (str, uuid.UUID)) else None,
         voucher_data=getattr(b, "voucher_data", None) if isinstance(getattr(b, "voucher_data", None), dict) else None,
+        course_subscription_id=_course_subscription_id_out(b),
+        course_data=_course_data_out(b),
         created_at=b.created_at,
         updated_at=b.updated_at,
         created_by_user=_safe_str(getattr(b, "created_by_user", None) or getattr(b, "created_by", None)),
@@ -542,7 +571,27 @@ async def create_booking(
     else:
         payment_type_str = "service"
 
-    if is_loyalty_booking or booking_type_str == "loyalty" or body.loyalty_data is not None:
+    # ── Course redemption (contract E): the server forces the course semantics ──
+    is_course_redemption = getattr(body, "course_subscription_id", None) is not None
+    if is_course_redemption:
+        if not current_user.has_permission("course_subscriptions.redeem"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "PERMISSION_DENIED",
+                    "message": "Permission 'course_subscriptions.redeem' is required.",
+                    "required": "course_subscriptions.redeem",
+                },
+            )
+        if body.reward_id is not None or body.voucher_id is not None or body.loyalty_data:
+            raise _course_http_error(
+                CourseError(COURSE_EXTRAS_NOT_ALLOWED, "A course session cannot be combined with rewards or vouchers.")
+            )
+        booking_type_str = COURSE_BOOKING_TYPE
+        payment_type_str = COURSE_PAYMENT_TYPE
+        is_loyalty_booking = False
+
+    if not is_course_redemption and (is_loyalty_booking or booking_type_str == "loyalty" or body.loyalty_data is not None):
         if booking_type_str in ("branch_service", "branch", ""):
             booking_type_str = "loyalty"
         request_source = "ushspa"
@@ -647,6 +696,9 @@ async def create_booking(
 
     final_status = status_str or BookingStatus.REQUESTED.value
     final_payment_status = pstatus_str or PaymentStatus.NOT_INITIATED.value
+    if is_course_redemption:
+        final_status = BookingStatus.CONFIRMED.value
+        final_payment_status = PaymentStatus.SUCCESS.value
 
     service_arrangement_id = str(body.service_arrangement_id) if body.service_arrangement_id else None
 
@@ -689,7 +741,7 @@ async def create_booking(
         required_therapists = 1
         service_arrangement_id = _first_s.get("service_arrangement_id") or service_arrangement_id
     else:
-        if booking_type_str in ("branch_service", "branch", "loyalty") and service_arrangement_id:
+        if booking_type_str in ("branch_service", "branch", "loyalty", COURSE_BOOKING_TYPE) and service_arrangement_id:
             # ── Branch booking: arrangement-level availability check ─────────
             if not therapist_id_str and not therapist_ids:
                 raise HTTPException(
@@ -817,7 +869,7 @@ async def create_booking(
                 )
 
     # ── 2b. Multi-service: remaining arrangements, same therapist & window ─
-    if _session_plan is None and booking_type_str in ("branch_service", "branch", "loyalty") and selected_therapist_id:
+    if _session_plan is None and booking_type_str in ("branch_service", "branch", "loyalty", COURSE_BOOKING_TYPE) and selected_therapist_id:
         extra_arrangement_ids = [
             a for a in distinct_arrangement_ids(service_entries) if a != service_arrangement_id
         ]
@@ -959,6 +1011,47 @@ async def create_booking(
             total=Decimal(tot_price),
             currency=curr,
         )
+
+    # Course sessions are prepaid: zero price, no gateway, never loyalty-eligible.
+    course_arrangement_type: str | None = None
+    course_payment_fields: dict[str, Any] = {}
+    if is_course_redemption:
+        pricing = PricingBreakdown(
+            arrangement_price=Decimal("0.000"),
+            price_for_extra_minutes=Decimal("0.000"),
+            addon_price=Decimal("0.000"),
+            discount=Decimal("0.000"),
+            tax=Decimal("0.000"),
+            fees=Decimal("0.000"),
+            total=Decimal("0.000"),
+            currency=pricing.currency,
+        )
+        course_payment_fields = {
+            "payment_id": None,
+            "payment_provider": COURSE_PAYMENT_PROVIDER,
+            "payment_gateway": None,
+            "payment_through": body.payment_through or "ushdesk",
+            "payment_method": COURSE_PAYMENT_METHOD,
+            "payment_url": None,
+        }
+        for _entry in service_entries:
+            _entry["service_data"] = {
+                **(_entry.get("service_data") or {}),
+                "is_eligible_for_loyalty": False,
+                "loyalty_points": 0,
+            }
+        # Room type comes from ushauth (not from the client-supplied snapshot)
+        _course_arr_id = (
+            (service_entries[0].get("service_arrangement_id") if service_entries else None)
+            or service_arrangement_id
+        )
+        if _course_arr_id:
+            try:
+                _arr_raw = await ushauth.get_service_arrangement(str(_course_arr_id))
+                _arr = _arr_raw.get("data", _arr_raw) if isinstance(_arr_raw, dict) else {}
+                course_arrangement_type = str(_arr.get("arrangement_type") or "") or None
+            except Exception as exc:
+                logger.warning("course_arrangement_lookup_failed", arrangement_id=str(_course_arr_id), error=str(exc))
 
     addon_records = []
     if body.selected_addons:
@@ -1119,12 +1212,12 @@ async def create_booking(
             addons=addon_records,
             sessions=_session_plan.sessions if _session_plan is not None else None,
             customer_notes=body.customer_notes or body.customer_message or None,
-            payment_id=body.payment_id,
-            payment_provider=body.payment_provider,
-            payment_gateway=body.payment_gateway,
-            payment_through=body.payment_through,
-            payment_method=body.payment_method,
-            payment_url=body.payment_url,
+            payment_id=course_payment_fields.get("payment_id", body.payment_id),
+            payment_provider=course_payment_fields.get("payment_provider", body.payment_provider),
+            payment_gateway=course_payment_fields.get("payment_gateway", body.payment_gateway),
+            payment_through=course_payment_fields.get("payment_through", body.payment_through),
+            payment_method=course_payment_fields.get("payment_method", body.payment_method),
+            payment_url=course_payment_fields.get("payment_url", body.payment_url),
             payment_data=merged_payment_data,
             idempotency_key=idempotency_key,
             booking_type=booking_type_str,
@@ -1140,6 +1233,14 @@ async def create_booking(
             created_by_user_data=created_by_user_data,
             created_by=created_by,
             source=request_source,
+            **(
+                {
+                    "course_subscription_id": body.course_subscription_id,
+                    "course_arrangement_type": course_arrangement_type,
+                }
+                if is_course_redemption
+                else {}
+            ),
         )
 
         # Link any existing Payment record to this new booking
@@ -1169,6 +1270,8 @@ async def create_booking(
             status_code=status.HTTP_409_CONFLICT,
             detail=exc.message,
         )
+    except CourseError as exc:
+        raise _course_http_error(exc)
     except USHBaseError as exc:
         raise HTTPException(
             status_code=exc.status_code,
@@ -1220,6 +1323,7 @@ async def create_booking(
     if (
         not inv_num_res
         and not is_voucher_redemption
+        and not is_course_redemption
         and (_booking_pstatus in (PaymentStatus.SUCCESS.value, "success", "paid") or is_loyalty)
     ):
         from app.integrations.ushanr_client import UshanrClient
@@ -1265,7 +1369,7 @@ async def create_booking(
             await ushanr_c.aclose()
 
     # ── For loyalty bookings: create payment record with zero amount and connect invoice ──
-    if is_loyalty:
+    if is_loyalty and not is_course_redemption:
         try:
             p_stmt = select(Payment).where(Payment.booking_id == booking.id)
             p_res = await booking_service._session.execute(p_stmt)
@@ -1449,6 +1553,8 @@ async def create_booking(
             reward_id=str(booking.reward_id) if getattr(booking, "reward_id", None) else None,
             voucher_id=str(booking.voucher_id) if getattr(booking, "voucher_id", None) else None,
             voucher_data=getattr(booking, "voucher_data", None),
+            course_subscription_id=_course_subscription_id_out(booking),
+            course_data=_course_data_out(booking),
             created_by_user=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),
             created_by_user_data=getattr(booking, "created_by_user_data", None) if isinstance(getattr(booking, "created_by_user_data", None), dict) else None,
             created_by=_safe_str(getattr(booking, "created_by_user", None) or getattr(booking, "created_by", None)),

@@ -109,6 +109,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.logging import get_logger
+from app.course.domain.rules import is_course_booking
 from app.events.contracts import (
     BookingCancelledEvent,
     BookingConfirmedEvent,
@@ -297,6 +298,15 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
     p_type = getattr(booking, "payment_type", "service")
     payment_type_str = p_type if isinstance(p_type, str) else "service"
 
+    _raw_course_data = getattr(booking, "course_data", None)
+    _course_data: dict[str, Any] = _raw_course_data if isinstance(_raw_course_data, dict) else {}
+    _is_course_redemption = is_course_booking(booking)
+    if _is_course_redemption:
+        is_eligible_for_loyalty = False
+        loyalty_points = 0
+        service_dict["is_eligible_for_loyalty"] = False
+        service_dict["loyalty_points"] = 0
+
     return {
         "booking_id": str(booking.id),
         "booking_number": getattr(booking, "booking_number", None) or "",
@@ -389,6 +399,11 @@ def _build_booking_event_data(booking: Booking) -> dict[str, Any]:
         "reward_id": str(booking.reward_id) if getattr(booking, "reward_id", None) else "",
         "voucher_id": str(booking.voucher_id) if getattr(booking, "voucher_id", None) else "",
         "voucher_data": booking.voucher_data or {},
+        # Course redemption (contract E): consumers skip money actions when true
+        "course_subscription_id": str(getattr(booking, "course_subscription_id", None) or ""),
+        "course_subscription_number": str(_course_data.get("subscription_number") or ""),
+        "course_session_number": _course_data.get("session_number"),
+        "is_course_redemption": _is_course_redemption,
         "invoice_number": str(getattr(booking, "invoice_number", None) or ""),
         "payment_number": str((payment_data or {}).get("payment_number") or ""),
     }
@@ -448,12 +463,21 @@ class BookingService:
             return None
         return self._ushauth
 
+    def _course_service(self) -> Any:
+        """Course subscription service bound to this booking transaction."""
+        from app.course.application.services import CourseSubscriptionService
+
+        return CourseSubscriptionService(self._session, self._settings, ushauth_client=self._ushauth)
+
     async def _ensure_booking_loyalty_details(self, booking: Booking) -> None:
         """
         Ensure booking.service_data and service_arrangement_data have the correct
         loyalty_points, price_in_points, and is_eligible_for_loyalty from ushauth
         if they are currently 0 or missing.
         """
+        if is_course_booking(booking):
+            # Course redemption sessions never earn loyalty points — do not refresh
+            return
         b_type = getattr(booking, "booking_type", "branch_service")
         b_type_str = b_type if isinstance(b_type, str) else "branch_service"
         p_type = getattr(booking, "payment_type", "service")
@@ -607,6 +631,8 @@ class BookingService:
         created_by: str | None = None,
         source: str | None = None,
         sessions: list[dict] | None = None,
+        course_subscription_id: uuid.UUID | None = None,
+        course_arrangement_type: str | None = None,
     ) -> Booking:
         """
         Create a new booking.
@@ -650,6 +676,20 @@ class BookingService:
             if existing:
                 logger.info("booking_idempotent_return", booking_id=str(existing.id))
                 return existing
+
+        # ── Course redemption: lock the subscription row and validate (contract E) ─
+        course_sub = None
+        if course_subscription_id is not None:
+            course_sub = await self._course_service().lock_for_booking(
+                course_subscription_id,
+                customer_id=customer_id,
+                services=services,
+                appointment_start=appointment_start,
+                sessions=sessions,
+                addons=addons,
+                extra_minutes=extra_minutes,
+                arrangement_type=course_arrangement_type,
+            )
 
         # ── Double-booking check (with row lock) ─────────────────────────
         # Couple/double bookings occupy two therapists: both must be free.
@@ -732,12 +772,19 @@ class BookingService:
             created_by_user=created_by_user or created_by,
             created_by_user_data=created_by_user_data,
         )
+        if course_sub is not None:
+            booking.course_subscription_id = course_sub.id
 
         # ── Generate booking number (e.g. BOK/2026/10/000001) ─────────────
         booking_date = to_local_tz(appointment_start).date()
         booking.booking_number = await self._repo.generate_booking_number(for_date=booking_date)
 
         booking = await self._repo.create(booking)
+
+        # ── Course redemption: reserve one session in the same transaction ──
+        if course_sub is not None:
+            await self._course_service().reserve(course_sub, booking)
+            await self._repo.update(booking)
 
         # ── Temporary hold (only for unconfirmed branch bookings with a service arrangement; skip for draft) ─
         if sessions and booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.DRAFT.value):
@@ -1339,6 +1386,19 @@ class BookingService:
                         s["appointment_end"] = new_s_en.isoformat()
                 booking.sessions = _stored_sessions
 
+        # ── Course redemption: keep it a plain session; refresh the usage snapshot ──
+        _is_course = is_course_booking(booking)
+        if _is_course:
+            _course_svc = self._course_service()
+            if services is not None or sessions is not None or addons is not None or extra_minutes is not None:
+                await _course_svc.validate_booking_edit(booking)
+            _start_changed = (
+                initial_appointment_start is not None
+                and booking.appointment_start is not None
+                and to_local_tz(booking.appointment_start) != to_local_tz(initial_appointment_start)
+            )
+            await _course_svc.refresh_usage_snapshot(booking, validate_expiry=_start_changed)
+
         # ── Status update & event emission ───────────────────────────────
         if status is not None and BookingStatus(booking.status) != status:
             old_status = BookingStatus(booking.status)
@@ -1370,6 +1430,10 @@ class BookingService:
                 booking.internal_notes = (
                     f"{booking.internal_notes or ''}\n[{utcnow().isoformat()}] Status changed to {status.value} by {source}: {reason}"
                 ).strip()
+
+            if _is_course:
+                # completed / no_show → consume, cancelled / refunded → release (idempotent)
+                await self._course_service().on_booking_status(booking, status.value, reason=reason)
 
             if status in (BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN, BookingStatus.IN_PROGRESS, BookingStatus.CANCELLED, BookingStatus.REFUNDED, BookingStatus.COMPLETED, BookingStatus.PARKED):
                 await self._repo.delete_hold(booking_id)
@@ -1491,6 +1555,9 @@ class BookingService:
         p_type = str(getattr(booking, "payment_type", "") or "").strip().lower()
         p_method = str(getattr(booking, "payment_method", "") or "").strip().lower()
         if b_type == "gift_voucher" or p_type == "gift_voucher" or p_method in ("voucher", "gift_voucher"):
+            return None
+        # Course sessions are prepaid: the course purchase carries the invoice
+        if is_course_booking(booking):
             return None
 
         if booking.invoice_number:
@@ -1752,6 +1819,11 @@ class BookingService:
         await self._repo.update(booking)
         await self._repo.delete_hold(booking_id)
 
+        _is_course = is_course_booking(booking)
+        if _is_course:
+            # Give the session back to the subscription (same transaction, idempotent)
+            await self._course_service().release(booking, reason=reason or "cancelled")
+
         effective_user = change_by_user or cancelled_by
         await self._record_status_change(
             booking,
@@ -1766,6 +1838,9 @@ class BookingService:
 
         is_paid = str(old_payment_status).lower() in ("success", "paid")
         is_refund_req = bool(booking.payment_status == "refund_requested" or is_paid)
+        if _is_course:
+            is_paid = False
+            is_refund_req = False
         fee_decimal = Decimal(str(cancellation_fee or "0.000"))
         calc_refundable = (
             refund_amount
@@ -1793,7 +1868,9 @@ class BookingService:
                     setattr(booking, "refund_id", str(refund_record.id))
             except Exception as exc:
                 logger.warning("ensure_cancellation_refund_failed", error=str(exc))
-        elif not booking.payment_status or str(booking.payment_status).lower() in ("unpaid", "pending", "not_initiated"):
+        elif not _is_course and (
+            not booking.payment_status or str(booking.payment_status).lower() in ("unpaid", "pending", "not_initiated")
+        ):
             # ── Unpaid booking: mark payment as cancelled ─────────────────────
             booking.payment_status = PaymentStatus.CANCELLED.value
             await self._repo.update(booking)
@@ -2280,6 +2357,9 @@ class BookingService:
 
         Payment rows are NOT modified. booking.payment_status is NOT changed.
         """
+        if is_course_booking(booking):
+            # Course sessions are prepaid by the subscription: the session is released instead.
+            return None
         from app.payment.application.refund_lifecycle import (
             RefundLifecycle,
             cancellation_idempotency_key,

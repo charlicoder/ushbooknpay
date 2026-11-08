@@ -100,6 +100,7 @@ class PaymentFor(str, Enum):
     HOME_SERVICE = "home_service"
     GIFT_VOUCHER = "gift_voucher"
     PRODUCT_ITEMS = "product_items"
+    COURSE_SUBSCRIPTION = "course_subscription"
 
     @classmethod
     def normalise(cls, value: str) -> "PaymentFor":
@@ -116,6 +117,8 @@ class PaymentFor(str, Enum):
             "product_items": cls.PRODUCT_ITEMS,
             "products": cls.PRODUCT_ITEMS,
             "product": cls.PRODUCT_ITEMS,
+            "course_subscription": cls.COURSE_SUBSCRIPTION,
+            "course": cls.COURSE_SUBSCRIPTION,
         }
         return mapping.get(v, cls.BRANCH_SERVICE)
 

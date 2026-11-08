@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.booking.infrastructure.models import Booking, BookingStatusHistory, TemporaryHold  # noqa
 from app.core.config import get_settings
 from app.core.database import Base
+from app.course.infrastructure.models import CourseSessionUsage, CourseSubscription  # noqa
 from app.events.outbox.models import OutboxEvent  # noqa
 from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction  # noqa
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory  # noqa

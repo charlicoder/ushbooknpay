@@ -17,6 +17,10 @@ from app.api.v1 import (
     therapist_analytics,
     workforce_internal,
 )
+from app.course.api.router import (
+    list_my_course_subscriptions,
+    router as course_subscriptions_router,
+)
 from app.gifts.api.router import router as gifts_router
 from app.loyalty.api.router import router as loyalty_router
 from app.payment_links.api.router import router as payment_links_router
@@ -41,6 +45,7 @@ api_router.include_router(vouchers_router)
 api_router.include_router(shop_router)
 api_router.include_router(gifts_router)
 api_router.include_router(loyalty_router)
+api_router.include_router(course_subscriptions_router)
 
 api_router.add_api_route(
     "/my-bookings/",
@@ -87,6 +92,22 @@ api_router.add_api_route(
     list_my_sent_vouchers,
     methods=["GET"],
     tags=["Gift Vouchers"],
+    include_in_schema=False,
+)
+
+api_router.add_api_route(
+    "/my-course-subscriptions/",
+    list_my_course_subscriptions,
+    methods=["GET"],
+    tags=["Course Subscriptions"],
+    summary="List my course subscriptions (private, read-only)",
+    description="Customer app: course subscriptions of the authenticated customer. Requires user token.",
+)
+api_router.add_api_route(
+    "/my-course-subscriptions",
+    list_my_course_subscriptions,
+    methods=["GET"],
+    tags=["Course Subscriptions"],
     include_in_schema=False,
 )
 

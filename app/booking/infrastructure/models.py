@@ -268,6 +268,18 @@ class Booking(Base):
         JSONB, nullable=True, default=None
     )
 
+    # ── Course Subscription ───────────────────────────────────────────────
+    # Populated for booking_type='course_redemption'. course_subscription_id is a
+    # plain UUID (no FK, like voucher_id); course_data is a snapshot:
+    # {subscription_id, subscription_number, course_id, course_code, course_name,
+    #  session_number, total_sessions}
+    course_subscription_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, default=None
+    )
+    course_data: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
+
     # ── Audit ─────────────────────────────────────────────────────────────
     # created_by_user stores the User UUID (sub) of the API caller — set once at
     # creation and never updated. Nullable so legacy rows are backward-compat.
@@ -330,6 +342,8 @@ class Booking(Base):
         Index("ix_bookings_created_by_user", "created_by_user"),
         # Fast lookup by invoice_number
         Index("ix_bookings_invoice_number", "invoice_number"),
+        # Fast lookup of course redemption bookings
+        Index("ix_bookings_course_subscription_id", "course_subscription_id"),
         # Containment lookups on the services array (services @> '[{"service_id": ...}]')
         Index(
             "ix_bookings_services_gin",
@@ -346,12 +360,13 @@ class Booking(Base):
         UniqueConstraint("idempotency_key", name="uq_bookings_idempotency_key"),
         # Enforce valid booking_type values
         CheckConstraint(
-            "booking_type IN ('branch_service', 'home_service', 'loyalty', 'gift_voucher')",
+            "booking_type IN ('branch_service', 'home_service', 'loyalty', 'gift_voucher', "
+            "'course_redemption')",
             name="ck_bookings_booking_type",
         ),
         # Enforce valid payment_type values
         CheckConstraint(
-            "payment_type IN ('service', 'gift_voucher', 'rewarded')",
+            "payment_type IN ('service', 'gift_voucher', 'rewarded', 'course_subscription')",
             name="ck_bookings_payment_type",
         ),
         # Prevent double-booking for therapist using PostgreSQL EXCLUDE

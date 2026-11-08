@@ -183,10 +183,55 @@ def _extract_reschedule_count(v: Any) -> int:
     return rc if isinstance(rc, int) else 0
 
 
+def _extract_created_by_details(v: Any) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    name = getattr(v, "created_by_name", None)
+    if not isinstance(name, str):
+        name = None
+    role = getattr(v, "created_by_role", None)
+    if not isinstance(role, str):
+        role = None
+    user_data = getattr(v, "created_by_user_data", None)
+    if not isinstance(user_data, dict):
+        user_data = None
+
+    sdata = getattr(v, "sender_data", None)
+    sdata = sdata if isinstance(sdata, dict) else {}
+    sender_name = sdata.get("name") or getattr(v, "gift_from", None)
+    if not isinstance(sender_name, str):
+        sender_name = None
+
+    payment_through = getattr(v, "payment_through", None)
+    payment_through = payment_through if isinstance(payment_through, str) else None
+
+    hist = getattr(v, "update_history", None)
+    hist = hist if isinstance(hist, list) else []
+
+    if not name:
+        if payment_through and payment_through.lower() in ("ushspa", "ushweb", "online", "app", "web"):
+            name = sender_name or "Customer"
+            role = role or "Customer"
+        elif hist and len(hist) > 0 and isinstance(hist[0], dict):
+            h_name = hist[0].get("changed_by_name") or hist[0].get("performed_by_name")
+            if isinstance(h_name, str):
+                name = h_name
+            h_role = hist[0].get("changed_by_role") or hist[0].get("performed_by_role")
+            if isinstance(h_role, str):
+                role = role or h_role
+
+    if not role:
+        if payment_through and payment_through.lower() in ("ushspa", "ushweb", "online", "app", "web"):
+            role = "Customer"
+        elif name:
+            role = "Staff"
+
+    return name, role, user_data
+
+
 def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
     """Map ORM GiftVoucher → full GiftVoucherResponse."""
     delivery_status = _extract_delivery_status(v)
     label_en, label_ar = _delivery_labels(delivery_status)
+    cb_name, cb_role, cb_user_data = _extract_created_by_details(v)
     return GiftVoucherResponse(
         id=v.id,
         voucher_number=_extract_voucher_number(v),
@@ -218,6 +263,9 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         recipient_id=v.recipient_id,
         recipient_data=v.recipient_data or {},
         created_by=v.created_by,
+        created_by_name=cb_name,
+        created_by_role=cb_role,
+        created_by_user_data=cb_user_data,
         total_duration=v.total_duration,
         total_amount=str(v.total_amount),
         discount=str(v.discount if v.discount is not None else "0.000"),
@@ -298,6 +346,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
     """Map ORM GiftVoucher → lightweight list item."""
     delivery_status = _extract_delivery_status(v)
     label_en, label_ar = _delivery_labels(delivery_status)
+    cb_name, cb_role, cb_user_data = _extract_created_by_details(v)
     return GiftVoucherListItem(
         id=v.id,
         voucher_number=_extract_voucher_number(v),
@@ -350,6 +399,9 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         delivered_at=_extract_delivered_at(v),
         reschedule_count=_extract_reschedule_count(v),
         created_by=v.created_by,
+        created_by_name=cb_name,
+        created_by_role=cb_role,
+        created_by_user_data=cb_user_data,
         created_at=v.created_at,
         updated_at=v.updated_at,
         update_history=getattr(v, "update_history", None) or [],
@@ -398,6 +450,7 @@ async def create_gift_voucher(
     body: CreateGiftVoucherRequest,
     current_user: OptionalUser,
     session: DBSession,
+    request: Request = None,
 ) -> JSONResponse:
     """Create a new gift voucher for the customer or guest."""
     settings = get_settings()
@@ -506,6 +559,57 @@ async def create_gift_voucher(
                 error=str(exc),
             )
 
+    # Resolve creator name, role, and details
+    created_by_name = body.created_by_name or body.created_by_user
+    created_by_role = body.created_by_role
+    created_by_user_data = body.created_by_user_data or {}
+
+    if not created_by_name and request is not None:
+        for h in ("X-User-Name", "x-user-name", "X-Requester-Name", "x-requester-name", "X-Employee-Name", "x-employee-name"):
+            val = request.headers.get(h)
+            if val:
+                import urllib.parse
+                try:
+                    created_by_name = urllib.parse.unquote(val)
+                except Exception:
+                    created_by_name = val
+                break
+
+    if not created_by_role and request is not None:
+        for h in ("X-User-Role", "x-user-role", "X-Role", "x-role", "X-Employee-Role", "x-employee-role"):
+            val = request.headers.get(h)
+            if val:
+                import urllib.parse
+                try:
+                    created_by_role = urllib.parse.unquote(val)
+                except Exception:
+                    created_by_role = val
+                break
+
+    if current_user and not created_by_name:
+        fn = " ".join(filter(None, [getattr(current_user, "first_name", None), getattr(current_user, "last_name", None)]))
+        created_by_name = fn or getattr(current_user, "username", None) or getattr(current_user, "name", None)
+        created_by_role = created_by_role or getattr(current_user, "role", None) or getattr(current_user, "user_type", None)
+
+    is_online_ch = (body.payment_through or "").lower() in ("ushspa", "ushweb", "online", "app", "web")
+    if not created_by_name:
+        if is_online_ch:
+            created_by_name = (sender_data or {}).get("name") or body.gift_from or "Customer"
+            created_by_role = created_by_role or "Customer"
+        else:
+            created_by_name = "Staff"
+            created_by_role = created_by_role or "Staff"
+
+    if not created_by_role:
+        created_by_role = "Customer" if is_online_ch else "Staff"
+
+    if not created_by_user_data:
+        created_by_user_data = {
+            "id": str(created_by) if created_by else "",
+            "name": created_by_name,
+            "role": created_by_role,
+        }
+
     svc = GiftVoucherService(session)
     try:
         voucher = await svc.create_voucher(
@@ -534,6 +638,9 @@ async def create_gift_voucher(
             booking_id=body.booking_id,
             booking_data=body.booking_data,
             created_by=created_by,
+            created_by_name=created_by_name,
+            created_by_role=created_by_role,
+            created_by_user_data=created_by_user_data,
             payment_id=body.payment_id,
             payment_data=body.payment_data,
             payment_url=body.payment_url,
@@ -1065,27 +1172,91 @@ def _resolve_api_requester(request: Request, explicit_id: uuid.UUID | None = Non
 
 
 def _resolve_api_requester_name(request: Request) -> str | None:
-    for header in ("X-User-Name", "x-user-name", "X-Requester-Name", "x-requester-name"):
-        val = request.headers.get(header)
-        if val:
-            return val
+    _, name, _, _ = _resolve_api_requester_details(request)
+    return name
+
+
+def _resolve_api_requester_details(
+    request: Request,
+    body_obj: Any = None,
+) -> tuple[str | None, str | None, str | None, dict[str, Any] | None]:
+    """
+    Resolve (actor_id, actor_name, actor_role, actor_data) from body, custom headers, and JWT.
+    """
+    import urllib.parse
+    import base64
+    import json
+
+    actor_id: str | None = None
+    actor_name: str | None = None
+    actor_role: str | None = None
+    actor_data: dict[str, Any] | None = None
+
+    if body_obj is not None:
+        if isinstance(body_obj, dict):
+            actor_id = body_obj.get("changed_by") or body_obj.get("created_by") or body_obj.get("redeemed_by")
+            actor_name = body_obj.get("changed_by_name") or body_obj.get("created_by_name") or body_obj.get("created_by_user")
+            actor_role = body_obj.get("changed_by_role") or body_obj.get("created_by_role")
+            actor_data = body_obj.get("change_by_user_data") or body_obj.get("created_by_user_data")
+        else:
+            actor_id = getattr(body_obj, "changed_by", None) or getattr(body_obj, "created_by", None) or getattr(body_obj, "redeemed_by", None)
+            actor_name = getattr(body_obj, "changed_by_name", None) or getattr(body_obj, "created_by_name", None) or getattr(body_obj, "created_by_user", None)
+            actor_role = getattr(body_obj, "changed_by_role", None) or getattr(body_obj, "created_by_role", None)
+            actor_data = getattr(body_obj, "change_by_user_data", None) or getattr(body_obj, "created_by_user_data", None)
+
+    if not actor_id:
+        for header in ("X-User-Id", "x-user-id", "X-Requester-Id", "x-requester-id", "X-Employee-Id", "x-employee-id"):
+            val = request.headers.get(header)
+            if val:
+                actor_id = val.strip()
+                break
+
+    if not actor_name:
+        for header in ("X-User-Name", "x-user-name", "X-Requester-Name", "x-requester-name", "X-Employee-Name", "x-employee-name"):
+            val = request.headers.get(header)
+            if val:
+                try:
+                    actor_name = urllib.parse.unquote(val)
+                except Exception:
+                    actor_name = val
+                break
+
+    if not actor_role:
+        for header in ("X-User-Role", "x-user-role", "X-Role", "x-role", "X-Employee-Role", "x-employee-role"):
+            val = request.headers.get(header)
+            if val:
+                try:
+                    actor_role = urllib.parse.unquote(val)
+                except Exception:
+                    actor_role = val
+                break
+
     auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ", 1)[1].strip()
         try:
-            import base64
-            import json
-
             parts = token.split(".")
             if len(parts) >= 2:
                 padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
                 jwt_claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
-                name = jwt_claims.get("full_name") or jwt_claims.get("name") or jwt_claims.get("username")
-                if name:
-                    return str(name)
+                if not actor_id:
+                    actor_id = str(jwt_claims.get("sub") or jwt_claims.get("user_id") or jwt_claims.get("customer_id") or "") or None
+                if not actor_name:
+                    fn = " ".join(filter(None, [jwt_claims.get("first_name"), jwt_claims.get("last_name")]))
+                    actor_name = fn or jwt_claims.get("full_name") or jwt_claims.get("name") or jwt_claims.get("username")
+                if not actor_role:
+                    actor_role = jwt_claims.get("role_name") or jwt_claims.get("role") or jwt_claims.get("user_type")
         except Exception:
             pass
-    return None
+
+    if not actor_data and (actor_id or actor_name or actor_role):
+        actor_data = {
+            "id": str(actor_id or ""),
+            "name": str(actor_name or "Staff"),
+            "role": str(actor_role or "Staff"),
+        }
+
+    return actor_id, actor_name, actor_role, actor_data
 
 
 @router.patch(
@@ -1125,6 +1296,10 @@ async def update_voucher_status(
             except Exception:
                 pass
 
+    actor_id, actor_name, actor_role, actor_data = _resolve_api_requester_details(request, body)
+    if body.status == "redeemed" and redeemed_by is not None:
+        actor_id = str(redeemed_by)
+
     try:
         voucher = await svc.update_status(
             voucher_id,
@@ -1137,6 +1312,11 @@ async def update_voucher_status(
             payment_provider=body.payment_provider,
             payment_through=body.payment_through,
             redeemed_by=redeemed_by,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            actor_data=actor_data,
+            note=getattr(body, "note", None) or getattr(body, "update_note", None),
             ordered_items=body.ordered_items,
             delivery_status=body.delivery_status,
             delivery_address=body.delivery_address,
@@ -1582,13 +1762,15 @@ async def update_gift_voucher(
             )
 
     svc = GiftVoucherService(session)
-    actor_name = _resolve_api_requester_name(request)
+    actor_id, actor_name, actor_role, actor_data = _resolve_api_requester_details(request, body)
     try:
         voucher = await svc.update_voucher(
             voucher_id=voucher_id,
             fields_to_update=updates,
             actor_id=str(actor_id) if actor_id else None,
-            changed_by_name=actor_name,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            actor_data=actor_data,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
@@ -1688,7 +1870,7 @@ async def batch_update_voucher_status(
 ) -> JSONResponse:
     """Update status of multiple gift vouchers in one request. Requires USHSPA-TOKEN."""
     svc = GiftVoucherService(session)
-    actor_id = _resolve_api_requester(request)
+    actor_id, actor_name, actor_role, actor_data = _resolve_api_requester_details(request, body)
     updated_ids: list[str] = []
     errors: list[dict[str, str]] = []
 
@@ -1698,6 +1880,10 @@ async def batch_update_voucher_status(
                 voucher_id=vid,
                 new_status=body.status,
                 actor_id=str(actor_id) if actor_id else None,
+                actor_name=actor_name,
+                actor_role=actor_role,
+                actor_data=actor_data,
+                note=body.note if hasattr(body, "note") else None,
             )
             updated_ids.append(str(vid))
         except Exception as exc:
@@ -1771,12 +1957,15 @@ async def reschedule_gift_voucher(
 ) -> JSONResponse:
     """Reschedule delivery for a scheduled voucher (Desk staff only)."""
     svc = GiftVoucherService(session)
-    actor_id = _resolve_api_requester(request, None)
+    actor_id, actor_name, actor_role, actor_data = _resolve_api_requester_details(request, body)
     try:
         voucher = await svc.reschedule_voucher(
             voucher_id,
             body.scheduled_delivery_at,
             actor_id=str(actor_id) if actor_id else "staff",
+            actor_name=actor_name,
+            actor_role=actor_role,
+            actor_data=actor_data,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc

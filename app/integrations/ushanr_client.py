@@ -283,6 +283,96 @@ class UshanrClient:
             logger.warning("ushanr_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))
             return None
 
+    async def create_or_get_course_subscription_invoice_data(
+        self,
+        *,
+        subscription: Any,
+        customer_name: str = "",
+        customer_phone: str = "",
+        customer_email: str = "",
+    ) -> dict[str, str] | None:
+        """
+        Create (idempotent on source) the paid invoice of a course purchase.
+
+        ``source_document_type="course_subscription"``, one line
+        "{course name} ({N} sessions)" at the purchase price, existing revenue
+        account (``USHANR_COURSE_REVENUE_ACCOUNT_ID`` overrides when set).
+        Returns ``{"invoice_id", "invoice_number"}`` or None on any failure.
+        """
+        source_type = "course_subscription"
+        existing = await self.get_invoice_by_source(source_type, str(subscription.id))
+        if existing and existing.get("invoice_name"):
+            return {
+                "invoice_id": str(existing.get("invoice_id") or ""),
+                "invoice_number": str(existing.get("invoice_name") or ""),
+            }
+
+        company_id = self._settings.USHANR_COMPANY_ID
+        journal_id = self._settings.USHANR_AR_JOURNAL_ID
+        revenue_acct = (
+            getattr(self._settings, "USHANR_COURSE_REVENUE_ACCOUNT_ID", "") or self._settings.USHANR_REVENUE_ACCOUNT_ID
+        )
+        if not (company_id and journal_id and revenue_acct):
+            logger.warning("ushanr_course_invoice_not_configured", subscription_id=str(subscription.id))
+            return None
+
+        partner_id = await self.ensure_partner(
+            company_id=company_id,
+            external_id=str(subscription.customer_id),
+            name=customer_name,
+            phone=customer_phone,
+            email=customer_email,
+        )
+        if not partner_id:
+            return None
+
+        course = subscription.course_data or {}
+        course_name = str(course.get("name") or course.get("name_en") or course.get("code") or "Course")
+        total_amount = Decimal(str(subscription.price or 0))
+        number = getattr(subscription, "subscription_number", None) or ""
+        body = {
+            "company_id": company_id,
+            "partner_id": partner_id,
+            "journal_id": journal_id,
+            "invoice_date": local_now().date().isoformat(),
+            "source_document_type": source_type,
+            "source_document_id": str(subscription.id),
+            "source_document_ref": number,
+            "currency_code": getattr(subscription, "currency", "KWD") or "KWD",
+            "notes": f"Course subscription {number} — {course_name}",
+            "lines": [
+                {
+                    "account_id": revenue_acct,
+                    "name": f"{course_name} ({int(subscription.total_sessions or 0)} sessions)",
+                    "quantity": 1.0,
+                    "unit_price": float(total_amount),
+                    "discount": 0.0,
+                }
+            ],
+            "is_paid": True,
+            "payment_status": "success",
+            "amount_paid": float(total_amount),
+            "payment_id": str(getattr(subscription, "payment_id", None) or ""),
+        }
+        try:
+            resp = await self._client.post("/api/v1/internal/invoices/from-source/", json=body)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                return {
+                    "invoice_id": str(data.get("invoice_id") or ""),
+                    "invoice_number": str(data.get("invoice_name") or ""),
+                }
+            logger.warning(
+                "ushanr_create_course_invoice_non_200",
+                subscription_id=str(subscription.id),
+                status_code=resp.status_code,
+                detail=resp.text[:300],
+            )
+            return None
+        except Exception as exc:
+            logger.warning("ushanr_create_course_invoice_failed", subscription_id=str(subscription.id), error=str(exc))
+            return None
+
     async def mark_invoice_paid(
         self,
         *,

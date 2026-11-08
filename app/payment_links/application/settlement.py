@@ -42,6 +42,7 @@ from app.booking.infrastructure.models import Booking, BookingStatusHistory
 from app.core.config import Settings
 from app.core.exceptions import BookingStateError, ValidationError
 from app.core.logging import get_logger
+from app.course.domain.value_objects import CourseError
 from app.events.contracts import BaseEvent, PaymentLinkFailedEvent, PaymentLinkPaidEvent
 from app.payment.domain.value_objects import (
     PaymentFor,
@@ -235,7 +236,9 @@ class PaymentSettlementService:
                 await self._settle_booking(link, now)
             elif link.target_type == PaymentLinkTarget.GIFT_VOUCHER.value:
                 await self._settle_voucher(link, now)
-        except (BookingStateError, ValidationError) as exc:
+            elif link.target_type == PaymentLinkTarget.COURSE_SUBSCRIPTION.value:
+                await self._settle_course_subscription(link, now)
+        except (BookingStateError, ValidationError, CourseError) as exc:
             # Customer paid but the booking/voucher can no longer be activated
             # (e.g. cancelled/expired meanwhile). Automatically refund via gateway
             # so the customer is not charged for a cancelled booking.
@@ -484,6 +487,30 @@ class PaymentSettlementService:
             actor_id=link.created_by,
         )
 
+    async def _settle_course_subscription(self, link: PaymentLink, paid_at: datetime) -> None:
+        """
+        Activate the course subscription (row lock, idempotent). Activation creates the
+        ``payments`` row (payment_for=course_subscription), the ushanr invoice and the
+        ``course_subscription.activated`` outbox event. Raises :class:`CourseError` when the
+        subscription can no longer be activated (e.g. cancelled) → auto refund above.
+        """
+        from app.course.application.services import CourseSubscriptionService
+
+        _sub, payment, _activated = await CourseSubscriptionService(self._session, self._settings).activate(
+            link.target_id,
+            payment_provider=link.provider_label,
+            payment_method=link.payment_method,
+            payment_gateway=link.gateway,
+            transaction_reference=link.transaction_id or link.gateway_payment_id or link.gateway_invoice_id,
+            payment_through=PaymentThrough.USHDESK.value,
+            payment_link=link,
+            paid_at=paid_at,
+            actor_id=link.created_by or "payment_link",
+            actor_data=link.created_by_data,
+        )
+        if payment is not None:
+            link.payment_row_id = payment.id
+
     async def _create_voucher_payment(self, link: PaymentLink, voucher: GiftVoucher, paid_at: datetime) -> Payment:
         payment = Payment(
             payment_number=await generate_payment_number(self._session),
@@ -558,6 +585,17 @@ class PaymentSettlementService:
         }
         link.webhook_data = {**_state_dict(state), "settled_via": source, "settled_at": now.isoformat()}
 
+        if link.target_type == PaymentLinkTarget.COURSE_SUBSCRIPTION.value:
+            # Business rule 1: the subscription becomes payment_failed (the link stays payable;
+            # a later successful payment still activates it).
+            from app.course.application.services import CourseSubscriptionService
+
+            try:
+                await CourseSubscriptionService(self._session, self._settings).mark_payment_failed(
+                    link.target_id, reason=state.failure_reason or "Payment failed"
+                )
+            except CourseError as exc:
+                logger.info("course_payment_failed_not_applied", link_id=str(link.id), error=str(exc))
         if link.target_type == PaymentLinkTarget.BOOKING.value:
             self._pending_events.append(
                 PaymentLinkFailedEvent(

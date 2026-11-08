@@ -82,6 +82,51 @@ class TokenPayload(BaseModel):
         return codename in (self.codenames or [])
 
 
+def decode_token(token: str, settings: Settings | None = None) -> TokenPayload:
+    """
+    Decode the JWT claims WITHOUT signature verification.
+
+    Only use for non-security purposes (e.g. audit "changed by" attribution on
+    endpoints already protected by the app token). Signature/identity
+    verification is always done by ushauth via ``validate_user_with_ushauth``.
+
+    Raises ``AuthenticationError`` if the token is malformed or expired.
+    """
+    import base64
+    import time
+
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            raise ValueError("malformed token")
+        padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+        claims: dict[str, Any] = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+    except Exception as exc:
+        raise AuthenticationError("Invalid token.") from exc
+
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)) and time.time() >= exp:
+        raise AuthenticationError("Invalid or expired token.")
+
+    sub = str(claims.get("user_id") or claims.get("sub") or "")
+    if not sub:
+        raise AuthenticationError("Invalid token.")
+
+    def _opt(key: str) -> str | None:
+        value = claims.get(key)
+        return str(value) if value not in (None, "") else None
+
+    return TokenPayload(
+        sub=sub,
+        user_type=_opt("user_type") or "customer",
+        phone_number=_opt("phone_number"),
+        email=_opt("email"),
+        first_name=_opt("first_name"),
+        last_name=_opt("last_name"),
+        role=_opt("role"),
+    )
+
+
 async def validate_user_with_ushauth(
     token: str,
     settings: Settings,

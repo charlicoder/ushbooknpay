@@ -274,6 +274,22 @@ class CreateGiftVoucherRequest(BaseModel):
         default=None,
         description="Optional UUID of the staff or admin user who created this voucher.",
     )
+    created_by_name: str | None = Field(
+        default=None,
+        description="Optional name of the staff/admin who created this voucher.",
+    )
+    created_by_role: str | None = Field(
+        default=None,
+        description="Optional role of the staff/admin who created this voucher.",
+    )
+    created_by_user: str | None = Field(
+        default=None,
+        description="Optional user ID string of the staff/admin.",
+    )
+    created_by_user_data: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional metadata snapshot of the creator.",
+    )
 
     # ── Optional cross-references ─────────────────────────────────────
     booking_id: uuid.UUID | None = Field(
@@ -603,6 +619,11 @@ class UpdateGiftVoucherStatusRequest(BaseModel):
         default=None,
         description="Optional delivery address update.",
     )
+    changed_by: str | None = Field(default=None, description="Optional actor identifier.")
+    changed_by_name: str | None = Field(default=None, description="Optional actor name.")
+    changed_by_role: str | None = Field(default=None, description="Optional actor role.")
+    change_by_user_data: dict[str, Any] | None = Field(default=None, description="Optional actor data.")
+    update_note: str | None = Field(default=None, description="Optional note for status update.")
 
     @field_validator(
         "booking_id",
@@ -898,6 +919,11 @@ class UpdateGiftVoucherRequest(BaseModel):
             "services remain, redeemed once all are used."
         ),
     )
+    changed_by: str | None = Field(default=None, description="Optional actor identifier.")
+    changed_by_name: str | None = Field(default=None, description="Optional actor name.")
+    changed_by_role: str | None = Field(default=None, description="Optional actor role.")
+    change_by_user_data: dict[str, Any] | None = Field(default=None, description="Optional actor data.")
+    update_note: str | None = Field(default=None, description="Optional note for update history.")
 
     @field_validator(
         "branch_id",
@@ -1037,6 +1063,9 @@ class GiftVoucherResponse(BaseModel):
     recipient_id: uuid.UUID | None = None
     recipient_data: dict[str, Any]
     created_by: uuid.UUID | None
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     total_duration: int
     total_amount: str  # String to preserve KWD 3-decimal precision
     discount: str = "0.000"
@@ -1176,6 +1205,9 @@ class GiftVoucherListItem(BaseModel):
     delivered_at: LocalDateTime | None = None
     reschedule_count: int = 0
     created_by: uuid.UUID | None = None
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    created_by_user_data: dict[str, Any] | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
     update_history: list[dict[str, Any]] | None = Field(default_factory=list)
@@ -1190,6 +1222,11 @@ class BatchDeleteVouchersRequest(BaseModel):
 class BatchUpdateVoucherStatusRequest(BaseModel):
     voucher_ids: list[uuid.UUID] = Field(..., min_length=1, description="List of voucher UUIDs to update")
     status: str = Field(..., description="Target status ('active', 'created', 'payment_pending', 'redeemed', 'expired', 'cancelled')")
+    note: str | None = Field(default=None, description="Optional note for status update history.")
+    changed_by: str | None = Field(default=None, description="Optional actor identifier.")
+    changed_by_name: str | None = Field(default=None, description="Optional actor name.")
+    changed_by_role: str | None = Field(default=None, description="Optional actor role.")
+    change_by_user_data: dict[str, Any] | None = Field(default=None, description="Optional actor data.")
 
 
 class RescheduleVoucherRequest(BaseModel):
@@ -1199,8 +1236,11 @@ class RescheduleVoucherRequest(BaseModel):
     """
     scheduled_delivery_at: datetime = Field(
         ...,
-        description="New delivery datetime (ISO 8601). Interpreted as Asia/Kuwait if naive.",
+        description="New delivery datetime (Kuwait time / ISO 8601). Must be in the future and within 2 months.",
     )
+    changed_by: str | None = Field(default=None, description="Optional actor identifier.")
+    changed_by_name: str | None = Field(default=None, description="Optional actor name.")
+    changed_by_role: str | None = Field(default=None, description="Optional actor role.")
 
     @field_validator("scheduled_delivery_at", mode="before")
     @classmethod

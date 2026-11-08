@@ -48,6 +48,8 @@ from app.events.sqs_client import SQSClient, get_sqs_client
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory, Refund  # noqa: F401
 from app.payment_links.infrastructure.models import PaymentLink, PaymentWebhookEvent  # noqa: F401
 from app.voucher.infrastructure.models import GiftVoucher  # noqa: F401
+from app.course.infrastructure.models import CourseSessionUsage, CourseSubscription  # noqa: F401
+from app.events.outbox.models import OutboxEvent  # noqa: F401
 from app.gifts.infrastructure.models import (  # noqa: F401
     GiftVoucherCart,
     GiftVoucherCartItem,
@@ -119,6 +121,28 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE gift_vouchers ADD COLUMN IF NOT EXISTS redemptions JSONB;",
                 "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS branch_name VARCHAR(255);",
                 "ALTER TABLE payments ADD COLUMN IF NOT EXISTS branch_name VARCHAR(255);",
+                # Course subscriptions (migration 0064) — keep dev DBs in sync
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS course_subscription_id UUID;",
+                "ALTER TABLE bookings ADD COLUMN IF NOT EXISTS course_data JSONB;",
+                "CREATE INDEX IF NOT EXISTS ix_bookings_course_subscription_id ON bookings (course_subscription_id);",
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS course_subscription_id UUID;",
+                "CREATE INDEX IF NOT EXISTS ix_payments_course_subscription_id ON payments (course_subscription_id);",
+                # Drop legacy doubled check constraints produced by earlier Alembic helpers
+                "ALTER TABLE bookings DROP CONSTRAINT IF EXISTS ck_bookings_ck_bookings_booking_type;",
+                "ALTER TABLE bookings DROP CONSTRAINT IF EXISTS ck_bookings_ck_bookings_payment_type;",
+                # Recreate the type checks only when they don't know the course values yet
+                "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = "
+                "'ck_bookings_booking_type' AND pg_get_constraintdef(oid) LIKE '%course_redemption%') THEN "
+                "ALTER TABLE bookings DROP CONSTRAINT IF EXISTS ck_bookings_booking_type; "
+                "ALTER TABLE bookings ADD CONSTRAINT ck_bookings_booking_type CHECK (booking_type IN "
+                "('branch_service', 'home_service', 'loyalty', 'gift_voucher', 'course_redemption')); "
+                "END IF; END $$;",
+                "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = "
+                "'ck_bookings_payment_type' AND pg_get_constraintdef(oid) LIKE '%course_subscription%') THEN "
+                "ALTER TABLE bookings DROP CONSTRAINT IF EXISTS ck_bookings_payment_type; "
+                "ALTER TABLE bookings ADD CONSTRAINT ck_bookings_payment_type CHECK (payment_type IN "
+                "('service', 'gift_voucher', 'rewarded', 'course_subscription')); "
+                "END IF; END $$;",
             ):
                 try:
                     await conn.execute(sa.text(_ddl))
@@ -148,6 +172,18 @@ async def lifespan(app: FastAPI):
 
         relay_task = asyncio.create_task(run_relay_forever(_relay_client))
 
+    # Transactional outbox relay (course events) + course background tasks.
+    background_tasks: list[asyncio.Task] = []
+    if settings.OUTBOX_RELAY_ENABLED:
+        from app.events.outbox.relay import run_outbox_relay_forever
+
+        background_tasks.append(asyncio.create_task(run_outbox_relay_forever()))
+    if settings.COURSE_TASKS_ENABLED:
+        from app.course.application.tasks import run_expiry_forever, run_invoice_retry_forever
+
+        background_tasks.append(asyncio.create_task(run_expiry_forever()))
+        background_tasks.append(asyncio.create_task(run_invoice_retry_forever()))
+
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────
@@ -157,6 +193,13 @@ async def lifespan(app: FastAPI):
         relay_task.cancel()
         try:
             await relay_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    for task in background_tasks:
+        task.cancel()
+        try:
+            await task
         except (asyncio.CancelledError, Exception):
             pass
 

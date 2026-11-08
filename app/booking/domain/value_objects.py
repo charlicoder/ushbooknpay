@@ -81,6 +81,7 @@ class BookingType(str, Enum):
     HOME_SERVICE = "home_service"
     LOYALTY = "loyalty"
     GIFT_VOUCHER = "gift_voucher"
+    COURSE_REDEMPTION = "course_redemption"  # session redeemed from a course subscription
 
 
 class PaymentType(str, Enum):
@@ -89,6 +90,7 @@ class PaymentType(str, Enum):
     SERVICE = "service"           # Default — regular paid service booking
     GIFT_VOUCHER = "gift_voucher" # Booking paid via gift voucher redemption
     REWARDED = "rewarded"         # Loyalty reward redemption booking
+    COURSE_SUBSCRIPTION = "course_subscription"  # Session covered by a prepaid course
 
 
 class ServiceType(str, Enum):

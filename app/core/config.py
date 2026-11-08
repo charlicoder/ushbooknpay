@@ -194,6 +194,23 @@ class Settings(BaseSettings):
         default="25df6768-d4dc-49a1-8965-a5aa93f0aad1",
         description="Default add-on revenue account UUID in ushanr.",
     )
+    USHANR_COURSE_REVENUE_ACCOUNT_ID: str = Field(
+        default="",
+        description="Optional revenue account for course purchases; falls back to USHANR_REVENUE_ACCOUNT_ID.",
+    )
+
+    # ── 6b. Transactional outbox + course background tasks ───────────────
+    # Relay for rows of outbox_events (course events are written there in the
+    # same transaction as the state change and published after commit).
+    OUTBOX_RELAY_ENABLED: bool = True
+    OUTBOX_RELAY_POLL_SECONDS: int = Field(default=10, ge=1, le=600)
+    OUTBOX_RELAY_BATCH_SIZE: int = Field(default=50, ge=1, le=500)
+    OUTBOX_MAX_ATTEMPTS: int = Field(default=5, ge=1, le=50)
+    # Hourly expiry of course subscriptions + retry of failed ushanr invoices.
+    COURSE_TASKS_ENABLED: bool = True
+    COURSE_EXPIRY_TASK_INTERVAL_SECONDS: int = Field(default=3600, ge=10, le=86400)
+    COURSE_INVOICE_RETRY_INTERVAL_SECONDS: int = Field(default=600, ge=10, le=86400)
+    COURSE_INVOICE_MAX_ATTEMPTS: int = Field(default=20, ge=1, le=1000)
 
     # ── 7. AWS ───────────────────────────────────────────────────────────
 

@@ -139,6 +139,16 @@ class LoyaltyService:
                         or bool((getattr(bk, "loyalty_data", {}) or {}).get("points_cost"))
                         or bool((getattr(bk, "loyalty_data", {}) or {}).get("reward_id"))
                     )
+                    # Course redemption sessions never earn loyalty points (decision A10)
+                    from app.course.domain.rules import is_course_booking
+
+                    if not is_loyalty_bk and is_course_booking(bk):
+                        logger.info(
+                            "loyalty_credit_skipped_course_redemption_booking",
+                            customer_id=str(customer_id),
+                            booking_id=str(booking_id),
+                        )
+                        is_loyalty_bk = True
                     if is_loyalty_bk:
                         logger.info(
                             "loyalty_credit_skipped_loyalty_redemption_booking",

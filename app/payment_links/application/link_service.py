@@ -154,6 +154,8 @@ class PaymentLinkService:
             target = await self._load_booking(target_id)
         elif canonical == PaymentLinkTarget.GIFT_VOUCHER.value:
             target = await self._load_voucher(target_id)
+        elif canonical == PaymentLinkTarget.COURSE_SUBSCRIPTION.value:
+            target = await self._load_course_subscription(target_id)
         else:
             raise ValidationError(f"Payment links are not supported for '{target_type}' yet.")
 
@@ -227,6 +229,8 @@ class PaymentLinkService:
             canonical, target, invoice_id, invoice_number
         )
         is_booking = canonical == PaymentLinkTarget.BOOKING.value
+        # Course subscriptions carry their customer like bookings (customer_id / customer_data)
+        is_course = canonical == PaymentLinkTarget.COURSE_SUBSCRIPTION.value
         expires_at = datetime.now(timezone.utc) + timedelta(
             minutes=expiry_minutes or self._settings.PAYMENT_LINK_EXPIRY_MINUTES
         )
@@ -236,7 +240,11 @@ class PaymentLinkService:
             link_number=f"PL-{datetime.now(timezone.utc):%y%m%d}-{secrets.token_hex(3).upper()}",
             target_type=canonical,
             target_id=target_id,
-            target_ref=(target.booking_number if is_booking else target.voucher_number),
+            target_ref=(
+                target.booking_number
+                if is_booking
+                else (target.subscription_number if is_course else target.voucher_number)
+            ),
             invoice_id=invoice_id,
             invoice_number=invoice_number,
             gateway=self._gateway.name,
@@ -244,8 +252,8 @@ class PaymentLinkService:
             amount=amount,
             currency=target.currency or "KWD",
             status=PaymentLinkStatus.CREATED.value,
-            customer_id=target.customer_id if is_booking else target.sender_id,
-            customer_data=target.customer_data if is_booking else target.sender_data,
+            customer_id=target.customer_id if (is_booking or is_course) else target.sender_id,
+            customer_data=target.customer_data if (is_booking or is_course) else target.sender_data,
             request_data={
                 **(request_data or {}),
                 "target_type": canonical,
@@ -514,6 +522,25 @@ class PaymentLinkService:
             )
         return voucher
 
+    async def _load_course_subscription(self, subscription_id: uuid.UUID) -> Any:
+        from app.course.domain.value_objects import PAYABLE_STATUSES
+        from app.course.infrastructure.models import CourseSubscription
+
+        sub = (
+            await self._session.execute(
+                select(CourseSubscription).where(CourseSubscription.id == subscription_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if sub is None:
+            raise NotFoundError("Course subscription not found.")
+        if sub.status not in PAYABLE_STATUSES:
+            raise ValidationError(
+                f"A payment link can only be created for unpaid course subscriptions (current: {sub.status})."
+            )
+        # Price is always the server-side snapshot price of the subscription
+        sub.total_amount = sub.price  # transient attribute read by create_link
+        return sub
+
     async def _resolve_invoice(
         self,
         target_type: str,
@@ -555,7 +582,7 @@ class PaymentLinkService:
 
     @staticmethod
     def _payer_contact(target_type: str, target: Booking | GiftVoucher) -> tuple[str, str | None, str | None]:
-        if target_type == PaymentLinkTarget.BOOKING.value:
+        if target_type in (PaymentLinkTarget.BOOKING.value, PaymentLinkTarget.COURSE_SUBSCRIPTION.value):
             return _contact(target.customer_data)
         return _contact(target.sender_data)
 
@@ -567,6 +594,10 @@ class PaymentLinkService:
             is_cancel = target.status in (BookingStatus.CANCELLED.value, "cancelled")
             prefix = "Refund for Booking" if is_cancel else "Booking"
             return f"{prefix} {ref}" + (f" - {service}" if service else "")
+        if target_type == PaymentLinkTarget.COURSE_SUBSCRIPTION.value:
+            course_name = (target.course_data or {}).get("name") or ""
+            ref = target.subscription_number or str(target.id)[:8]
+            return f"Course {ref}" + (f" - {course_name}" if course_name else "")
         return f"Gift voucher {target.voucher_number or str(target.id)[:8]}"
 
     async def _attach_link_to_target(
@@ -580,6 +611,11 @@ class PaymentLinkService:
             target.payment_provider_group = provider_group_for(link.gateway)
             target.payment_source = link.gateway
             target.payment_link_id = link.id
+            return
+        if target_type == PaymentLinkTarget.COURSE_SUBSCRIPTION.value:
+            # The subscription stays payment_pending until the payment is settled.
+            target.payment_link_id = link.id
+            target.payment_gateway = link.gateway
             return
         if target.status == GiftVoucherStatus.CREATED.value:
             # CREATED → PAYMENT_PENDING (emits the pending event; ushnotice sends nothing for it)

@@ -41,6 +41,7 @@ class PaymentLinkTarget(str, Enum):
     BOOKING = "booking"
     GIFT_VOUCHER = "gift_voucher"
     PRODUCT = "product"
+    COURSE_SUBSCRIPTION = "course_subscription"
 
 
 def _utcnow() -> datetime:

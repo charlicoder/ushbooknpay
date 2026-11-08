@@ -312,6 +312,11 @@ def _payment_to_detail(p: Payment) -> PaymentDetailResponse:
         voucher_number=resolved_voucher_number,
         voucher_data=v_data if v_data is not None else p.voucher_data,
         product_order_id=str(p.product_order_id) if p.product_order_id else None,
+        course_subscription_id=(
+            str(p.course_subscription_id)
+            if isinstance(getattr(p, "course_subscription_id", None), (str, uuid.UUID))
+            else None
+        ),
         product_order_items=p.product_order_items,
         invoice_id=p.invoice_id,
         invoice_value=str(p.invoice_value) if p.invoice_value is not None else None,
@@ -379,6 +384,11 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
         voucher_id=str(p.voucher_id) if p.voucher_id else None,
         voucher_number=resolved_voucher_number,
         product_order_id=str(p.product_order_id) if p.product_order_id else None,
+        course_subscription_id=(
+            str(p.course_subscription_id)
+            if isinstance(getattr(p, "course_subscription_id", None), (str, uuid.UUID))
+            else None
+        ),
         invoice_id=p.invoice_id,
         invoice_value=str(p.invoice_value) if p.invoice_value is not None else None,
         payment_url=p.payment_url,
@@ -401,6 +411,80 @@ def _payment_to_list_item(p: Payment) -> PaymentListItem:
 
 
 # ── CRUD Endpoints ────────────────────────────────────────────────────────────
+
+
+async def _create_course_subscription_payment(
+    body: CreatePaymentRequestSchema,
+    parsed_gateway: dict[str, Any],
+    session: Any,
+    settings: Any,
+) -> JSONResponse:
+    """
+    ``payment_for=course_subscription``: a successful payment activates the subscription
+    (row lock, idempotent). The Payment row is created by the activation itself with the
+    server-side course price, so repeated calls (desk + webhook) return the same payment.
+    A failed payment marks the subscription ``payment_failed``.
+    """
+    from app.course.application.services import CourseSubscriptionService
+    from app.course.api.schemas import serialize_subscription
+
+    if not body.course_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="course_subscription_id is required when payment_for is 'course_subscription'.",
+        )
+    service = CourseSubscriptionService(session, settings)
+    status_str = str(body.status or parsed_gateway.get("status") or PaymentTransactionStatus.SUCCESS.value).lower()
+    if status_str in (PaymentTransactionStatus.FAILED.value, "failed", "cancelled", "canceled"):
+        sub = await service.mark_payment_failed(
+            body.course_subscription_id,
+            reason=str((body.payment_data or {}).get("failure_reason") or "Payment failed"),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"success": True, "data": None, "course_subscription": serialize_subscription(sub)},
+        )
+    if status_str not in (PaymentTransactionStatus.SUCCESS.value, "paid", "completed"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only successful or failed payments can be recorded for a course subscription.",
+        )
+
+    provider_raw = body.payment_provider or parsed_gateway.get("payment_provider")
+    gateway_raw = body.payment_gateway or parsed_gateway.get("payment_gateway")
+    payment_data: dict[str, Any] = {}
+    if parsed_gateway.get("payment_data"):
+        payment_data.update(parsed_gateway["payment_data"])
+    if body.payment_data:
+        payment_data.update(body.payment_data)
+
+    _sub, payment, activated = await service.activate(
+        body.course_subscription_id,
+        payment_provider=PaymentProvider.normalise(provider_raw).value if provider_raw else None,
+        payment_method=body.payment_method or parsed_gateway.get("payment_method"),
+        payment_gateway=PaymentGateway.normalise(gateway_raw).value if gateway_raw else None,
+        transaction_reference=(
+            body.transaction_id
+            or parsed_gateway.get("transaction_id")
+            or body.reference_id
+            or body.payment_id
+            or parsed_gateway.get("payment_id")
+        ),
+        payment_through=(PaymentThrough.normalise(body.payment_through).value if body.payment_through else "ushdesk"),
+        paid_at=body.paid_at if isinstance(body.paid_at, datetime) else None,
+        actor_id=_safe_str(body.created_by_user or body.created_by),
+        actor_data=body.created_by_user_data if isinstance(body.created_by_user_data, dict) else None,
+        gateway_payment_data=payment_data or None,
+    )
+    if payment is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The course subscription has no payment record.",
+        )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if activated else status.HTTP_200_OK,
+        content={"success": True, "data": _payment_to_detail(payment).model_dump(mode="json")},
+    )
 
 
 @router.post(
@@ -478,6 +562,9 @@ async def create_payment(
     else:
         payment_for = PaymentFor.BRANCH_SERVICE.value
 
+    # ── 3b. Course subscription purchase → activation (idempotent, deduped) ──
+    if payment_for == PaymentFor.COURSE_SUBSCRIPTION.value:
+        return await _create_course_subscription_payment(body, parsed_gateway, session, settings)
     # ── 4. Normalise classification fields ────────────────────────────
     payment_provider_val = body.payment_provider or parsed_gateway.get("payment_provider") or None
     if payment_provider_val:
@@ -1563,7 +1650,7 @@ async def initiate_payment(
             detail=f"Booking {booking_id} not found or does not belong to you.",
         )
 
-    if booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.PENDING.value):
+    if booking.status not in (BookingStatus.CONFIRMED.value, BookingStatus.PAYMENT_PENDING.value):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Booking must be confirmed or pending to initiate payment. Current: {booking.status}",

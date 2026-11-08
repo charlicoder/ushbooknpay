@@ -95,6 +95,10 @@ class CreatePaymentRequestSchema(BaseModel):
     voucher_number: str | None = Field(default=None, description="Gift voucher number.")
     voucher_data: dict[str, Any] | None = Field(default=None, description="Voucher snapshot (JSONB).")
     product_order_id: uuid.UUID | None = Field(default=None, description="Associated product order UUID.")
+    course_subscription_id: uuid.UUID | None = Field(
+        default=None,
+        description="Course subscription UUID (required when payment_for='course_subscription').",
+    )
     product_order_items: list[Any] | dict[str, Any] | None = Field(default=None, description="Product order items (JSONB).")
 
     # ── Invoice & Transaction ─────────────────────────────────────────────
@@ -373,6 +377,7 @@ class PaymentListItem(BaseModel):
     voucher_id: str | None = None
     voucher_number: str | None = None
     product_order_id: str | None = None
+    course_subscription_id: str | None = None
 
     invoice_id: str | None = None
     invoice_value: str | None = None
@@ -453,6 +458,7 @@ class PaymentDetailResponse(BaseModel):
     voucher_data: dict[str, Any] | None = None
     product_order_id: str | None = None
     product_order_items: Any | None = None
+    course_subscription_id: str | None = None
 
     invoice_id: str | None = None
     invoice_value: str | None = None

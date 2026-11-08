@@ -92,6 +92,7 @@ markers = [
     "service: Service-level tests with mocked dependencies",
     "performance: Performance benchmarks",
     "load: Locust load tests",
+    "integration: Tests against a real PostgreSQL (skipped unless TEST_DATABASE_URL is set)",
 ]
 
 # ──────────────────────────────────────────

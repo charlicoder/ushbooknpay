@@ -223,6 +223,11 @@ class BookingStatusUpdatedEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    # Course redemption fields (empty / False for every other booking)
+    course_subscription_id: str = ""
+    course_subscription_number: str = ""
+    course_session_number: int | None = None
+    is_course_redemption: bool = False
     old_status: str | None = None
     new_status: str = ""
     reason: str | None = None
@@ -315,6 +320,11 @@ class BookingConfirmedEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    # Course redemption fields (empty / False for every other booking)
+    course_subscription_id: str = ""
+    course_subscription_number: str = ""
+    course_session_number: int | None = None
+    is_course_redemption: bool = False
     invoice_number: str = ""
     payment_number: str = ""
     created_at: str = ""
@@ -397,6 +407,11 @@ class BookingPaymentPendingEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    # Course redemption fields (empty / False for every other booking)
+    course_subscription_id: str = ""
+    course_subscription_number: str = ""
+    course_session_number: int | None = None
+    is_course_redemption: bool = False
     invoice_number: str = ""
     payment_number: str = ""
     created_at: str = ""
@@ -479,6 +494,11 @@ class BookingCancelledEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    # Course redemption fields (empty / False for every other booking)
+    course_subscription_id: str = ""
+    course_subscription_number: str = ""
+    course_session_number: int | None = None
+    is_course_redemption: bool = False
     invoice_number: str = ""
     payment_number: str = ""
     created_at: str = ""
@@ -668,6 +688,11 @@ class BookingCompletedEvent(BaseEvent):
     reward_id: str = ""
     voucher_id: str = ""
     voucher_data: dict[str, Any] = field(default_factory=dict)
+    # Course redemption fields (empty / False for every other booking)
+    course_subscription_id: str = ""
+    course_subscription_number: str = ""
+    course_session_number: int | None = None
+    is_course_redemption: bool = False
     invoice_number: str = ""
     payment_number: str = ""
     created_at: str = ""
@@ -982,6 +1007,11 @@ class VoucherActiveEvent(BaseEvent):
     delivery_result: dict[str, Any] = field(default_factory=dict)
     reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
+    redemptions: list[dict[str, Any]] = field(default_factory=list)
+    remaining_service_ids: list[str] = field(default_factory=list)
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1067,6 +1097,11 @@ class VoucherScheduledEvent(BaseEvent):
     delivery_result: dict[str, Any] = field(default_factory=dict)
     reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
+    redemptions: list[dict[str, Any]] = field(default_factory=list)
+    remaining_service_ids: list[str] = field(default_factory=list)
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1168,6 +1203,11 @@ class VoucherPaymentPendingEvent(BaseEvent):
     delivery_result: dict[str, Any] = field(default_factory=dict)
     reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
+    redemptions: list[dict[str, Any]] = field(default_factory=list)
+    remaining_service_ids: list[str] = field(default_factory=list)
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
     # Note: secret_code intentionally omitted — not yet delivered at this stage
 
@@ -1257,6 +1297,11 @@ class VoucherRedeemedEvent(BaseEvent):
     delivery_result: dict[str, Any] = field(default_factory=dict)
     reschedule_count: int = 0
     update_history: list[dict[str, Any]] = field(default_factory=list)
+    redemptions: list[dict[str, Any]] = field(default_factory=list)
+    remaining_service_ids: list[str] = field(default_factory=list)
+    created_by_name: str | None = None
+    created_by_role: str | None = None
+    created_by_user_data: dict[str, Any] = field(default_factory=dict)
 
     # Note: secret_code intentionally omitted from redemption event
 
@@ -1456,3 +1501,118 @@ class LoyaltyPointsCreditedEvent(BaseEvent):
     points_credited: int = 0
     new_balance: int = 0
     points_expire_at: str = ""    # ISO datetime string
+
+
+# ── Course Subscription Events ────────────────────────────────────────────────
+# Written to the transactional outbox (``outbox_events``) inside the same DB
+# transaction as the state change, published after commit and retried by the
+# outbox relay (app/events/outbox/relay.py). Payload fields are flat.
+
+
+@dataclass
+class CourseSubscriptionCreatedEvent(BaseEvent):
+    event_name: str = field(default="CourseSubscription.Created", init=False)
+    event_type: str = field(default="course_subscription.created", init=False)
+    subscription_id: str = ""
+    subscription_number: str = ""
+    customer_id: str = ""
+    customer_data: dict[str, Any] = field(default_factory=dict)
+    course_id: str = ""
+    course_code: str = ""
+    course_name: str = ""
+    service_name: str = ""
+    total_sessions: int = 0
+    price: str = "0.000"
+    currency: str = "KWD"
+    payment_option: str = ""
+    payment_url: str = ""
+
+
+@dataclass
+class CourseSubscriptionActivatedEvent(CourseSubscriptionCreatedEvent):
+    event_name: str = field(default="CourseSubscription.Activated", init=False)
+    event_type: str = field(default="course_subscription.activated", init=False)
+    payment_number: str = ""
+    invoice_number: str = ""
+    activated_at: str = ""
+    expires_at: str = ""
+
+
+@dataclass
+class CourseSubscriptionPaymentFailedEvent(BaseEvent):
+    event_name: str = field(default="CourseSubscription.PaymentFailed", init=False)
+    event_type: str = field(default="course_subscription.payment_failed", init=False)
+    subscription_id: str = ""
+    subscription_number: str = ""
+    customer_id: str = ""
+    customer_data: dict[str, Any] = field(default_factory=dict)
+    reason: str = ""
+
+
+@dataclass
+class CourseSubscriptionInvoiceCreatedEvent(BaseEvent):
+    event_name: str = field(default="CourseSubscription.InvoiceCreated", init=False)
+    event_type: str = field(default="course_subscription.invoice_created", init=False)
+    subscription_id: str = ""
+    subscription_number: str = ""
+    invoice_id: str = ""
+    invoice_number: str = ""
+
+
+@dataclass
+class CourseSubscriptionSessionReservedEvent(BaseEvent):
+    event_name: str = field(default="CourseSubscription.SessionReserved", init=False)
+    event_type: str = field(default="course_subscription.session_reserved", init=False)
+    subscription_id: str = ""
+    subscription_number: str = ""
+    customer_id: str = ""
+    customer_data: dict[str, Any] = field(default_factory=dict)
+    course_name: str = ""
+    booking_id: str = ""
+    booking_number: str = ""
+    session_number: int = 0
+    appointment_start: str = ""
+    available_sessions: int = 0
+
+
+@dataclass
+class CourseSubscriptionSessionConsumedEvent(CourseSubscriptionSessionReservedEvent):
+    event_name: str = field(default="CourseSubscription.SessionConsumed", init=False)
+    event_type: str = field(default="course_subscription.session_consumed", init=False)
+    reason: str = ""  # completed | no_show
+    used_sessions: int = 0
+    total_sessions: int = 0
+
+
+@dataclass
+class CourseSubscriptionSessionReleasedEvent(CourseSubscriptionSessionReservedEvent):
+    event_name: str = field(default="CourseSubscription.SessionReleased", init=False)
+    event_type: str = field(default="course_subscription.session_released", init=False)
+    reason: str = ""
+
+
+@dataclass
+class CourseSubscriptionExpiredEvent(BaseEvent):
+    event_name: str = field(default="CourseSubscription.Expired", init=False)
+    event_type: str = field(default="course_subscription.expired", init=False)
+    subscription_id: str = ""
+    subscription_number: str = ""
+    customer_id: str = ""
+    customer_data: dict[str, Any] = field(default_factory=dict)
+    course_name: str = ""
+    expires_at: str = ""
+    lost_sessions: int = 0
+
+
+@dataclass
+class CourseSubscriptionRefundedEvent(BaseEvent):
+    event_name: str = field(default="CourseSubscription.Refunded", init=False)
+    event_type: str = field(default="course_subscription.refunded", init=False)
+    subscription_id: str = ""
+    subscription_number: str = ""
+    customer_id: str = ""
+    customer_data: dict[str, Any] = field(default_factory=dict)
+    course_name: str = ""
+    price: str = "0.000"
+    refund_id: str = ""
+    credit_note_number: str = ""

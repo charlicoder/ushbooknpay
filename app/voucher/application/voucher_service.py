@@ -103,6 +103,9 @@ class GiftVoucherService:
         booking_id: uuid.UUID | None = None,
         booking_data: dict[str, Any] | None = None,
         created_by: uuid.UUID | None = None,
+        created_by_name: str | None = None,
+        created_by_role: str | None = None,
+        created_by_user_data: dict[str, Any] | None = None,
         payment_id: str | None = None,
         payment_data: dict[str, Any] | None = None,
         payment_url: str | None = None,
@@ -259,6 +262,9 @@ class GiftVoucherService:
             booking_id=booking_id,
             booking_data=booking_data or {},
             created_by=created_by,
+            created_by_name=created_by_name,
+            created_by_role=created_by_role,
+            created_by_user_data=created_by_user_data or {},
             payment_id=payment_id,
             payment_data=payment_data,
             payment_url=payment_url,
@@ -284,10 +290,25 @@ class GiftVoucherService:
             except Exception as e:
                 logger.error("voucher_schedule_creation_error", voucher_id=str(voucher.id), error=str(e))
 
+        creator_name = created_by_name or (
+            (sender_data or {}).get("name") or gift_from or "Customer"
+            if payment_through in ("ushspa", "USHWEB", "online", "app", "web")
+            else "Staff"
+        )
+        creator_role = created_by_role or (
+            "Customer"
+            if payment_through in ("ushspa", "USHWEB", "online", "app", "web")
+            else "Staff"
+        )
         voucher.update_history = [{
             "action": "created",
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "changed_by": str(created_by) if created_by else "system",
+            "changed_by_name": creator_name,
+            "changed_by_role": creator_role,
+            "performed_by_name": creator_name,
+            "performed_by_role": creator_role,
+            "user_data": created_by_user_data or {"id": str(created_by) if created_by else "", "name": creator_name, "role": creator_role},
             "details": f"Created with status {initial_status}",
         }]
 
@@ -350,6 +371,10 @@ class GiftVoucherService:
         payment_through: str | None = None,
         redeemed_by: uuid.UUID | None = None,
         actor_id: str | None = None,
+        actor_name: str | None = None,
+        actor_role: str | None = None,
+        actor_data: dict[str, Any] | None = None,
+        note: str | None = None,
         ordered_items: list[dict[str, Any]] | None = None,
         delivery_status: str | None = None,
         delivery_address: dict[str, Any] | None = None,
@@ -478,12 +503,37 @@ class GiftVoucherService:
                 voucher.redeemed_by = redeemed_by
 
         # Record update in history
+        ch_name = (
+            actor_name
+            or (actor_data or {}).get("name")
+            or (str(actor_id) if actor_id and len(str(actor_id)) < 30 and not str(actor_id).startswith("0000") else None)
+        )
+        ch_role = (
+            actor_role
+            or (actor_data or {}).get("role")
+        )
+        if not ch_name:
+            if voucher.payment_through in ("ushspa", "USHWEB", "online", "app", "web"):
+                ch_name = (voucher.sender_data or {}).get("name") or "Payment Gateway / Customer"
+                ch_role = ch_role or "Customer"
+            else:
+                ch_name = "Staff"
+                ch_role = ch_role or "Staff"
+        if not ch_role:
+            ch_role = "Staff" if voucher.payment_through == "desk" else "Customer"
+
         history_entry = {
             "action": "status_updated",
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "changed_by": str(actor_id) if actor_id else "staff",
+            "changed_by_name": ch_name,
+            "changed_by_role": ch_role,
+            "performed_by_name": ch_name,
+            "performed_by_role": ch_role,
+            "user_data": actor_data or {"id": str(actor_id) if actor_id else "", "name": ch_name, "role": ch_role},
             "old_status": old_status,
             "new_status": target_status.value,
+            "note": note,
         }
         current_history = list(voucher.update_history or [])
         current_history.append(history_entry)
@@ -568,6 +618,9 @@ class GiftVoucherService:
         *,
         fields_to_update: dict[str, Any] | None = None,
         actor_id: str | None = None,
+        actor_name: str | None = None,
+        actor_role: str | None = None,
+        actor_data: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> GiftVoucher:
         """
@@ -757,11 +810,44 @@ class GiftVoucherService:
                 setattr(voucher, key, val)
 
         # Record update in history
+        ch_name = (
+            actor_name
+            or kwargs.get("changed_by_name")
+            or updates.get("changed_by_name")
+            or (actor_data or {}).get("name")
+            or (str(actor_id) if actor_id and len(str(actor_id)) < 30 and not str(actor_id).startswith("0000") else None)
+        )
+        ch_role = (
+            actor_role
+            or kwargs.get("changed_by_role")
+            or updates.get("changed_by_role")
+            or (actor_data or {}).get("role")
+        )
+        if not ch_name:
+            if voucher.payment_through in ("ushspa", "USHWEB", "online", "app", "web"):
+                ch_name = (voucher.sender_data or {}).get("name") or "Customer"
+                ch_role = ch_role or "Customer"
+            else:
+                ch_name = "Staff"
+                ch_role = ch_role or "Staff"
+        if not ch_role:
+            ch_role = "Staff" if voucher.payment_through == "desk" else "Customer"
+
+        ch_user_data = actor_data or kwargs.get("change_by_user_data") or updates.get("change_by_user_data") or {
+            "id": str(actor_id) if actor_id else "",
+            "name": ch_name,
+            "role": ch_role,
+        }
+
         history_entry = {
             "action": "status_updated" if target_status else "details_updated",
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "changed_by": str(actor_id) if actor_id else "staff",
-            "changed_by_name": kwargs.get("changed_by_name") or updates.get("changed_by_name"),
+            "changed_by_name": ch_name,
+            "changed_by_role": ch_role,
+            "performed_by_name": ch_name,
+            "performed_by_role": ch_role,
+            "user_data": ch_user_data,
             "old_status": old_status if target_status else None,
             "new_status": target_status.value if target_status else None,
             "updated_fields": list(updates.keys()),
@@ -1155,6 +1241,9 @@ class GiftVoucherService:
         new_scheduled_delivery_at: datetime,
         *,
         actor_id: str | None = None,
+        actor_name: str | None = None,
+        actor_role: str | None = None,
+        actor_data: dict[str, Any] | None = None,
     ) -> GiftVoucher:
         """
         Reschedule a scheduled voucher to a new Kuwait datetime within 2 months from now.
@@ -1205,10 +1294,17 @@ class GiftVoucherService:
         voucher.scheduled_delivery_at = dt_kuwait
         voucher.reschedule_count = (voucher.reschedule_count or 0) + 1
 
+        ch_name = actor_name or (actor_data or {}).get("name") or (str(actor_id) if actor_id and len(str(actor_id)) < 30 else "Staff")
+        ch_role = actor_role or (actor_data or {}).get("role") or "Staff"
         history_entry = {
             "action": "rescheduled",
             "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "changed_by": str(actor_id) if actor_id else "staff",
+            "changed_by_name": ch_name,
+            "changed_by_role": ch_role,
+            "performed_by_name": ch_name,
+            "performed_by_role": ch_role,
+            "user_data": actor_data or {"id": str(actor_id) if actor_id else "", "name": ch_name, "role": ch_role},
             "new_scheduled_delivery_at": dt_kuwait.isoformat(),
             "reschedule_count": voucher.reschedule_count,
         }

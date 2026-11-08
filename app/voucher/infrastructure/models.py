@@ -216,6 +216,9 @@ class GiftVoucher(Base):
 
     # ── Authoring ─────────────────────────────────────────────────────────
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by_role: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_by_user_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
 
     # ── Financial ─────────────────────────────────────────────────────────
     total_duration: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -422,6 +425,17 @@ class GiftVoucher(Base):
                 else "ar"
             ),
             "created_by": str(self.created_by) if self.created_by else None,
+            "created_by_name": self.created_by_name or (
+                (self.sender_data or {}).get("name") or self.gift_from or "Customer"
+                if self.payment_through in ("ushspa", "USHWEB", "online", "app", "web")
+                else None
+            ),
+            "created_by_role": self.created_by_role or (
+                "Customer"
+                if self.payment_through in ("ushspa", "USHWEB", "online", "app", "web")
+                else None
+            ),
+            "created_by_user_data": self.created_by_user_data or {},
             "total_duration": self.total_duration,
             "total_amount": str(self.total_amount),
             "discount": str(getattr(self, "discount", "0.000")),

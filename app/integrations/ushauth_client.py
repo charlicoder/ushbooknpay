@@ -403,6 +403,19 @@ class USHAuthClient:
 
         return items
 
+    # ── Course API ────────────────────────────────────────────────────────
+
+    async def get_course(self, course_id: str) -> dict[str, Any]:
+        """
+        Fetch a course from ushauth's internal endpoint (no cache — price and
+        status must be fresh at purchase time). Returns the serialized course
+        (envelope ``data`` unwrapped when present).
+        """
+        payload = await self._get(f"/api/v1/internal/courses/{course_id}/")
+        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+            return payload["data"]
+        return payload
+
     # ── Customer API ──────────────────────────────────────────────────────
 
     async def get_customer_profile(self, customer_id: str) -> dict[str, Any]:

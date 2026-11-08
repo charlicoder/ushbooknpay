@@ -574,6 +574,14 @@ class CreateBookingRequest(BaseModel):
         description="Snapshot of the gift voucher at redemption time.",
     )
 
+    # Course redemption: when set, the server forces booking_type=course_redemption,
+    # payment_type=course_subscription, confirmed/success and a zero price.
+    course_subscription_id: uuid.UUID | None = Field(
+        default=None,
+        alias="courseSubscriptionId",
+        description="UUID of the course subscription a session is redeemed from.",
+    )
+
     # Invoice number from ushanr invoice record
     invoice_number: str | None = Field(
         default=None,
@@ -1321,6 +1329,8 @@ class BookingListItem(BaseModel):
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
+    course_subscription_id: str | None = None
+    course_data: dict[str, Any] | None = None
     created_at: LocalDateTime
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
@@ -1414,6 +1424,8 @@ class BookingDetailResponse(BaseModel):
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
+    course_subscription_id: str | None = None
+    course_data: dict[str, Any] | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
     created_by_user: str | None = None
@@ -1485,6 +1497,8 @@ class CreateBookingDataResponse(BaseModel):
     reward_id: str | None = None
     voucher_id: str | None = None
     voucher_data: dict[str, Any] | None = None
+    course_subscription_id: str | None = None
+    course_data: dict[str, Any] | None = None
     created_by_user: str | None = None
     created_by_user_data: dict[str, Any] | None = None
     created_by: str | None = None

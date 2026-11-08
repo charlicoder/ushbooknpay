@@ -47,10 +47,18 @@ METHOD_APPLE_PAY = "apple_pay"
 METHOD_DEEMA_LINK = "deema_link"
 METHOD_BOUBYAN_LINK = "boubyan_link"
 METHOD_GIFT_VOUCHER = "gift_voucher"
+METHOD_COURSE_SUBSCRIPTION = "course_subscription"
 
 THROUGH_VALUES = (THROUGH_USHWEB, THROUGH_USHSPA, THROUGH_USHDESK)
 PROVIDER_VALUES = (PROVIDER_MYFATOORAH, PROVIDER_TAP, PROVIDER_KNET_POS, PROVIDER_BOUBYAN)
-METHOD_VALUES = (METHOD_KNET_CARD, METHOD_APPLE_PAY, METHOD_DEEMA_LINK, METHOD_BOUBYAN_LINK, METHOD_GIFT_VOUCHER)
+METHOD_VALUES = (
+    METHOD_KNET_CARD,
+    METHOD_APPLE_PAY,
+    METHOD_DEEMA_LINK,
+    METHOD_BOUBYAN_LINK,
+    METHOD_GIFT_VOUCHER,
+    METHOD_COURSE_SUBSCRIPTION,
+)
 
 PAID_STATUSES = frozenset({"success", "paid", "completed", "rewarded"})
 
@@ -229,8 +237,8 @@ def apply_attribution(obj: Any) -> None:
                 paid=_is_paid(obj),
             )
         obj.payment_method = method
-        # Gift-voucher redemptions involve no payment gateway.
-        if method == "gift_voucher" and has("payment_provider"):
+        # Gift-voucher / course-session redemptions involve no payment gateway.
+        if method in (METHOD_GIFT_VOUCHER, METHOD_COURSE_SUBSCRIPTION) and has("payment_provider"):
             obj.payment_provider = None
 
     if has("payment_gateway"):
