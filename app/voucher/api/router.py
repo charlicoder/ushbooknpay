@@ -227,6 +227,19 @@ def _extract_created_by_details(v: Any) -> tuple[str | None, str | None, dict[st
     return name, role, user_data
 
 
+def _display_history(v: GiftVoucher) -> list[dict[str, Any]]:
+    """update_history with system actors (e.g. "Payment Gateway") shown as the customer on USHWeb/USHSpa."""
+    from app.voucher.domain.history_actor import sanitize_history
+
+    sdata = getattr(v, "sender_data", None)
+    return sanitize_history(
+        getattr(v, "update_history", None) or [],
+        payment_through=getattr(v, "payment_through", None),
+        sender_data=sdata if isinstance(sdata, dict) else {},
+        gift_from=getattr(v, "gift_from", None),
+    )
+
+
 def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
     """Map ORM GiftVoucher → full GiftVoucherResponse."""
     delivery_status = _extract_delivery_status(v)
@@ -294,7 +307,7 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         reschedule_count=_extract_reschedule_count(v),
         created_at=v.created_at,
         updated_at=v.updated_at,
-        update_history=getattr(v, "update_history", None) or [],
+        update_history=_display_history(v),
     )
 
 
@@ -404,7 +417,7 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         created_by_user_data=cb_user_data,
         created_at=v.created_at,
         updated_at=v.updated_at,
-        update_history=getattr(v, "update_history", None) or [],
+        update_history=_display_history(v),
     )
 
 

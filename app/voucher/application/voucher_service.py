@@ -47,6 +47,7 @@ from app.voucher.domain.services_snapshot import (
     voucher_services_of,
 )
 from app.voucher.domain.state_machine import GiftVoucherStateMachine
+from app.voucher.domain.history_actor import resolve_history_actor
 from app.voucher.domain.value_objects import (
     DeliveryStatus,
     GiftCategory,
@@ -290,15 +291,12 @@ class GiftVoucherService:
             except Exception as e:
                 logger.error("voucher_schedule_creation_error", voucher_id=str(voucher.id), error=str(e))
 
-        creator_name = created_by_name or (
-            (sender_data or {}).get("name") or gift_from or "Customer"
-            if payment_through in ("ushspa", "USHWEB", "online", "app", "web")
-            else "Staff"
-        )
-        creator_role = created_by_role or (
-            "Customer"
-            if payment_through in ("ushspa", "USHWEB", "online", "app", "web")
-            else "Staff"
+        creator_name, creator_role = resolve_history_actor(
+            payment_through=payment_through,
+            sender_data=sender_data,
+            name=created_by_name,
+            role=created_by_role,
+            gift_from=gift_from,
         )
         voucher.update_history = [{
             "action": "created",
@@ -512,15 +510,15 @@ class GiftVoucherService:
             actor_role
             or (actor_data or {}).get("role")
         )
-        if not ch_name:
-            if voucher.payment_through in ("ushspa", "USHWEB", "online", "app", "web"):
-                ch_name = (voucher.sender_data or {}).get("name") or "Payment Gateway / Customer"
-                ch_role = ch_role or "Customer"
-            else:
-                ch_name = "Staff"
-                ch_role = ch_role or "Staff"
-        if not ch_role:
-            ch_role = "Staff" if voucher.payment_through == "desk" else "Customer"
+        ch_name, ch_role = resolve_history_actor(
+            payment_through=voucher.payment_through,
+            sender_data=voucher.sender_data,
+            name=ch_name,
+            role=ch_role,
+            gift_from=voucher.gift_from,
+        )
+        if actor_data and ch_name and (actor_data or {}).get("name") != ch_name:
+            actor_data = None  # rebuilt below from the resolved actor
 
         history_entry = {
             "action": "status_updated",
@@ -823,15 +821,15 @@ class GiftVoucherService:
             or updates.get("changed_by_role")
             or (actor_data or {}).get("role")
         )
-        if not ch_name:
-            if voucher.payment_through in ("ushspa", "USHWEB", "online", "app", "web"):
-                ch_name = (voucher.sender_data or {}).get("name") or "Customer"
-                ch_role = ch_role or "Customer"
-            else:
-                ch_name = "Staff"
-                ch_role = ch_role or "Staff"
-        if not ch_role:
-            ch_role = "Staff" if voucher.payment_through == "desk" else "Customer"
+        ch_name, ch_role = resolve_history_actor(
+            payment_through=voucher.payment_through,
+            sender_data=voucher.sender_data,
+            name=ch_name,
+            role=ch_role,
+            gift_from=voucher.gift_from,
+        )
+        if actor_data and (actor_data or {}).get("name") != ch_name:
+            actor_data = None
 
         ch_user_data = actor_data or kwargs.get("change_by_user_data") or updates.get("change_by_user_data") or {
             "id": str(actor_id) if actor_id else "",

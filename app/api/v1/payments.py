@@ -84,6 +84,43 @@ router = APIRouter(prefix="/payments", tags=["Payments"])
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _apply_explicit_classification(
+    payment: Payment,
+    *,
+    payment_provider: str | None,
+    payment_through: str | None,
+    payment_gateway: str | None,
+    payment_method: str | None,
+) -> None:
+    """
+    Apply the caller's payment classification onto an already-existing payment record.
+
+    * Settled payments (status ``success``) are never reclassified – only empty fields are filled,
+      so historical financial data stays intact.
+    * Unsettled payments (e.g. created earlier when a MyFatoorah link was generated) ARE updated
+      when the caller explicitly states how the customer actually paid. Without this, paying
+      later through the branch KNET POS terminal kept the stale ``myfatoorah`` provider.
+    """
+    settled = str(payment.status or "").strip().lower() == PaymentTransactionStatus.SUCCESS.value
+    explicit_provider = bool(payment_provider) and payment_provider != PaymentProvider.OTHER.value
+    override = explicit_provider and not settled
+
+    if payment_provider and (override or not payment.payment_provider):
+        if payment.payment_provider != payment_provider:
+            payment.payment_provider = payment_provider
+            if payment_provider == PaymentProvider.KNET_POS.value:
+                # No payment link / provider family is involved for the physical terminal.
+                for attr in ("payment_provider_group", "payment_source"):
+                    if hasattr(payment, attr):
+                        setattr(payment, attr, None)
+    if payment_method and (override or not payment.payment_method):
+        payment.payment_method = payment_method
+    if payment_gateway and (override or not payment.payment_gateway):
+        payment.payment_gateway = payment_gateway
+    if payment_through and not payment.payment_through:
+        payment.payment_through = payment_through
+
+
 def _get_provider(
     provider: str,
     http_client: httpx.AsyncClient,
@@ -699,14 +736,13 @@ async def create_payment(
                 booking_id=str(booking_id),
                 payment_id=str(existing_payment.id),
             )
-            if payment_provider and not existing_payment.payment_provider:
-                existing_payment.payment_provider = payment_provider
-            if payment_through and not existing_payment.payment_through:
-                existing_payment.payment_through = payment_through
-            if payment_gateway and not existing_payment.payment_gateway:
-                existing_payment.payment_gateway = payment_gateway
-            if body.payment_method and not existing_payment.payment_method:
-                existing_payment.payment_method = body.payment_method
+            _apply_explicit_classification(
+                existing_payment,
+                payment_provider=payment_provider,
+                payment_through=payment_through,
+                payment_gateway=payment_gateway,
+                payment_method=body.payment_method,
+            )
             if status_str and existing_payment.status != "success":
                 existing_payment.status = status_str
             if body.invoice_number and not existing_payment.invoice_number:
@@ -761,14 +797,13 @@ async def create_payment(
                 existing_payment.payment_data = {**existing_p_data, **payment_data}
             if status_str and existing_payment.status != "success":
                 existing_payment.status = status_str
-            if body.payment_method and not existing_payment.payment_method:
-                existing_payment.payment_method = body.payment_method
-            if payment_provider and not existing_payment.payment_provider:
-                existing_payment.payment_provider = payment_provider
-            if payment_through and not existing_payment.payment_through:
-                existing_payment.payment_through = payment_through
-            if payment_gateway and not existing_payment.payment_gateway:
-                existing_payment.payment_gateway = payment_gateway
+            _apply_explicit_classification(
+                existing_payment,
+                payment_provider=payment_provider,
+                payment_through=payment_through,
+                payment_gateway=payment_gateway,
+                payment_method=body.payment_method,
+            )
             if transaction_id and not existing_payment.transaction_id:
                 existing_payment.transaction_id = transaction_id
             if track_id and not existing_payment.track_id:

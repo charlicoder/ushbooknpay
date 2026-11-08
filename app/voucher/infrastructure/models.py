@@ -52,6 +52,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.voucher.domain.history_actor import is_customer_channel, sanitize_history
 from app.voucher.domain.services_snapshot import (
     remaining_service_ids,
     voucher_redemptions_of,
@@ -427,12 +428,12 @@ class GiftVoucher(Base):
             "created_by": str(self.created_by) if self.created_by else None,
             "created_by_name": self.created_by_name or (
                 (self.sender_data or {}).get("name") or self.gift_from or "Customer"
-                if self.payment_through in ("ushspa", "USHWEB", "online", "app", "web")
+                if is_customer_channel(self.payment_through)
                 else None
             ),
             "created_by_role": self.created_by_role or (
                 "Customer"
-                if self.payment_through in ("ushspa", "USHWEB", "online", "app", "web")
+                if is_customer_channel(self.payment_through)
                 else None
             ),
             "created_by_user_data": self.created_by_user_data or {},
@@ -458,7 +459,12 @@ class GiftVoucher(Base):
             "payment_through": self.payment_through or None,
             "created_at": _to_local_tz(self.created_at).isoformat() if self.created_at else None,
             "updated_at": _to_local_tz(self.updated_at).isoformat() if self.updated_at else None,
-            "update_history": self.update_history or [],
+            "update_history": sanitize_history(
+                self.update_history,
+                payment_through=self.payment_through,
+                sender_data=self.sender_data,
+                gift_from=self.gift_from,
+            ),
             "delivery_mode": self.delivery_mode or "on_activation",
             "scheduled_delivery_at": (
                 _to_local_tz(self.scheduled_delivery_at).isoformat()
