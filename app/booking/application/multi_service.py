@@ -265,7 +265,8 @@ def _validate_consistency(items: list[Any], db_arrangements: dict[str, dict[str,
             for a in offered
             if a.get("is_active", True)
         }
-        if str(item.service_id) not in active_ids:
+        pkg_id = getattr(item, "package_id", None) or (item.service_data or {}).get("package_id")
+        if str(item.service_id) not in active_ids and (not pkg_id or str(pkg_id) not in active_ids):
             raise ServiceValidationError(
                 f"services[{idx}]: service is not available in the selected arrangement."
             )
