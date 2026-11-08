@@ -283,7 +283,9 @@ async def plan_sessions(
     from app.booking.application.multi_service import ServiceValidationError
 
     try:
-        package_ctx = await resolve_package_context(ushauth, items)
+        package_ctx = await resolve_package_context(
+            ushauth, items, allow_component_swap=bool(exclude_booking_id)
+        )
         built = await asyncio.gather(
             *(
                 _build_one_session(ushauth, it, idx, appointment_date, is_loyalty_booking, package_ctx)

@@ -32,7 +32,9 @@ def _unwrap(raw: Any) -> dict[str, Any]:
     return {}
 
 
-async def resolve_package_context(ushauth: Any, items: list[Any]) -> dict[str, dict[str, Any]]:
+async def resolve_package_context(
+    ushauth: Any, items: list[Any], *, allow_component_swap: bool = False
+) -> dict[str, dict[str, Any]]:
     """Validate package coverage across all session items; return per-package pricing context."""
     wanted: dict[str, list[tuple[int, int, str]]] = {}
     for si, item in enumerate(items):
@@ -56,7 +58,13 @@ async def resolve_package_context(ushauth: Any, items: list[Any]) -> dict[str, d
             raise SessionValidationError(f"Package '{pkg.get('name', pid)}' has no included services.")
         included_ids = sorted(str(c.get("id")) for c in included)
         requested_ids = sorted(r[2] for r in refs)
-        if requested_ids != included_ids:
+        if allow_component_swap:
+            if len(requested_ids) != len(included_ids) or len(set(requested_ids)) != len(requested_ids):
+                raise SessionValidationError(
+                    f"Package '{pkg.get('name', pid)}' must be booked with each of its included "
+                    "services exactly once."
+                )
+        elif requested_ids != included_ids:
             raise SessionValidationError(
                 f"Package '{pkg.get('name', pid)}' must be booked with each of its included "
                 "services exactly once."

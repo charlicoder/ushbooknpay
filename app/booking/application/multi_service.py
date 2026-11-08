@@ -148,11 +148,21 @@ def _build_one(
         or db_service.get("category")
         or (item_sd.get("service_category") or item_sd.get("category") or "")
     )
+    is_pkg_component = bool(getattr(item, "package_id", None))
     base_price = str(
-        item.base_price
-        or db_service.get("base_price")
-        or item_sd.get("base_price")
-        or "0"
+        (
+            db_service.get("base_price")
+            or item.base_price
+            or item_sd.get("base_price")
+            or "0"
+        )
+        if is_pkg_component
+        else (
+            item.base_price
+            or db_service.get("base_price")
+            or item_sd.get("base_price")
+            or "0"
+        )
     )
     base_duration = int(
         item.base_duration

@@ -86,3 +86,23 @@ async def test_package_price_charged_once_on_first_component():
     assert e0[0]["base_price"] == "66.000"
     assert e1[0]["base_price"] == "0.000"
     assert e0[0]["package_name"] == "ROYAL" and e1[0]["service_data"]["package_id"] == str(pid)
+
+
+@pytest.mark.asyncio
+async def test_allow_component_swap_on_session_edit():
+    pid, a, b, swapped = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    auth = _FakeAuth(_pkg(pid, [a, b]))
+    ctx = await resolve_package_context(
+        auth, [_Item([_svc(swapped, pid)]), _Item([_svc(b, pid)])], allow_component_swap=True
+    )
+    assert ctx[str(pid)]["price"] == Decimal("66.000")
+    assert ctx[str(pid)]["carrier"] == (0, 0)
+    with pytest.raises(SessionValidationError):
+        await resolve_package_context(
+            auth, [_Item([_svc(swapped, pid)])], allow_component_swap=True
+        )
+    with pytest.raises(SessionValidationError):
+        await resolve_package_context(
+            auth, [_Item([_svc(b, pid)]), _Item([_svc(b, pid)])], allow_component_swap=True
+        )
+
