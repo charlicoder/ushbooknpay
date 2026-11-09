@@ -750,6 +750,17 @@ async def list_all_vouchers(
     service_id: uuid.UUID | None = Query(default=None, description="Optional filter by service ID."),
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)."),
     page_size: int = Query(default=1000, ge=1, le=5000, description="Items per page (defaults to 1000 to send all vouchers)."),
+    view: str | None = Query(default=None, description="'list' or 'report' → slim, filtered, paginated rows for ushdesk (max 100 per page)."),
+    statuses: str | None = Query(default=None, description="[view] Comma separated status keys (scheduled,pending,redeemed,partially_redeemed,active,expired,cancelled)."),
+    channel: str | None = Query(default=None, description="[view] Sales channel: ushweb | desk | ushspa | <payment_through>."),
+    created_by: str | None = Query(default=None, description="[view] Creator user id, or '__online__'."),
+    q: str | None = Query(default=None, description="[view] Search text."),
+    created_from: str | None = Query(default=None, description="[view] Created on/after (YYYY-MM-DD, Kuwait date)."),
+    created_to: str | None = Query(default=None, description="[view] Created on/before (YYYY-MM-DD, Kuwait date)."),
+    redeemed_from: str | None = Query(default=None, description="[view] Redeemed on/after (YYYY-MM-DD, Kuwait date)."),
+    redeemed_to: str | None = Query(default=None, description="[view] Redeemed on/before (YYYY-MM-DD, Kuwait date)."),
+    period_from: str | None = Query(default=None, description="[view] Sales window start: created OR redeemed on/after (YYYY-MM-DD)."),
+    period_to: str | None = Query(default=None, description="[view] Sales window end: created OR redeemed on/before (YYYY-MM-DD)."),
 ) -> JSONResponse:
     """List all gift vouchers. Requires USH_TOKEN only, not filtered by created_by."""
     from fastapi.params import Query as QueryParam
@@ -759,6 +770,26 @@ async def list_all_vouchers(
 
     p_page = _val(page, 1)
     p_page_size = _val(page_size, 1000)
+
+    # Desk list: slim columns only, filtered + paginated in the database (never "all vouchers").
+    p_view = _val(view)
+    if p_view in ("list", "report"):
+        from app.voucher.application import desk_list
+
+        desk_page_size = min(p_page_size, 100)
+        items, total = await desk_list.fetch_page(
+            session,
+            _desk_filters(
+                _val(statuses), _val(channel), _val(created_by), _val(q),
+                _val(created_from), _val(created_to), _val(redeemed_from), _val(redeemed_to),
+                _val(period_from), _val(period_to),
+            ),
+            page=p_page,
+            page_size=desk_page_size,
+            view=p_view,
+        )
+        paginated = make_paginated_response(items, count=total, page=p_page, page_size=desk_page_size)
+        return JSONResponse(status_code=status.HTTP_200_OK, content=paginated.model_dump(mode="json"))
     p_status = _val(status_filter)
     p_delivery_status = _val(delivery_status)
     p_gift_category = _val(gift_category)
@@ -827,6 +858,103 @@ async def list_all_vouchers(
 
 
 list_my_vouchers = list_all_vouchers
+
+
+# ── Desk list helpers (declared before the "/{voucher_id}/" routes so the static paths win) ──
+
+
+def _desk_filters(
+    statuses: str | None,
+    channel: str | None,
+    created_by: str | None,
+    q: str | None,
+    created_from: str | None,
+    created_to: str | None,
+    redeemed_from: str | None,
+    redeemed_to: str | None,
+    period_from: str | None = None,
+    period_to: str | None = None,
+):
+    from app.voucher.application.desk_list import DeskFilters
+
+    keys = [x.strip().lower() for x in (statuses or "").split(",") if x.strip()]
+    # The page treats "6+ statuses selected" as "no status filter"
+    return DeskFilters(
+        statuses=keys if 0 < len(keys) < 6 else [],
+        channel=channel,
+        created_by=created_by,
+        q=q,
+        created_from=created_from,
+        created_to=created_to,
+        redeemed_from=redeemed_from,
+        redeemed_to=redeemed_to,
+        period_from=period_from,
+        period_to=period_to,
+    )
+
+
+@router.get("/stats/", summary="Gift voucher statistics for the desk list (same filters as the list)")
+@router.get("/stats", include_in_schema=False)
+async def voucher_stats(
+    _: RequireAppToken,
+    session: DBSession,
+    statuses: str | None = Query(default=None),
+    channel: str | None = Query(default=None),
+    created_by: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    created_from: str | None = Query(default=None),
+    created_to: str | None = Query(default=None),
+    redeemed_from: str | None = Query(default=None),
+    redeemed_to: str | None = Query(default=None),
+) -> JSONResponse:
+    from app.voucher.application import desk_list
+
+    data = await desk_list.fetch_stats(
+        session, _desk_filters(statuses, channel, created_by, q, created_from, created_to, redeemed_from, redeemed_to)
+    )
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"success": True, "data": data})
+
+
+@router.get("/creators/", summary="Distinct voucher creators (for the 'Created by' filter)")
+@router.get("/creators", include_in_schema=False)
+async def voucher_creators(_: RequireAppToken, session: DBSession) -> JSONResponse:
+    from app.voucher.application import desk_list
+
+    data = await desk_list.fetch_creators(session)
+    return JSONResponse(status_code=status.HTTP_200_OK, content={"success": True, "data": data})
+
+
+@router.get("/{voucher_id}/full/", summary="Full voucher details for the desk (app token)")
+@router.get("/{voucher_id}/full", include_in_schema=False)
+async def get_voucher_full(voucher_id: uuid.UUID, _: RequireAppToken, session: DBSession) -> JSONResponse:
+    """Full voucher (all JSON fields) — loaded on demand when a voucher is opened in ushdesk."""
+    svc = GiftVoucherService(session)
+    try:
+        voucher = await svc.get_by_id(voucher_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+
+    data = _voucher_to_response(voucher)
+    if not data.invoice_number or not data.payment_number:
+        try:
+            from app.payment.infrastructure.models import Payment
+
+            res = await session.execute(
+                select(Payment.invoice_number, Payment.payment_number)
+                .where(Payment.voucher_id == voucher.id)
+                .order_by(Payment.created_at.desc())
+                .limit(1)
+            )
+            row = res.first()
+            if row:
+                data.invoice_number = data.invoice_number or row[0]
+                data.payment_number = data.payment_number or row[1]
+        except Exception:  # pragma: no cover - best effort
+            pass
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={"success": True, "data": data.model_dump(mode="json")},
+    )
 
 
 @router.get(
