@@ -183,6 +183,22 @@ def _extract_reschedule_count(v: Any) -> int:
     return rc if isinstance(rc, int) else 0
 
 
+def _extract_activation_datetime(v: Any) -> datetime | None:
+    ad = getattr(v, "activation_datetime", None)
+    return ad if isinstance(ad, datetime) else None
+
+
+def _extract_referral(v: Any) -> tuple[uuid.UUID | None, str | None, str | None]:
+    """(referenced_by, referenced_by_name, referral_number) with type guards."""
+    rb = getattr(v, "referenced_by", None)
+    rb = rb if isinstance(rb, uuid.UUID) else None
+    name = getattr(v, "referenced_by_name", None)
+    name = name if isinstance(name, str) and name else None
+    num = getattr(v, "referral_number", None)
+    num = num if isinstance(num, str) and num else None
+    return rb, name, num
+
+
 def _extract_created_by_details(v: Any) -> tuple[str | None, str | None, dict[str, Any] | None]:
     name = getattr(v, "created_by_name", None)
     if not isinstance(name, str):
@@ -305,6 +321,10 @@ def _voucher_to_response(v: GiftVoucher) -> GiftVoucherResponse:
         delivered_at=_extract_delivered_at(v),
         delivery_result=_extract_delivery_result(v),
         reschedule_count=_extract_reschedule_count(v),
+        activation_datetime=_extract_activation_datetime(v),
+        referenced_by=_extract_referral(v)[0],
+        referenced_by_name=_extract_referral(v)[1],
+        referral_number=_extract_referral(v)[2],
         created_at=v.created_at,
         updated_at=v.updated_at,
         update_history=_display_history(v),
@@ -415,6 +435,10 @@ def _voucher_to_list_item(v: GiftVoucher) -> GiftVoucherListItem:
         created_by_name=cb_name,
         created_by_role=cb_role,
         created_by_user_data=cb_user_data,
+        activation_datetime=_extract_activation_datetime(v),
+        referenced_by=_extract_referral(v)[0],
+        referenced_by_name=_extract_referral(v)[1],
+        referral_number=_extract_referral(v)[2],
         created_at=v.created_at,
         updated_at=v.updated_at,
         update_history=_display_history(v),
@@ -623,9 +647,28 @@ async def create_gift_voucher(
             "role": created_by_role,
         }
 
+    # ── Resolve referral (affiliate) code → referring employee ───────────
+    # Invalid / unknown codes and lookup failures never block the purchase.
+    referenced_by: uuid.UUID | None = None
+    referenced_by_name: str | None = None
+    referral_number: str | None = None
+    _ref_code = (body.referral_code or "").strip()
+    if _ref_code:
+        try:
+            _emp = await ushauth_client.get_employee_by_referral(_ref_code, settings=settings)
+            if _emp and _emp.get("user_id"):
+                referenced_by = uuid.UUID(str(_emp["user_id"]))
+                referenced_by_name = (_emp.get("name") or "").strip() or None
+                referral_number = str(_emp.get("referral_number") or _ref_code)
+        except Exception as exc:
+            logger.warning("referral_resolve_failed", referral_code=_ref_code, error=str(exc))
+
     svc = GiftVoucherService(session)
     try:
         voucher = await svc.create_voucher(
+            referenced_by=referenced_by,
+            referenced_by_name=referenced_by_name,
+            referral_number=referral_number,
             service_id=body.service_id,
             service_data=body.service_data,
             services=[sv.model_dump(mode="json") for sv in body.services] if body.services else None,

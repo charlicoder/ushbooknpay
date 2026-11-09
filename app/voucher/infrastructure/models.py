@@ -45,6 +45,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
     text,
 )
@@ -305,6 +306,23 @@ class GiftVoucher(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
 
+    # ── Activation ────────────────────────────────────────────────────────
+    # Stamped once, the first time the voucher becomes ACTIVE (i.e. payment
+    # succeeded and, for scheduled delivery, the scheduler activated it).
+    activation_datetime: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # ── Referral / affiliate tracking ─────────────────────────────────────
+    # The employee (ushauth user id) whose affiliate link (?ref=NNNN) led to this
+    # purchase. Set at creation only. Name / number are denormalised so reports
+    # do not need a cross-service lookup.
+    referenced_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    referenced_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    referral_number: Mapped[str | None] = mapped_column(String(8), nullable=True)
+
     # ── Audit timestamps ──────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), default=_now_kuwait, nullable=False
@@ -337,6 +355,7 @@ class GiftVoucher(Base):
         Index("ix_gift_vouchers_payment_through", "payment_through"),
         Index("ix_gift_vouchers_redeemed_by", "redeemed_by"),
         Index("ix_gift_vouchers_created_by", "created_by"),
+        Index("ix_gift_vouchers_referenced_by", "referenced_by"),
         Index("ix_gift_vouchers_is_digital_gift_opened", "is_digital_gift_opened"),
     )
 
@@ -475,3 +494,11 @@ class GiftVoucher(Base):
             "delivery_result": self.delivery_result or None,
             "reschedule_count": self.reschedule_count or 0,
         }
+
+
+# Stamp activation_datetime the first time status becomes ACTIVE, regardless of which
+# code path (create, payment success, scheduled delivery, admin update) sets the status.
+@event.listens_for(GiftVoucher.status, "set")
+def _stamp_activation_datetime(target: GiftVoucher, value, oldvalue, initiator) -> None:
+    if value == "active" and target.activation_datetime is None:
+        target.activation_datetime = datetime.now(timezone.utc)

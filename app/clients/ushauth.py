@@ -75,3 +75,35 @@ async def get_or_create_customer(
     if isinstance(body, dict) and isinstance(body.get("data"), dict):
         return body["data"]
     return body
+
+
+async def get_employee_by_referral(
+    referral_code: str,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    """
+    Resolve an active employee from a 4-digit referral number via
+    GET /api/v1/internal/employees/by-referral/?code=NNNN.
+
+    Returns {user_id, employee_id, name, referral_number}, or None when the code is
+    unknown/inactive. Network or server errors propagate (caller decides; the voucher
+    flow treats them as "no referral" so a purchase is never blocked).
+    """
+    if settings is None:
+        settings = get_settings()
+
+    url = f"{settings.ushauth_base_url.rstrip('/')}/api/v1/internal/employees/by-referral/"
+    headers = {
+        "Accept": "application/json",
+        "X-USHSPA-TOKEN": settings.USHSPA_TOKEN,
+        "USHSPA-TOKEN": settings.USHSPA_TOKEN,
+        "X-Forwarded-Proto": "https",
+    }
+    async with httpx.AsyncClient(timeout=settings.GATEWAY_TIMEOUT) as client:
+        response = await client.get(url, params={"code": referral_code}, headers=headers)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    body = response.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    return data if isinstance(data, dict) else None

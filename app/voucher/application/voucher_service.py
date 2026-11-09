@@ -124,6 +124,9 @@ class GiftVoucherService:
         is_digital_gift_opened: bool = False,
         delivery_mode: str = VoucherDeliveryMode.ON_ACTIVATION.value,
         scheduled_delivery_at: datetime | None = None,
+        referenced_by: uuid.UUID | None = None,
+        referenced_by_name: str | None = None,
+        referral_number: str | None = None,
     ) -> GiftVoucher:
         """
         Create a new GiftVoucher.
@@ -233,6 +236,9 @@ class GiftVoucherService:
             gift_category=category,
             delivery_mode=delivery_mode,
             scheduled_delivery_at=scheduled_delivery_at,
+            referenced_by=referenced_by,
+            referenced_by_name=referenced_by_name,
+            referral_number=referral_number,
             ordered_items=ordered_items,
             delivery_status=delivery_status,
             delivery_address=delivery_address,

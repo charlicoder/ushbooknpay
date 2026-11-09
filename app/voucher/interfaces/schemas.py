@@ -269,6 +269,17 @@ class CreateGiftVoucherRequest(BaseModel):
         ),
     )
 
+    # ── Referral / affiliate ──────────────────────────────────────────
+    referral_code: str | None = Field(
+        default=None,
+        max_length=8,
+        description=(
+            "Optional 4-digit employee referral number taken from the affiliate link "
+            "(e.g. https://ushwellness.com/gift-voucher?ref=1234). Resolved to the "
+            "employee and stored as referenced_by. Unknown codes are ignored."
+        ),
+    )
+
     # ── Authoring ─────────────────────────────────────────────────────
     created_by: uuid.UUID | None = Field(
         default=None,
@@ -1095,6 +1106,10 @@ class GiftVoucherResponse(BaseModel):
     delivered_at: LocalDateTime | None = None
     delivery_result: dict[str, Any] | None = None
     reschedule_count: int = 0
+    activation_datetime: LocalDateTime | None = None
+    referenced_by: uuid.UUID | None = None
+    referenced_by_name: str | None = None
+    referral_number: str | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
     update_history: list[dict[str, Any]] | None = Field(default_factory=list)
@@ -1208,6 +1223,10 @@ class GiftVoucherListItem(BaseModel):
     created_by_name: str | None = None
     created_by_role: str | None = None
     created_by_user_data: dict[str, Any] | None = None
+    activation_datetime: LocalDateTime | None = None
+    referenced_by: uuid.UUID | None = None
+    referenced_by_name: str | None = None
+    referral_number: str | None = None
     created_at: LocalDateTime
     updated_at: LocalDateTime
     update_history: list[dict[str, Any]] | None = Field(default_factory=list)
