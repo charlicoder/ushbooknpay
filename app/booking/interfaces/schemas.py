@@ -1304,6 +1304,8 @@ class BookingListItem(BaseModel):
     appointment_end: LocalDateTime
     duration_minutes: int
     extra_minutes: int = 0
+    price_for_extra_minutes: str | None = None
+    customer_notes: str | None = None
     total_duration: int | None = None
     addons_duration: int | None = None
     base_price: str | None = None

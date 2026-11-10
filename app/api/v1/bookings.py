@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select, update
 
-from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession, RequireAppToken, USHAuthDep
+from app.api.deps import AppSettings, BookingServiceDep, CurrentUser, DBSession, OptionalUser, RequireAppToken, USHAuthDep
 from app.booking.domain.value_objects import BookingStatus, PaymentStatus, PricingBreakdown
 from app.payment.infrastructure.models import Payment, PaymentStatusHistory
 from app.events.contracts import BookingPaymentStatusSuccessEvent, BookingUpdatedEvent
@@ -185,6 +185,48 @@ def _therapist_ids_out(b: object) -> list[str]:
     return ids
 
 
+def _is_therapist_user(user: Any) -> bool:
+    """True when the authenticated employee holds the (non-admin) Therapist role."""
+    if user is None or getattr(user, "is_superuser", None):
+        return False
+    perms = getattr(user, "permissions", None)
+    if isinstance(perms, dict) and perms.get("is_therapist_role") is True:
+        return True
+    return str(getattr(user, "role", "") or "").strip().lower() == "therapist"
+
+
+def _therapist_key(user: Any) -> str:
+    """Therapist profile id used on bookings (falls back to the user id if ushauth did not send it)."""
+    perms = getattr(user, "permissions", None)
+    tid = perms.get("therapist_id") if isinstance(perms, dict) else None
+    return str(tid or user.sub)
+
+
+def _booking_involves_therapist(b: object, therapist_id: str) -> bool:
+    """True when ``therapist_id`` is the primary/secondary or a session therapist of the booking."""
+    tid = str(therapist_id).lower()
+    if str(getattr(b, "therapist_id", "") or "").lower() == tid:
+        return True
+    if (_secondary_therapist_id_out(b) or "").lower() == tid:
+        return True
+    return tid in str(getattr(b, "sessions", "") or "").lower()
+
+
+def _deny_therapist(user: Any) -> None:
+    """Therapists are read-only (plus → completed); block every other mutation."""
+    if _is_therapist_user(user):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "PERMISSION_DENIED", "message": "Therapists cannot modify bookings."},
+        )
+
+
+def _therapist_window_dates() -> tuple[str, str]:
+    """(today, today+7) in the spa timezone — the only range a therapist may query."""
+    today = local_now().date()
+    return today.isoformat(), (today + timedelta(days=7)).isoformat()
+
+
 def _course_subscription_id_out(b: object) -> str | None:
     raw = getattr(b, "course_subscription_id", None)
     return str(raw) if isinstance(raw, (str, uuid.UUID)) and raw else None
@@ -232,6 +274,8 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         appointment_end=b.appointment_end,
         duration_minutes=int(getattr(b, "duration_minutes", 0) or 0),
         extra_minutes=int(getattr(b, "extra_minutes", 0) or 0),
+        price_for_extra_minutes=_safe_str(getattr(b, "price_for_extra_minutes", None)),
+        customer_notes=_safe_str(getattr(b, "customer_notes", None)),
         total_duration=getattr(b, "total_duration", None),
         addons_duration=getattr(b, "addons_duration", None),
         base_price=str(raw_base_price) if raw_base_price is not None else None,
@@ -1597,8 +1641,11 @@ async def list_bookings(
     search: str | None = Query(default=None, description="Search across customer details, notes, etc."),
 ) -> JSONResponse:
     """List bookings with filtering and pagination. Requires bookings.list permission."""
+    is_therapist = _is_therapist_user(current_user)
+
     # Enforce RBAC for employee/admin users; customers use list_my_bookings instead.
-    if current_user.user_type in ("employee", "admin"):
+    # Therapists are exempt: they are locked to their own bookings (today → +7 days) below.
+    if current_user.user_type in ("employee", "admin") and not is_therapist:
         if not current_user.has_permission("bookings.list"):
             raise HTTPException(
                 status_code=403,
@@ -1612,6 +1659,21 @@ async def list_bookings(
 
     p_page = _val(page, 1)
     p_page_size = _val(page_size, 20)
+
+    if is_therapist:
+        # Hard lock: own bookings only, within [today, today+7]; client-supplied values are ignored.
+        win_from, win_to = _therapist_window_dates()
+        req_from, req_to, req_date = _val(from_date), _val(to_date), _val(date)
+        if req_date and win_from <= str(req_date)[:10] <= win_to:
+            req_from = req_to = None
+        else:
+            req_date = None
+        from_date = max(str(req_from)[:10], win_from) if req_from else win_from
+        to_date = min(str(req_to)[:10], win_to) if req_to else win_to
+        date = req_date
+        therapist_id = uuid.UUID(_therapist_key(current_user))
+        customer_id = None
+        search = None
 
     bookings, total = await booking_service.list_bookings(
         page=p_page,
@@ -1701,9 +1763,17 @@ async def get_booking(
     booking_id: uuid.UUID,
     _: RequireAppToken,
     booking_service: BookingServiceDep,
+    current_user: OptionalUser = None,
 ) -> JSONResponse:
     """Get full detail of a booking. Requires only the USHSPA app token (public)."""
     booking = await booking_service.get_booking(booking_id, load_history=True)
+
+    # Therapists may only open bookings they are assigned to.
+    if _is_therapist_user(current_user) and not _booking_involves_therapist(booking, _therapist_key(current_user)):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "PERMISSION_DENIED", "message": "You can only view your own bookings."},
+        )
 
     return JSONResponse(
         content={"success": True, "data": _booking_to_detail(booking).model_dump(mode="json")}
@@ -1733,6 +1803,7 @@ async def change_session_therapist(
     ushauth: USHAuthDep,
 ) -> JSONResponse:
     """Change therapist of one session; only that session's window is availability-checked."""
+    _deny_therapist(current_user)
     therapist_data = body.therapist_data
     if body.therapist_id and not therapist_data:
         try:
@@ -1818,6 +1889,7 @@ async def update_booking(
     ushauth: USHAuthDep,
 ) -> JSONResponse:
     """Update a booking resource."""
+    _deny_therapist(current_user)
     booking = await booking_service.get_booking(booking_id)
     prev_secondary_therapist = _secondary_therapist_id_out(booking)
     was_parked = str(booking.status or "").lower() == BookingStatus.PARKED.value
@@ -2271,8 +2343,23 @@ async def update_booking_status(
     booking_service: BookingServiceDep,
     ushauth: USHAuthDep,
     request: Request = None,
+    current_user: OptionalUser = None,
 ) -> JSONResponse:
     """Update booking status and dispatch SQS event."""
+    # Therapists: own bookings only, and the only transition they may perform is → completed.
+    if _is_therapist_user(current_user):
+        _target = str(getattr(body.status, "value", body.status) or "").strip().lower()
+        if _target != "completed":
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "PERMISSION_DENIED", "message": "Therapists may only mark bookings as completed."},
+            )
+        _owned = await booking_service.get_booking(booking_id)
+        if not _booking_involves_therapist(_owned, _therapist_key(current_user)):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "PERMISSION_DENIED", "message": "You can only update your own bookings."},
+            )
     payment_status = None
     if body.payment_status:
         if isinstance(body.payment_status, str):
