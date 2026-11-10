@@ -10,8 +10,8 @@ The fallback order is:
   1. delivered_at    (set for scheduled vouchers that were activated by the scheduler)
   2. created_at      (always present — the voucher creation timestamp)
 
-Revision ID: 0069_voucher_activation_datetime_full_backfill
-Revises: 0068_voucher_desk_referenced_by_backfill
+Revision ID: 0069_voucher_activation_fill
+Revises: 0068_voucher_referred_by_fill
 Create Date: 2026-11-10
 """
 
@@ -21,8 +21,8 @@ from typing import Union
 
 from alembic import op
 
-revision: str = "0069_voucher_activation_datetime_full_backfill"
-down_revision: Union[str, None] = "0068_voucher_desk_referenced_by_backfill"
+revision: str = "0069_voucher_activation_fill"
+down_revision: Union[str, None] = "0068_voucher_referred_by_fill"
 branch_labels = None
 depends_on = None
 

@@ -10,7 +10,7 @@ Only rows that satisfy ALL conditions below are updated:
   - referenced_by IS NULL       → not already attributed to anyone
   - created_by IS NOT NULL      → we know who created it
 
-Revision ID: 0068_voucher_desk_referenced_by_backfill
+Revision ID: 0068_voucher_referred_by_fill
 Revises: 0067_voucher_desk_list_indexes
 Create Date: 2026-11-10
 """
@@ -21,7 +21,7 @@ from typing import Union
 
 from alembic import op
 
-revision: str = "0068_voucher_desk_referenced_by_backfill"
+revision: str = "0068_voucher_referred_by_fill"
 down_revision: Union[str, None] = "0067_voucher_desk_list_indexes"
 branch_labels = None
 depends_on = None
