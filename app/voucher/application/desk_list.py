@@ -231,6 +231,10 @@ class DeskVoucherItem(BaseModel):
     created_by_name: str | None = None
     created_by_role: str | None = None
     created_by_user_data: dict[str, Any] | None = None
+    referenced_by: uuid.UUID | None = None
+    referenced_by_name: str | None = None
+    referral_number: str | None = None
+    activation_datetime: LocalDateTime | None = None
     recipient_phone: str | None = None
     gift_message: str | None = None
     gift_from: str | None = None
@@ -247,9 +251,6 @@ class DeskVoucherReportItem(DeskVoucherItem):
 
     branch_id: uuid.UUID | None = None
     service_arrangement_data: dict[str, Any] = Field(default_factory=dict)
-    activation_datetime: LocalDateTime | None = None
-    referenced_by_name: str | None = None
-    referral_number: str | None = None
     redeemed_by: uuid.UUID | None = None
     invoice_number: str | None = None
     payment_number: str | None = None
@@ -266,7 +267,8 @@ def _slim_columns(view: str) -> list[Any]:
         G.currency, G.total_duration, G.extra_time, G.gift_category, G.delivery_status, G.delivery_mode,
         G.expire_date, G.created_at, G.updated_at, G.redeemed_at, G.scheduled_delivery_at,
         G.payment_through, G.payment_url, G.payment_provider, G.created_by, G.created_by_name,
-        G.created_by_role, G.recipient_phone, G.gift_message, G.gift_from,
+        G.created_by_role, G.referenced_by, G.referenced_by_name, G.referral_number, G.activation_datetime,
+        G.recipient_phone, G.gift_message, G.gift_from,
         G.created_by_user_data["name"].astext.label("cbu_name"),
         G.created_by_user_data["role"].astext.label("cbu_role"),
         G.service_data["name"].astext.label("sd_name"),
@@ -282,7 +284,7 @@ def _slim_columns(view: str) -> list[Any]:
     ]
     if view == "report":
         cols += [
-            G.branch_id, G.activation_datetime, G.referenced_by_name, G.referral_number, G.redeemed_by,
+            G.branch_id, G.redeemed_by,
             G.service_arrangement_data["arrangement_name"].astext.label("arr_name"),
             _jarr(G.addons, "$[*].name").label("addon_names"),
             G.payment_data["invoice_number"].astext.label("pd_invoice"),
@@ -323,6 +325,8 @@ def _row_to_item(r: Any, view: str) -> DeskVoucherItem:
         "created_by_user_data": (
             {k: v for k, v in (("name", m["cbu_name"]), ("role", m["cbu_role"])) if v} or None
         ),
+        "referenced_by": m["referenced_by"], "referenced_by_name": m["referenced_by_name"],
+        "referral_number": m["referral_number"], "activation_datetime": m["activation_datetime"],
         "recipient_phone": m["recipient_phone"], "gift_message": m["gift_message"], "gift_from": m["gift_from"],
         "service_data": service_data,
         # names only: the list joins them for multi-service vouchers
@@ -336,9 +340,6 @@ def _row_to_item(r: Any, view: str) -> DeskVoucherItem:
         data.update(
             branch_id=m["branch_id"],
             service_arrangement_data={"arrangement_name": m["arr_name"]} if m["arr_name"] else {},
-            activation_datetime=m["activation_datetime"],
-            referenced_by_name=m["referenced_by_name"],
-            referral_number=m["referral_number"],
             redeemed_by=m["redeemed_by"],
             invoice_number=m["pd_invoice"],
             payment_number=m["pd_payment"],

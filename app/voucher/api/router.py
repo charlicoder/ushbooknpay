@@ -492,13 +492,16 @@ async def create_gift_voucher(
     """Create a new gift voucher for the customer or guest."""
     settings = get_settings()
 
-    created_by: uuid.UUID | None = None
-    if current_user:
-        created_by = uuid.UUID(current_user.sub)
-        sender_id = body.sender_id or created_by
-    else:
-        created_by = body.created_by or body.sender_id
-        sender_id = body.sender_id
+    created_by: uuid.UUID | None = body.created_by
+    if not created_by and current_user:
+        try:
+            created_by = uuid.UUID(current_user.sub)
+        except Exception:
+            created_by = None
+    if not created_by:
+        created_by = body.sender_id
+
+    sender_id = body.sender_id or created_by
 
     # Build sender_data from body-supplied data and JWT profile (if present)
     sender_data: dict[str, Any] = body.sender_data.model_dump()
@@ -600,6 +603,17 @@ async def create_gift_voucher(
                 error=str(exc),
             )
 
+    # Resolve creator UUID from headers if not yet resolved
+    if not created_by and request is not None:
+        for h in ("X-User-Id", "x-user-id", "X-Requester-Id", "x-requester-id", "X-Employee-Id", "x-employee-id"):
+            val = request.headers.get(h)
+            if val:
+                try:
+                    created_by = uuid.UUID(str(val))
+                    break
+                except Exception:
+                    pass
+
     # Resolve creator name, role, and details
     created_by_name = body.created_by_name or body.created_by_user
     created_by_role = body.created_by_role
@@ -653,8 +667,8 @@ async def create_gift_voucher(
 
     # ── Resolve referral (affiliate) code → referring employee ───────────
     # Invalid / unknown codes and lookup failures never block the purchase.
-    referenced_by: uuid.UUID | None = None
-    referenced_by_name: str | None = None
+    referenced_by: uuid.UUID | None = body.referenced_by
+    referenced_by_name: str | None = body.referenced_by_name
     referral_number: str | None = None
     _ref_code = (body.referral_code or "").strip()
     if _ref_code:
@@ -668,14 +682,22 @@ async def create_gift_voucher(
             logger.warning("referral_resolve_failed", referral_code=_ref_code, error=str(exc))
 
     # ── Desk-created vouchers: auto-set referenced_by = created_by ────────
-    # When a voucher is created from ushdesk (payment_through="desk") and no
-    # affiliate referral_code was supplied, record the desk staff member who
-    # created the voucher as the referring party.  This lets reports attribute
-    # desk sales back to the specific staff / receptionist who processed them.
-    _is_desk = (body.payment_through or "").strip().lower() == "desk"
-    if _is_desk and referenced_by is None and created_by is not None:
-        referenced_by = created_by
-        referenced_by_name = created_by_name or None
+    # When a voucher is created from ushdesk (payment_through in ("desk", "ushdesk", ...))
+    # and no affiliate referral_code was supplied (or referenced_by is still missing),
+    # record the desk staff member who created the voucher as the referring party.
+    # This lets reports attribute desk sales back to the specific staff / receptionist who processed them.
+    _payment_through_norm = (body.payment_through or "").strip().lower()
+    _source_norm = (getattr(body, "source", None) or "").strip().lower()
+    _is_desk = (
+        _payment_through_norm in ("desk", "ushdesk", "front_desk", "reception")
+        or _source_norm in ("desk", "ushdesk")
+        or (body.created_by_role or "").strip().lower() in ("staff", "admin", "receptionist", "therapist")
+    )
+    if _is_desk:
+        if referenced_by is None:
+            referenced_by = created_by or body.created_by
+        if not referenced_by_name:
+            referenced_by_name = body.referenced_by_name or created_by_name or None
 
     svc = GiftVoucherService(session)
     try:

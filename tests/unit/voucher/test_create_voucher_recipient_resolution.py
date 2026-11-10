@@ -286,7 +286,7 @@ async def test_recipient_created_without_password_marked_as_new_user():
         "password": None,
     }
 
-    async def mock_get_or_create(phone_number, full_name="", without_password=True, settings=None):
+    async def mock_get_or_create(phone_number, full_name="", without_password=True, settings=None, **kwargs):
         captured_kwargs["without_password"] = without_password
         return profile_without_password
 

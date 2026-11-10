@@ -279,6 +279,14 @@ class CreateGiftVoucherRequest(BaseModel):
             "employee and stored as referenced_by. Unknown codes are ignored."
         ),
     )
+    referenced_by: uuid.UUID | None = Field(
+        default=None,
+        description="Optional employee UUID who referred or authored this voucher.",
+    )
+    referenced_by_name: str | None = Field(
+        default=None,
+        description="Optional display name of the referring/authoring staff member.",
+    )
 
     # ── Authoring ─────────────────────────────────────────────────────
     created_by: uuid.UUID | None = Field(

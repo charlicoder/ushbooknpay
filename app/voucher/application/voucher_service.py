@@ -223,6 +223,13 @@ class GiftVoucherService:
         payment_provider = VoucherPaymentProvider.normalise(payment_provider)
         payment_through = VoucherPaymentThrough.normalise(payment_through)
 
+        # Desk-created vouchers: auto-set referenced_by = created_by when no referral was supplied
+        if payment_through == VoucherPaymentThrough.USHDESK.value:
+            if referenced_by is None and created_by is not None:
+                referenced_by = created_by
+            if not referenced_by_name and created_by_name:
+                referenced_by_name = created_by_name
+
         # Resolve expire_date with default 60-day validity
         resolved_expire_date = expire_date
         if resolved_expire_date is None:
