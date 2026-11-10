@@ -140,6 +140,7 @@ async def _build_one_session(
     appointment_date: str,
     is_loyalty_booking: bool,
     package_ctx: dict[str, dict[str, Any]] | None = None,
+    is_home_service: bool = False,
 ) -> dict[str, Any]:
     arr_id = item.service_arrangement_id
     svc_items = [
@@ -148,7 +149,8 @@ async def _build_one_session(
     ]
     # Every service in a session must be offered by the session's arrangement.
     entries = await resolve_service_entries(
-        ushauth, svc_items, is_loyalty_booking=is_loyalty_booking, full_details=True, validate=True
+        ushauth, svc_items, is_loyalty_booking=is_loyalty_booking, full_details=True, validate=True,
+        is_home_service=is_home_service,
     )
     apply_package_context(entries, svc_items, position, package_ctx or {})
 
@@ -273,12 +275,16 @@ async def plan_sessions(
     check_availability: bool = True,
     branch_id: str | None = None,
     exclude_booking_id: str | None = None,
+    is_home_service: bool = False,
 ) -> SessionPlan:
     """
     Build + validate the stored sessions for a request.
 
     Raises :class:`SessionValidationError` (422), :class:`SessionAvailabilityError` (409);
     ushauth gateway errors propagate to the caller unchanged.
+
+    ``is_home_service`` switches extra-time pricing to ``home_price_for_extra_minutes``
+    when available (home bookings).
     """
     from app.booking.application.multi_service import ServiceValidationError
 
@@ -288,7 +294,10 @@ async def plan_sessions(
         )
         built = await asyncio.gather(
             *(
-                _build_one_session(ushauth, it, idx, appointment_date, is_loyalty_booking, package_ctx)
+                _build_one_session(
+                    ushauth, it, idx, appointment_date, is_loyalty_booking, package_ctx,
+                    is_home_service=is_home_service,
+                )
                 for idx, it in enumerate(items)
             )
         )

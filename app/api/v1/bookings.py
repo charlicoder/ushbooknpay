@@ -613,6 +613,7 @@ async def create_booking(
                 is_loyalty_booking=bool(is_loyalty_booking),
                 check_availability=True,
                 branch_id=str(body.branch_id) if body.branch_id else None,
+                is_home_service=(booking_type_str in ("home_service", "home")),
             )
         except SessionValidationError as exc:
             raise HTTPException(

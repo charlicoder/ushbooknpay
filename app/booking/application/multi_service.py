@@ -78,6 +78,7 @@ def _build_one(
     db_arrangement: dict[str, Any],
     is_loyalty_booking: bool,
     full_details: bool = False,
+    is_home_service: bool = False,
 ) -> dict[str, Any]:
     """Merge one request item with ushauth data into a stored service entry."""
     item_sd = item.service_data or {}
@@ -189,6 +190,12 @@ def _build_one(
         for key in ("extra_minutes", "price_for_extra_minutes"):
             if key in db_service and db_service[key] is not None:
                 service_data[key] = db_service[key]
+        # For home service bookings, use home_price_for_extra_minutes as the
+        # per-unit extra-time rate so invoices reflect the correct home pricing.
+        if is_home_service:
+            home_rate = db_service.get("home_price_for_extra_minutes")
+            if home_rate is not None:
+                service_data["price_for_extra_minutes"] = home_rate
 
     arrangement_type = (
         item.arrangement_type
@@ -229,6 +236,7 @@ async def resolve_service_entries(
     is_loyalty_booking: bool = False,
     full_details: bool = False,
     validate: bool | None = None,
+    is_home_service: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Build the ordered list of stored service entries for a booking request.
@@ -238,6 +246,8 @@ async def resolve_service_entries(
     different branches.  ``full_details`` stores the complete ushauth service
     record in ``service_data`` (used by sessions); ``validate`` forces the
     cross-service checks even for a single item (default: only when >1 item).
+    ``is_home_service`` switches extra-time pricing to ``home_price_for_extra_minutes``
+    when available (home bookings).
     """
     service_ids = list(dict.fromkeys(str(i.service_id) for i in items if i.service_id))
     arrangement_ids = list(
@@ -253,7 +263,7 @@ async def resolve_service_entries(
             if item.service_arrangement_id
             else {}
         )
-        entries.append(_build_one(item, pos, db_service, db_arr, is_loyalty_booking, full_details))
+        entries.append(_build_one(item, pos, db_service, db_arr, is_loyalty_booking, full_details, is_home_service))
 
     if validate if validate is not None else len(items) > 1:
         _validate_consistency(items, db_arrangements)
