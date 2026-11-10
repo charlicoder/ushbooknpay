@@ -527,6 +527,8 @@ async def create_gift_voucher(
                     full_name=sender_name_hint,
                     without_password=True,
                     settings=settings,
+                    # gift_from is a display label; never overwrite the real customer name
+                    skip_name_update=True,
                 )
                 if sender_customer.get("id"):
                     sender_id = uuid.UUID(str(sender_customer["id"]))
@@ -564,6 +566,8 @@ async def create_gift_voucher(
                 full_name=full_name_hint,
                 without_password=True,
                 settings=settings,
+                # gift_to / recipient name is a display label; never overwrite the real customer name
+                skip_name_update=True,
             )
             created_flag = bool(customer.get("created", False))
             # Override recipient_id with the authoritative ushauth UUID
@@ -662,6 +666,16 @@ async def create_gift_voucher(
                 referral_number = str(_emp.get("referral_number") or _ref_code)
         except Exception as exc:
             logger.warning("referral_resolve_failed", referral_code=_ref_code, error=str(exc))
+
+    # ── Desk-created vouchers: auto-set referenced_by = created_by ────────
+    # When a voucher is created from ushdesk (payment_through="desk") and no
+    # affiliate referral_code was supplied, record the desk staff member who
+    # created the voucher as the referring party.  This lets reports attribute
+    # desk sales back to the specific staff / receptionist who processed them.
+    _is_desk = (body.payment_through or "").strip().lower() == "desk"
+    if _is_desk and referenced_by is None and created_by is not None:
+        referenced_by = created_by
+        referenced_by_name = created_by_name or None
 
     svc = GiftVoucherService(session)
     try:
@@ -1921,6 +1935,9 @@ async def update_gift_voucher(
                 full_name=full_name_hint,
                 without_password=True,
                 settings=settings,
+                # gift_to / recipient name on a voucher update is a display label;
+                # never overwrite the real customer name
+                skip_name_update=True,
             )
             created_flag = bool(customer.get("created", False))
             if customer.get("id"):

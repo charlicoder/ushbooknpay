@@ -26,16 +26,21 @@ async def get_or_create_customer(
     full_name: str = "",
     without_password: bool = True,
     settings: Settings | None = None,
+    skip_name_update: bool = False,
 ) -> dict[str, Any]:
     """
     Call ushauth POST /api/v1/customers/get-or-create/ and return the
     customer profile dict.
 
     Args:
-        phone_number:     E.164 phone number of the recipient.
-        full_name:        Optional display name to pass when creating a new customer.
-        without_password: Create customer without password (defaults to True).
-        settings:         Optional Settings instance (uses get_settings() if omitted).
+        phone_number:       E.164 phone number of the recipient.
+        full_name:          Optional display name to pass when creating a new customer.
+        without_password:   Create customer without password (defaults to True).
+        settings:           Optional Settings instance (uses get_settings() if omitted).
+        skip_name_update:   When True, ushauth will NOT update the existing customer's
+                            first_name / last_name even when those fields are blank.
+                            Pass True for gift-voucher To/From flows where the name is
+                            a display label, not the customer's real name.
 
     Returns:
         Customer profile dict with keys: id, name, phone_number, email, avatar, created.
@@ -53,6 +58,8 @@ async def get_or_create_customer(
     }
     if full_name:
         payload["full_name"] = full_name
+    if skip_name_update:
+        payload["skip_name_update"] = True
 
     headers = {
         "Content-Type": "application/json",
