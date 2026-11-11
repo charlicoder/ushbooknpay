@@ -130,7 +130,7 @@ class UshanrClient:
         Only creates invoices when payment is successful (payment_status=success/paid).
         """
         p_status = str(getattr(booking, "payment_status", "") or "").strip().lower()
-        if p_status not in ("paid", "success", "rewarded", "completed"):
+        if p_status not in ("paid", "success", "completed"):
             return None
         data = await self.create_or_get_booking_invoice_data(
             booking=booking,

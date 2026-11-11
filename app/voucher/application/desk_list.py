@@ -40,6 +40,8 @@ class DeskFilters:
     created_to: str | None = None
     redeemed_from: str | None = None
     redeemed_to: str | None = None
+    activated_from: str | None = None
+    activated_to: str | None = None
     # Sales report window: created in range OR redeemed in range
     period_from: str | None = None
     period_to: str | None = None
@@ -190,6 +192,15 @@ def build_conditions(f: DeskFilters) -> list[Any]:
     red = _redeemed_range_clause(f.redeemed_from, f.redeemed_to)
     if red is not None:
         conds.append(red)
+
+    if f.activated_from:
+        start = _parse_filter_date(f.activated_from, end_of_day=False)
+        if start:
+            conds.append(G.activation_datetime >= start)
+    if f.activated_to:
+        end = _parse_filter_date(f.activated_to, end_of_day=True)
+        if end:
+            conds.append(G.activation_datetime <= end)
 
     if f.period_from or f.period_to:
         p_start = _parse_filter_date(f.period_from, end_of_day=False) if f.period_from else None

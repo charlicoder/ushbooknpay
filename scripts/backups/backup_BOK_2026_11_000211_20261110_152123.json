@@ -1,0 +1,286 @@
+{
+  "booking": {
+    "id": "9eb55ba7-55dd-430b-b5fd-c5b71423dea5",
+    "booking_number": "BOK/2026/11/000211",
+    "therapist_id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+    "therapist_data": {
+      "id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+      "name": "NIKAY NIKKI ESTAPIA MALAZARTE",
+      "full_name": "NIKAY NIKKI ESTAPIA MALAZARTE",
+      "therapist_id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+      "therapist_name": "NIKAY NIKKI ESTAPIA MALAZARTE"
+    },
+    "secondary_therapist_id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+    "secondary_therapist_data": {},
+    "sessions": [
+      {
+        "addons": [],
+        "position": 0,
+        "services": [
+          {
+            "name": "STRESS RELEASE MASSAGE",
+            "position": 0,
+            "base_price": "24.000",
+            "service_id": "c27d4f90-c9f6-4d4b-b8a1-6a06b37d428f",
+            "service_data": {
+              "id": "c27d4f90-c9f6-4d4b-b8a1-6a06b37d428f",
+              "name": "STRESS RELEASE MASSAGE",
+              "tags": [],
+              "image": "https://dezandlpaipb3.cloudfront.net/services/service/c27d4f90-c9f6-4d4b-b8a1-6a06b37d428f/c820ba4495054e86a8d917d7927d6ea8_medium.webp",
+              "addons": [
+                {
+                  "id": "3c2d5d85-9be9-4f3b-8514-dcefdaf77068",
+                  "name": "EAR CANDLING",
+                  "price": "5.000",
+                  "currency": "KWD",
+                  "is_active": true,
+                  "description": "Earwax Removal\r\nHearing Improvement\r\nRelief of Ear Pressure or Blockage\r\nHeadache or Stress Relief",
+                  "duration_minutes": 15,
+                  "is_available_for_home_service": true
+                },
+                {
+                  "id": "3348cb45-b4ad-4137-85de-52c86e56e34a",
+                  "name": "JACUZZI",
+                  "price": "5.000",
+                  "currency": "KWD",
+                  "is_active": true,
+                  "description": "",
+                  "duration_minutes": 15,
+                  "is_available_for_home_service": false
+                },
+                {
+                  "id": "96cb3c23-bf23-444c-8cb0-60240cbd840d",
+                  "name": "KASAT HWA",
+                  "price": "8.000",
+                  "currency": "KWD",
+                  "is_active": true,
+                  "description": "Also known as dry cupping, this is an ancient therapeutic technique that uses special\r\ncups placed on the skin to stimulate blood circulation & naturally promote overall\r\nhealth. This method helps to: Improve blood flow, Relieve muscle pain, and Support\r\nthe body\u2019s natural healing process.",
+                  "duration_minutes": 15,
+                  "is_available_for_home_service": true
+                },
+                {
+                  "id": "3819d393-caff-476f-82f6-2f780cffbb3c",
+                  "name": "SAUNA",
+                  "price": "5.000",
+                  "currency": "KWD",
+                  "is_active": true,
+                  "description": "",
+                  "duration_minutes": 15,
+                  "is_available_for_home_service": false
+                },
+                {
+                  "id": "3ad3e1fd-01a1-42a9-b7aa-973ac5f96652",
+                  "name": "VENTSUA",
+                  "price": "8.000",
+                  "currency": "KWD",
+                  "is_active": true,
+                  "description": "",
+                  "duration_minutes": 14,
+                  "is_available_for_home_service": false
+                }
+              ],
+              "image1": "https://dezandlpaipb3.cloudfront.net/services/service/c27d4f90-c9f6-4d4b-b8a1-6a06b37d428f/c820ba4495054e86a8d917d7927d6ea8_medium.webp",
+              "status": "active",
+              "benefits": "",
+              "branches": [
+                {
+                  "name": "Mangaf Branch",
+                  "branch_id": "84093414-9d72-48d8-aa91-a316fa9ba2ff"
+                },
+                {
+                  "name": "Sharq Branch",
+                  "branch_id": "8d93e387-e927-460d-91ab-4df9072f1977"
+                }
+              ],
+              "category": "",
+              "currency": "KWD",
+              "base_price": "24.000",
+              "sort_order": 2,
+              "description": "A luxurious stress-relief experience designed to calm the body and mind, ease anxiety, and create a deep sense of peace and comfort through soothing massage techniques.\r\n\r\nSession Includes:\r\n\t\u2022\tLuxurious relaxing body massage\r\n\t\u2022\tNervous system calming techniques\r\n\t\u2022\tStress relief therapy\r\n\t\u2022\tFull muscle relaxation\r\n\t\u2022\tPeaceful aromatic atmosphere\r\n\r\nBenefits:\r\n\t\u2022\tCalms the nervous system\r\n\t\u2022\tImproves mood\r\n\t\u2022\tReduces stress and anxiety\r\n\t\u2022\tPromotes deep relaxation\r\n\t\u2022\tImproves sleep quality",
+              "is_featured": false,
+              "is_for_male": true,
+              "base_duration": 60,
+              "extra_minutes": 30,
+              "is_for_female": true,
+              "service_types": [],
+              "loyalty_points": 48,
+              "included_addons": [],
+              "price_in_points": 240,
+              "duration_minutes": 60,
+              "home_service_end": "23:30:00",
+              "session_benefits": "",
+              "home_service_open": "10:00:00",
+              "included_services": [],
+              "arrangement_prices": [
+                {
+                  "image": null,
+                  "price": "24.000",
+                  "currency": "KWD",
+                  "branch_id": "8d93e387-e927-460d-91ab-4df9072f1977",
+                  "arrangement_id": "e55a70d5-b5ef-4c28-8235-18ee15626074",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Single Room",
+                  "arrangement_type": "single_room",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": null,
+                  "currency": "KWD",
+                  "branch_id": "b2b98fed-9206-4e94-9fed-12313976d615",
+                  "arrangement_id": "20239c5b-c19e-4ba4-9a79-a48a9d35795f",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Single Room",
+                  "arrangement_type": "single_room",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": null,
+                  "currency": "KWD",
+                  "branch_id": "84093414-9d72-48d8-aa91-a316fa9ba2ff",
+                  "arrangement_id": "a70632ba-4abd-4fb9-b201-f3e485515f5e",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Single Room",
+                  "arrangement_type": "single_room",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": "48.000",
+                  "currency": "KWD",
+                  "branch_id": "8d93e387-e927-460d-91ab-4df9072f1977",
+                  "arrangement_id": "60ad82e9-ff4a-4de8-ab25-b6bd89a11dee",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Friends Room",
+                  "arrangement_type": "couple_room",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": null,
+                  "currency": "KWD",
+                  "branch_id": "84093414-9d72-48d8-aa91-a316fa9ba2ff",
+                  "arrangement_id": "4ae7ef3a-9b82-4733-b59c-c15ac90de3bf",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Single Room with ZS",
+                  "arrangement_type": "single_room",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": null,
+                  "currency": "KWD",
+                  "branch_id": "8d93e387-e927-460d-91ab-4df9072f1977",
+                  "arrangement_id": "19283b1b-4e47-42a2-a294-a4c012cd4392",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Royal Suite",
+                  "arrangement_type": "vip_suite",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": null,
+                  "currency": "KWD",
+                  "branch_id": "84093414-9d72-48d8-aa91-a316fa9ba2ff",
+                  "arrangement_id": "744b825c-9421-42a0-9425-d175f36a6c23",
+                  "loyalty_points": null,
+                  "price_in_points": null,
+                  "arrangement_name": "Single Room (Zacuzzi)",
+                  "arrangement_type": "single_room",
+                  "can_avail_with_loyalty_points": true
+                },
+                {
+                  "image": null,
+                  "price": "48.000",
+                  "currency": "KWD",
+                  "branch_id": "84093414-9d72-48d8-aa91-a316fa9ba2ff",
+                  "arrangement_id": "7b9aca34-b3f8-4a49-9d75-ef20c2d924a3",
+                  "loyalty_points": 96,
+                  "price_in_points": 480,
+                  "arrangement_name": "Friends Room",
+                  "arrangement_type": "couple_room",
+                  "can_avail_with_loyalty_points": true
+                }
+              ],
+              "home_service_price": "34.000",
+              "home_loyalty_points": 68,
+              "home_price_in_points": 340,
+              "is_packaged_services": false,
+              "is_eligible_for_loyalty": true,
+              "price_for_extra_minutes": "8.000",
+              "is_home_service_eligible": true,
+              "home_price_for_extra_minutes": "10.000",
+              "can_avail_with_loyalty_points": true
+            },
+            "service_name": "STRESS RELEASE MASSAGE",
+            "duration_minutes": 60,
+            "service_arrangement_id": "a70632ba-4abd-4fb9-b201-f3e485515f5e",
+            "service_arrangement_data": {
+              "id": "a70632ba-4abd-4fb9-b201-f3e485515f5e",
+              "room_name": "Single Room",
+              "loyalty_points": null,
+              "price_in_points": null,
+              "arrangement_name": "Single Room",
+              "arrangement_type": "single_room"
+            }
+          }
+        ],
+        "session_id": "4c184233-8c7b-4edc-b365-45dcfb798661",
+        "service_ids": [
+          "c27d4f90-c9f6-4d4b-b8a1-6a06b37d428f"
+        ],
+        "addons_price": "0.000",
+        "service_name": "STRESS RELEASE MASSAGE",
+        "therapist_id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+        "extra_minutes": 0,
+        "session_price": "24.000",
+        "services_price": "24.000",
+        "therapist_data": {
+          "id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+          "name": "NIKAY NIKKI ESTAPIA MALAZARTE",
+          "avatar": "https://dezandlpaipb3.cloudfront.net/employees/employee/564307f8-bb27-479d-8126-650b0161ca94/c074509043d4402fbc3148e4b325d67a_medium.webp",
+          "full_name": "NIKAY NIKKI ESTAPIA MALAZARTE",
+          "photo_url": "https://dezandlpaipb3.cloudfront.net/employees/employee/564307f8-bb27-479d-8126-650b0161ca94/c074509043d4402fbc3148e4b325d67a_medium.webp",
+          "therapist_id": "4a0e79bf-1c46-42c5-ab37-5ecb093a04b9",
+          "therapist_name": "NIKAY NIKKI ESTAPIA MALAZARTE"
+        },
+        "addons_duration": 0,
+        "appointment_end": "2026-11-10T16:00:00+03:00",
+        "appointment_start": "2026-11-10T15:00:00+03:00",
+        "services_duration": 60,
+        "secondary_therapist_id": "1b4a0561-aee9-4253-8d1b-2ae7d5017398",
+        "service_arrangement_id": "a70632ba-4abd-4fb9-b201-f3e485515f5e",
+        "total_session_duration": 60,
+        "price_for_extra_minutes": "0.000",
+        "secondary_therapist_data": {
+          "id": "1b4a0561-aee9-4253-8d1b-2ae7d5017398",
+          "name": "JINKY JINKEE FABROA  CORPUZ",
+          "avatar": "https://dezandlpaipb3.cloudfront.net/employees/employee/2178939e-d416-468e-9fba-33848a69304c/5c74981efe7e4abd9962b102b7b25f22_medium.webp",
+          "full_name": "JINKY JINKEE FABROA  CORPUZ",
+          "photo_url": "https://dezandlpaipb3.cloudfront.net/employees/employee/2178939e-d416-468e-9fba-33848a69304c/5c74981efe7e4abd9962b102b7b25f22_medium.webp",
+          "therapist_name": "JINKY JINKEE FABROA  CORPUZ"
+        },
+        "service_arrangement_data": {
+          "id": "a70632ba-4abd-4fb9-b201-f3e485515f5e",
+          "room_name": "Single Room",
+          "loyalty_points": null,
+          "price_in_points": null,
+          "arrangement_name": "Single Room",
+          "arrangement_type": "single_room"
+        }
+      }
+    ]
+  },
+  "removed_therapist": {
+    "id": "1b4a0561-aee9-4253-8d1b-2ae7d5017398",
+    "name": "JINKY JINKEE FABROA  CORPUZ"
+  },
+  "cache_rows": []
+}

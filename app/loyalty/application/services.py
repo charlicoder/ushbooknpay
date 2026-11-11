@@ -246,6 +246,28 @@ class LoyaltyService:
         if account is None:
             raise ValueError(f"No loyalty account found for customer {customer_id}.")
 
+        if booking_id:
+            from sqlalchemy import select as _select
+            from app.loyalty.domain.models import TransactionType as _TxnType
+            from app.loyalty.infrastructure.models import LoyaltyTransaction as _LoyaltyTxn
+
+            already = (
+                await self._session.execute(
+                    _select(_LoyaltyTxn.id).where(
+                        _LoyaltyTxn.customer_id == customer_id,
+                        _LoyaltyTxn.booking_id == booking_id,
+                        _LoyaltyTxn.transaction_type == _TxnType.REDEEM.value,
+                    ).limit(1)
+                )
+            ).first()
+            if already is not None:
+                logger.info(
+                    "loyalty_redeem_skipped_already_redeemed",
+                    customer_id=str(customer_id),
+                    booking_id=str(booking_id),
+                )
+                return account
+
         return await self._repo.debit_points(
             customer_id=customer_id,
             points=cost_in_points,

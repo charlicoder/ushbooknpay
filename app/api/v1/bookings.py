@@ -677,6 +677,7 @@ async def create_booking(
                 ushauth,
                 body.services or [],
                 is_loyalty_booking=bool(is_loyalty_booking),
+                is_home_service=(booking_type_str in ("home_service", "home")),
             )
         except ServiceValidationError as exc:
             raise HTTPException(
@@ -1349,7 +1350,11 @@ async def create_booking(
                     detail=str(exc),
                 )
 
-    # ── Auto-create or fetch invoice from ushanr only when payment_status=success or loyalty booking ─
+    # Persist the booking (and any loyalty redemption) before external invoice / payment side-effects
+    await booking_service._session.commit()
+
+    # ── Auto-create or fetch invoice from ushanr only when payment_status=success/paid ─
+    # When booking is paid with loyalty points (payment_status="rewarded"), skip invoice & payment records.
     inv_id_res: str | None = None
     inv_num_res: str | None = getattr(booking, "invoice_number", None)
     is_voucher_redemption = (
@@ -1362,6 +1367,7 @@ async def create_booking(
     is_loyalty = (
         is_loyalty_booking
         or booking_type_str == "loyalty"
+        or payment_type_str == "rewarded"
         or _booking_pstatus == "rewarded"
         or bool(body.loyalty_data)
     )
@@ -1369,7 +1375,8 @@ async def create_booking(
         not inv_num_res
         and not is_voucher_redemption
         and not is_course_redemption
-        and (_booking_pstatus in (PaymentStatus.SUCCESS.value, "success", "paid") or is_loyalty)
+        and not is_loyalty
+        and _booking_pstatus in (PaymentStatus.SUCCESS.value, "success", "paid")
     ):
         from app.integrations.ushanr_client import UshanrClient
         ushanr_c = UshanrClient()
@@ -1401,7 +1408,7 @@ async def create_booking(
             logger.warning("auto_create_booking_invoice_failed", booking_id=str(booking.id), error=str(exc))
         finally:
             await ushanr_c.aclose()
-    elif inv_num_res:
+    elif inv_num_res and not is_loyalty:
         from app.integrations.ushanr_client import UshanrClient
         ushanr_c = UshanrClient()
         try:
@@ -1413,107 +1420,6 @@ async def create_booking(
         finally:
             await ushanr_c.aclose()
 
-    # ── For loyalty bookings: create payment record with zero amount and connect invoice ──
-    if is_loyalty and not is_course_redemption:
-        try:
-            p_stmt = select(Payment).where(Payment.booking_id == booking.id)
-            p_res = await booking_service._session.execute(p_stmt)
-            existing_p = p_res.scalars().first()
-
-            computed_dur = int(
-                getattr(booking, "total_duration", None)
-                or (
-                    booking.duration_minutes
-                    + (booking.extra_minutes or 0)
-                    + (getattr(booking, "addons_duration", None) or 0)
-                )
-                or 60
-            )
-
-            if existing_p:
-                if inv_num_res:
-                    existing_p.invoice_number = inv_num_res
-                if inv_id_res:
-                    existing_p.invoice_id = inv_id_res
-                existing_p.total_amount = Decimal("0")
-                existing_p.invoice_value = Decimal("0")
-                existing_p.status = "success"
-                if not existing_p.payment_provider:
-                    existing_p.payment_provider = "Loyalty Points"
-                if not existing_p.payment_through:
-                    existing_p.payment_through = "ushspa"
-                if not existing_p.payment_method:
-                    existing_p.payment_method = "loyalty_points"
-                p_rec = existing_p
-            else:
-                from app.api.v1.payments import generate_payment_number
-                pmt_num = await generate_payment_number(booking_service._session)
-                p_rec = Payment(
-                    payment_number=pmt_num,
-                    booking_id=booking.id,
-                    customer_id=booking.customer_id,
-                    customer_data=booking.customer_data,
-                    service_id=booking.service_id,
-                    service_data=booking.service_data,
-                    branch_id=booking.branch_id,
-                    branch_data=booking.branch_data,
-                    service_arrangement_id=booking.service_arrangement_id,
-                    service_arrangement_data=booking.service_arrangement_data,
-                    total_amount=Decimal("0"),
-                    total_duration=computed_dur,
-                    currency=booking.currency or "KWD",
-                    status="success",
-                    payment_for="branch_service",
-                    payment_provider="Loyalty Points",
-                    payment_through="ushspa",
-                    payment_gateway="Other",
-                    payment_method="loyalty_points",
-                    invoice_number=inv_num_res,
-                    invoice_id=inv_id_res,
-                    invoice_value=Decimal("0"),
-                    payment_data={
-                        **(merged_payment_data or {}),
-                        "booking_type": "loyalty",
-                        "invoice_number": inv_num_res,
-                        "invoice_id": inv_id_res,
-                        "points_cost": (
-                            entries_points_cost
-                            or (int(body.price_in_points) if getattr(body, "price_in_points", None) else 0)
-                            or (int(body.loyalty_points) if body.loyalty_points else 0)
-                            or (int(body.loyalty_data.get("points_cost", 0)) if body.loyalty_data else 0)
-                        ),
-                    },
-                    created_by_user=str(created_by_user or created_by or "customer"),
-                    created_by_user_data=created_by_user_data,
-                )
-                booking_service._session.add(p_rec)
-                await booking_service._session.flush()
-
-                p_hist = PaymentStatusHistory(
-                    payment_id=p_rec.id,
-                    old_status=None,
-                    new_status="success",
-                    source="ushspa",
-                    reason="Loyalty reward booking - payment completed with zero amount",
-                    change_by_user=str(created_by_user or created_by or "customer"),
-                    change_by_user_data=created_by_user_data,
-                    correlation_id=str(p_rec.id),
-                )
-                booking_service._session.add(p_hist)
-
-            booking.payment_id = p_rec.id
-            booking_pdata = dict(booking.payment_data or {})
-            if p_rec.payment_number:
-                booking_pdata["payment_number"] = p_rec.payment_number
-            if inv_num_res:
-                booking_pdata["invoice_number"] = inv_num_res
-            if inv_id_res:
-                booking_pdata["invoice_id"] = inv_id_res
-            booking.payment_data = booking_pdata
-            await booking_service._session.commit()
-        except Exception as p_err:
-            logger.warning("auto_create_loyalty_payment_failed", booking_id=str(booking.id), error=str(p_err))
-
     # ── 7b. Create appointment_cache in ushauth immediately on booking creation ──
     try:
         appt_date_str = appointment_start.strftime("%Y-%m-%d")
@@ -1522,7 +1428,12 @@ async def create_booking(
         cust_name = f"{customer_data.get('first_name', '')} {customer_data.get('last_name', '')}".strip()
 
         _initial_cache_status = "confirmed" if str(booking.status or "").lower() in ("confirmed", "draft") else str(booking.status or "confirmed").lower()
-        _initial_cache_payment_status = "paid" if str(booking.payment_status or "").lower() in ("success", "paid") else "pending"
+        _bk_pstatus_lower = str(booking.payment_status or "").lower()
+        _initial_cache_payment_status = (
+            "rewarded"
+            if _bk_pstatus_lower == "rewarded" or is_loyalty
+            else ("paid" if _bk_pstatus_lower in ("success", "paid") else "pending")
+        )
 
         await ushauth.create_appointment_cache(
             service_arrangement_id=str(body.service_arrangement_id) if body.service_arrangement_id else None,
@@ -1538,7 +1449,7 @@ async def create_booking(
             customer_name=cust_name or None,
             branch_id=str(body.branch_id) if body.branch_id else None,
             branch_name=branch_name or None,
-            service_id=service_entries[0]["service_id"] or None,
+            service_id=(service_entries[0].get("service_id") if service_entries else (str(booking.service_id) if booking.service_id else None)),
             service_name=service_name or None,
             services=cache_services_payload(service_entries),
             secondary_therapist_id=str(selected_secondary_therapist_id) if selected_secondary_therapist_id else None,

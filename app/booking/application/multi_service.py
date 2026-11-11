@@ -94,8 +94,18 @@ def _build_one(
                 db_arr_price_pts = asvc.get("price_in_points")
                 break
 
-    db_loyalty = db_service.get("loyalty_points")
-    db_price_pts = db_service.get("price_in_points")
+    # Home-service bookings (and loyalty redemptions of home services, flagged by the
+    # client with ``use_home_loyalty_points``) earn / cost the HOME loyalty points.
+    use_home_points = bool(is_home_service or item_sd.get("use_home_loyalty_points"))
+    if use_home_points:
+        db_loyalty = db_service.get("home_loyalty_points")
+        db_price_pts = db_service.get("home_price_in_points")
+        # arrangement (room) level points are branch-only
+        db_arr_loyalty = None
+        db_arr_price_pts = None
+    else:
+        db_loyalty = db_service.get("loyalty_points")
+        db_price_pts = db_service.get("price_in_points")
     db_eligible = db_service.get("is_eligible_for_loyalty")
 
     if db_loyalty is not None and int(db_loyalty) > 0:
@@ -117,15 +127,19 @@ def _build_one(
     else:
         is_eligible = bool(item.is_eligible_for_loyalty or item_sd.get("is_eligible_for_loyalty", False))
 
-    if db_arr_loyalty is not None and int(db_arr_loyalty) > 0:
-        arr_loyalty_points: Any = int(db_arr_loyalty)
+    if use_home_points:
+        arr_loyalty_points: Any = None
+    elif db_arr_loyalty is not None and int(db_arr_loyalty) > 0:
+        arr_loyalty_points = int(db_arr_loyalty)
     elif item.arrangement_loyalty_points is not None:
         arr_loyalty_points = int(item.arrangement_loyalty_points)
     else:
         arr_loyalty_points = item_ad.get("loyalty_points")
 
-    if db_arr_price_pts is not None and int(db_arr_price_pts) > 0:
-        arr_price_in_points: Any = int(db_arr_price_pts)
+    if use_home_points:
+        arr_price_in_points: Any = None
+    elif db_arr_price_pts is not None and int(db_arr_price_pts) > 0:
+        arr_price_in_points = int(db_arr_price_pts)
     elif item.arrangement_price_in_points is not None:
         arr_price_in_points = int(item.arrangement_price_in_points)
     else:

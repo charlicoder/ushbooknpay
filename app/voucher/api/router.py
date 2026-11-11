@@ -795,6 +795,8 @@ async def list_all_vouchers(
     created_to: str | None = Query(default=None, description="[view] Created on/before (YYYY-MM-DD, Kuwait date)."),
     redeemed_from: str | None = Query(default=None, description="[view] Redeemed on/after (YYYY-MM-DD, Kuwait date)."),
     redeemed_to: str | None = Query(default=None, description="[view] Redeemed on/before (YYYY-MM-DD, Kuwait date)."),
+    activated_from: str | None = Query(default=None, description="[view] Activated on/after (YYYY-MM-DD, Kuwait date)."),
+    activated_to: str | None = Query(default=None, description="[view] Activated on/before (YYYY-MM-DD, Kuwait date)."),
     period_from: str | None = Query(default=None, description="[view] Sales window start: created OR redeemed on/after (YYYY-MM-DD)."),
     period_to: str | None = Query(default=None, description="[view] Sales window end: created OR redeemed on/before (YYYY-MM-DD)."),
 ) -> JSONResponse:
@@ -818,6 +820,7 @@ async def list_all_vouchers(
             _desk_filters(
                 _val(statuses), _val(channel), _val(created_by), _val(q),
                 _val(created_from), _val(created_to), _val(redeemed_from), _val(redeemed_to),
+                _val(activated_from), _val(activated_to),
                 _val(period_from), _val(period_to),
             ),
             page=p_page,
@@ -908,6 +911,8 @@ def _desk_filters(
     created_to: str | None,
     redeemed_from: str | None,
     redeemed_to: str | None,
+    activated_from: str | None = None,
+    activated_to: str | None = None,
     period_from: str | None = None,
     period_to: str | None = None,
 ):
@@ -924,6 +929,8 @@ def _desk_filters(
         created_to=created_to,
         redeemed_from=redeemed_from,
         redeemed_to=redeemed_to,
+        activated_from=activated_from,
+        activated_to=activated_to,
         period_from=period_from,
         period_to=period_to,
     )
@@ -942,11 +949,17 @@ async def voucher_stats(
     created_to: str | None = Query(default=None),
     redeemed_from: str | None = Query(default=None),
     redeemed_to: str | None = Query(default=None),
+    activated_from: str | None = Query(default=None),
+    activated_to: str | None = Query(default=None),
 ) -> JSONResponse:
     from app.voucher.application import desk_list
 
     data = await desk_list.fetch_stats(
-        session, _desk_filters(statuses, channel, created_by, q, created_from, created_to, redeemed_from, redeemed_to)
+        session, _desk_filters(
+            statuses, channel, created_by, q,
+            created_from, created_to, redeemed_from, redeemed_to,
+            activated_from, activated_to,
+        )
     )
     return JSONResponse(status_code=status.HTTP_200_OK, content={"success": True, "data": data})
 

@@ -226,7 +226,7 @@ async def test_api_create_booking_auto_infers_confirmed_from_paid_payment_data()
 
 @pytest.mark.asyncio
 async def test_api_create_loyalty_booking_creates_zero_invoice_and_payment(monkeypatch):
-    """Verify that booking with loyalty points creates zero-amount invoice and payment record."""
+    """Verify that booking with loyalty points (rewarded) does NOT create any invoice or payment record."""
     from unittest.mock import patch
     from app.payment.infrastructure.models import Payment
 
@@ -302,9 +302,7 @@ async def test_api_create_loyalty_booking_creates_zero_invoice_and_payment(monke
 
     # Mock UshanrClient and generate_payment_number
     mock_ushanr = AsyncMock()
-    mock_ushanr.create_or_get_booking_invoice_data = AsyncMock(
-        return_value={"invoice_id": "INV-ID-123", "invoice_number": "INV/2026/10/00099"}
-    )
+    mock_ushanr.create_or_get_booking_invoice_data = AsyncMock()
     mock_ushanr.aclose = AsyncMock()
 
     with patch("app.integrations.ushanr_client.UshanrClient", return_value=mock_ushanr), \
@@ -320,21 +318,16 @@ async def test_api_create_loyalty_booking_creates_zero_invoice_and_payment(monke
             settings=mock_settings,
         )
 
-    # 1. Invoice created and linked to booking
-    assert created_booking.invoice_number == "INV/2026/10/00099"
-    assert response.data.invoice_number == "INV/2026/10/00099"
+    # 1. No invoice created and no invoice call made to ushanr
+    mock_ushanr.create_or_get_booking_invoice_data.assert_not_called()
+    assert created_booking.invoice_number is None
+    assert response.data.invoice_number is None
 
-    # 2. Payment added to session with zero amount and connected to invoice
+    # 2. No Payment record added to session
     added_payments = [
         call.args[0] for call in mock_session.add.call_args_list
         if isinstance(call.args[0], Payment)
     ]
-    assert len(added_payments) == 1
-    payment = added_payments[0]
-    assert payment.total_amount == Decimal("0")
-    assert payment.invoice_number == "INV/2026/10/00099"
-    assert payment.invoice_id == "INV-ID-123"
-    assert payment.payment_number == "PMT/2026/10/000001"
-    assert payment.payment_provider == "Loyalty Points"
-    assert payment.payment_through == "ushspa"
-    assert payment.status == "success"
+    assert len(added_payments) == 0
+    assert response.data.payment_status == "rewarded"
+    assert response.data.payment_id is None
