@@ -102,11 +102,12 @@ class GiftVoucherRepository:
 
     # ── Single-record lookups ─────────────────────────────────────────────────
 
-    async def get_by_id(self, voucher_id: uuid.UUID) -> GiftVoucher | None:
+    async def get_by_id(self, voucher_id: uuid.UUID, for_update: bool = False) -> GiftVoucher | None:
         """Return a GiftVoucher by primary key or None."""
-        result = await self._session.execute(
-            select(GiftVoucher).where(GiftVoucher.id == voucher_id)
-        )
+        stmt = select(GiftVoucher).where(GiftVoucher.id == voucher_id)
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_by_public_token(self, public_token: str) -> GiftVoucher | None:

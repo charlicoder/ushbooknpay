@@ -423,7 +423,7 @@ class GiftVoucherService:
             NotFoundError:   if the voucher does not exist.
             ValidationError: if the status transition is illegal.
         """
-        voucher = await self._repo.get_by_id(voucher_id)
+        voucher = await self._repo.get_by_id(voucher_id, for_update=True)
         if voucher is None:
             raise NotFoundError(f"Gift voucher {voucher_id} not found.")
 
@@ -437,6 +437,24 @@ class GiftVoucherService:
         # redirect to SCHEDULED instead.
         if target_status == GiftVoucherStatus.ACTIVE and voucher.delivery_mode == VoucherDeliveryMode.SCHEDULED.value and not voucher.delivered_at:
             target_status = GiftVoucherStatus.SCHEDULED
+
+        # Idempotency check: if already at target_status, return immediately to avoid duplicate events
+        if current_status == target_status:
+            logger.info(
+                "gift_voucher_status_already_current",
+                voucher_id=str(voucher_id),
+                status=target_status.value,
+            )
+            changed = False
+            if payment_id and not voucher.payment_id:
+                voucher.payment_id = payment_id
+                changed = True
+            if payment_data:
+                voucher.payment_data = {**(voucher.payment_data or {}), **payment_data}
+                changed = True
+            if changed:
+                await self._repo.flush()
+            return voucher
 
         try:
             GiftVoucherStateMachine.validate_transition(current_status, target_status)
