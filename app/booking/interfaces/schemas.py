@@ -143,6 +143,13 @@ class BookingSessionItem(BaseModel):
     secondary_therapist_data: dict[str, Any] | None = Field(
         default=None, alias="secondaryTherapistData"
     )
+    tertiary_therapist_id: uuid.UUID | None = Field(default=None, alias="tertiaryTherapistId")
+    tertiary_therapist_name: str | None = Field(
+        default=None, alias="tertiaryTherapistName", max_length=255
+    )
+    tertiary_therapist_data: dict[str, Any] | None = Field(
+        default=None, alias="tertiaryTherapistData"
+    )
     service_arrangement_id: uuid.UUID | None = Field(default=None, alias="serviceArrangementId")
     arrangement_name: str | None = Field(default=None, alias="arrangementName", max_length=255)
     arrangement_type: str | None = Field(default=None, alias="arrangementType", max_length=100)
@@ -159,7 +166,7 @@ class BookingSessionItem(BaseModel):
     model_config = {"populate_by_name": True, "extra": "ignore"}
 
     @field_validator(
-        "session_id", "secondary_therapist_id", "service_arrangement_id", mode="before"
+        "session_id", "secondary_therapist_id", "tertiary_therapist_id", "service_arrangement_id", mode="before"
     )
     @classmethod
     def _empty_uuid_to_none(cls, v: Any) -> Any:
@@ -180,7 +187,7 @@ class BookingSessionItem(BaseModel):
         s = _re.sub(r"[+-]\d{2}:\d{2}$", "", s).split(".")[0]
         return s if len(s.split(":")) == 3 else f"{s}:00"
 
-    @field_validator("therapist_data", "secondary_therapist_data", "service_arrangement_data")
+    @field_validator("therapist_data", "secondary_therapist_data", "tertiary_therapist_data", "service_arrangement_data")
     @classmethod
     def _limit_snapshots(cls, v: dict[str, Any] | None, info: Any) -> dict[str, Any] | None:
         return _check_snapshot_size(v, info.field_name)
@@ -364,6 +371,9 @@ class CreateBookingRequest(BaseModel):
     secondary_therapist_id: uuid.UUID | None = Field(default=None, alias="secondaryTherapistId")
     secondary_therapist_name: str | None = Field(default=None, alias="secondaryTherapistName")
     secondary_therapist_data: dict[str, Any] | None = Field(default=None, alias="secondaryTherapistData")
+    tertiary_therapist_id: uuid.UUID | None = Field(default=None, alias="tertiaryTherapistId")
+    tertiary_therapist_name: str | None = Field(default=None, alias="tertiaryTherapistName")
+    tertiary_therapist_data: dict[str, Any] | None = Field(default=None, alias="tertiaryTherapistData")
     # Opt-out for couple_room / double_room: when True the booking is created with
     # only one therapist (the second therapist was removed by the user).
     allow_single_therapist: bool = Field(default=False, alias="allowSingleTherapist")
@@ -452,6 +462,7 @@ class CreateBookingRequest(BaseModel):
         "service_arrangement_id",
         "therapist_id",
         "secondary_therapist_id",
+        "tertiary_therapist_id",
         "reward_id",
         "voucher_id",
         mode="before",
@@ -836,6 +847,16 @@ class UpdateBookingRequest(BaseModel):
         alias="secondaryTherapistData",
         description="Snapshot of the second therapist data",
     )
+    tertiary_therapist_id: uuid.UUID | None = Field(
+        default=None,
+        alias="tertiaryTherapistId",
+        description="Reassign the third therapist (when up to 3 therapists needed)",
+    )
+    tertiary_therapist_data: dict[str, Any] | None = Field(
+        default=None,
+        alias="tertiaryTherapistData",
+        description="Snapshot of the third therapist data",
+    )
     branch_id: uuid.UUID | None = Field(
         default=None,
         alias="branchId",
@@ -1024,7 +1045,7 @@ class UpdateBookingRequest(BaseModel):
             self.created_by_user_data = data_val
         return self
 
-    @field_validator("therapist_id", "secondary_therapist_id", "voucher_id", "branch_id", "service_arrangement_id", mode="before")
+    @field_validator("therapist_id", "secondary_therapist_id", "tertiary_therapist_id", "voucher_id", "branch_id", "service_arrangement_id", mode="before")
     @classmethod
     def coerce_empty_uuid_to_none(cls, v: Any) -> Any:
         if v == "" or (isinstance(v, str) and not v.strip()):

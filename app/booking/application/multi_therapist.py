@@ -22,13 +22,19 @@ def required_therapist_count(arrangement_type: Any) -> int:
 
 
 def entries_required_therapists(service_entries: Iterable[dict[str, Any]] | None) -> int:
-    """Highest therapist requirement across the arrangements of a booking's services."""
+    """Highest therapist requirement across the arrangements and services of a booking (1 to 3)."""
     needed = 1
     for entry in service_entries or []:
         arr_data = (entry or {}).get("service_arrangement_data") or {}
         arr_type = arr_data.get("arrangement_type") or arr_data.get("type")
-        needed = max(needed, required_therapist_count(arr_type))
-    return needed
+        svc_data = (entry or {}).get("service_data") or {}
+        raw_svc_needed = svc_data.get("no_of_therapists_needed") or 1
+        try:
+            svc_needed = int(raw_svc_needed)
+        except (ValueError, TypeError):
+            svc_needed = 1
+        needed = max(needed, required_therapist_count(arr_type), svc_needed)
+    return min(max(needed, 1), 3)
 
 
 def unique_ids(ids: Iterable[Any]) -> list[str]:

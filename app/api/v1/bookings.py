@@ -770,7 +770,8 @@ async def create_booking(
         therapist_ids = unique_ids([therapist_id_str, secondary_requested_id, *therapist_ids])
         if not therapist_id_str and therapist_ids:
             therapist_id_str = therapist_ids[0]
-    selected_secondary_therapist_id: uuid.UUID | None = None
+    selected_secondary_therapist_id: uuid.UUID | None = parse_uuid(secondary_requested_id) if secondary_requested_id else None
+    selected_tertiary_therapist_id: uuid.UUID | None = parse_uuid(body.tertiary_therapist_id) if getattr(body, "tertiary_therapist_id", None) else None
 
     # ── 2. Check appointment availability in ushauth microservice ───────
     # For multi-session bookings availability is already checked per-session
@@ -784,6 +785,8 @@ async def create_booking(
         selected_therapist_id = uuid.UUID(_ts0_str) if _ts0_str else None
         _sec0_str = _first_s.get("secondary_therapist_id")
         selected_secondary_therapist_id = uuid.UUID(_sec0_str) if _sec0_str else None
+        _tert0_str = _first_s.get("tertiary_therapist_id")
+        selected_tertiary_therapist_id = uuid.UUID(_tert0_str) if _tert0_str else None
         required_therapists = 1
         service_arrangement_id = _first_s.get("service_arrangement_id") or service_arrangement_id
     else:
@@ -897,6 +900,24 @@ async def create_booking(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"Invalid therapistId: {therapist_id_str}",
                 )
+
+            if selected_secondary_therapist_id:
+                try:
+                    sec_avail = await ushauth.check_booking_therapist_availability(
+                        therapist_id=str(selected_secondary_therapist_id),
+                        appointment_date=appointment_date,
+                        appointment_time=appointment_time,
+                        duration=duration,
+                    )
+                    if sec_avail.get("available") != "yes":
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="The selected secondary therapist is not available for the requested date and time.",
+                        )
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    logger.warning("check_home_secondary_availability_failed", error=str(exc))
 
         else:
             # ── Fallback: no arrangement and not explicitly home ─────────────
@@ -1208,6 +1229,42 @@ async def create_booking(
             secondary_therapist_data.setdefault("avatar", sec_avatar)
             secondary_therapist_data.setdefault("photo_url", sec_avatar)
 
+    # Snapshot of the third therapist (when up to 3 therapists are needed)
+    tertiary_therapist_data: dict | None = None
+    if selected_tertiary_therapist_id:
+        tertiary_requested_id = str(body.tertiary_therapist_id) if getattr(body, "tertiary_therapist_id", None) else None
+        tertiary_matches_request = tertiary_requested_id == str(selected_tertiary_therapist_id)
+        tertiary_name = (
+            (body.tertiary_therapist_name or therapist_display_name(body.tertiary_therapist_data))
+            if (tertiary_matches_request and getattr(body, "tertiary_therapist_data", None))
+            else (getattr(body, "tertiary_therapist_name", None) or "")
+        )
+        tert_avatar = (
+            ((body.tertiary_therapist_data or {}).get("avatar") or (body.tertiary_therapist_data or {}).get("photo_url"))
+            if tertiary_matches_request and getattr(body, "tertiary_therapist_data", None)
+            else None
+        )
+        if not tertiary_name or not tert_avatar:
+            try:
+                tert_profile = await ushauth.get_therapist(str(selected_tertiary_therapist_id))
+                tert_data_raw = tert_profile.get("data") if isinstance(tert_profile.get("data"), dict) else tert_profile
+                if not tertiary_name:
+                    tertiary_name = therapist_display_name(tert_data_raw)
+                if not tert_avatar and isinstance(tert_data_raw, dict):
+                    tert_avatar = tert_data_raw.get("avatar") or tert_data_raw.get("photo_url")
+            except Exception as exc:
+                logger.warning("tertiary_therapist_lookup_failed", error=str(exc))
+        tertiary_therapist_data = {
+            "id": str(selected_tertiary_therapist_id),
+            "name": tertiary_name,
+            "therapist_name": tertiary_name,
+            "full_name": tertiary_name,
+            **((getattr(body, "tertiary_therapist_data", None) or {}) if tertiary_matches_request else {}),
+        }
+        if tert_avatar:
+            tertiary_therapist_data.setdefault("avatar", tert_avatar)
+            tertiary_therapist_data.setdefault("photo_url", tert_avatar)
+
     idempotency_key = body.idempotency_key or request.headers.get("Idempotency-Key")
 
     # ── Resolve invoice_number & payment_number ──────────────────────────
@@ -1247,6 +1304,8 @@ async def create_booking(
             therapist_data=therapist_data,
             secondary_therapist_id=selected_secondary_therapist_id,
             secondary_therapist_data=secondary_therapist_data,
+            tertiary_therapist_id=selected_tertiary_therapist_id,
+            tertiary_therapist_data=tertiary_therapist_data,
             appointment_start=appointment_start,
             appointment_end=appointment_end,
             duration_minutes=total_services_duration(service_entries) or 60,
@@ -1351,7 +1410,8 @@ async def create_booking(
                 )
 
     # Persist the booking (and any loyalty redemption) before external invoice / payment side-effects
-    await booking_service._session.commit()
+    if hasattr(booking_service, "_session") and hasattr(getattr(booking_service, "_session", None), "commit"):
+        await booking_service._session.commit()
 
     # ── Auto-create or fetch invoice from ushanr only when payment_status=success/paid ─
     # When booking is paid with loyalty points (payment_status="rewarded"), skip invoice & payment records.
@@ -1453,7 +1513,12 @@ async def create_booking(
             service_name=service_name or None,
             services=cache_services_payload(service_entries),
             secondary_therapist_id=str(selected_secondary_therapist_id) if selected_secondary_therapist_id else None,
-            secondary_therapist_name=(secondary_therapist_data or {}).get("name") or None,
+            secondary_therapist_name=(
+                (secondary_therapist_data or {}).get("therapist_name")
+                or (secondary_therapist_data or {}).get("name")
+                or (secondary_therapist_data or {}).get("full_name")
+                or None
+            ),
             sessions=cache_sessions_payload(_session_plan.sessions) if _session_plan is not None else None,
         )
         logger.info(
@@ -2408,9 +2473,9 @@ async def update_booking_status(
     _reason_str = (body.reason or "").strip().lower()
     _source_str = (body.source or "").strip().lower()
     if (
-        payment_status == PaymentStatus.SUCCESS
+        (payment_status == PaymentStatus.SUCCESS or status == BookingStatus.CONFIRMED)
         and _source_str in ("ushdesk", "desk", "ushspa app")
-        and _reason_str == "paid on desk"
+        and (_reason_str in ("paid on desk", "payment success", "online payment") or not _reason_str)
     ):
         try:
             await ushauth.update_appointment_cache_status_by_booking_id(

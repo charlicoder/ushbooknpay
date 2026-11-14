@@ -90,6 +90,8 @@ def build_session(
     extra_unit_price: Any = None,
     secondary_therapist_id: Any = None,
     secondary_therapist_data: dict | None = None,
+    tertiary_therapist_id: Any = None,
+    tertiary_therapist_data: dict | None = None,
     session_id: Any = None,
 ) -> dict[str, Any]:
     """
@@ -139,6 +141,8 @@ def build_session(
         "therapist_data": dict(therapist_data or {}),
         "secondary_therapist_id": _to_str_id(secondary_therapist_id),
         "secondary_therapist_data": dict(secondary_therapist_data or {}) if secondary_therapist_id else None,
+        "tertiary_therapist_id": _to_str_id(tertiary_therapist_id),
+        "tertiary_therapist_data": dict(tertiary_therapist_data or {}) if tertiary_therapist_id else None,
         "service_arrangement_id": _to_str_id(arrangement_id),
         "service_arrangement_data": dict(arrangement_data or {}),
         "service_name": session_service_name,
@@ -283,6 +287,8 @@ def legacy_mirror(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "therapist_data": first.get("therapist_data") or {},
         "secondary_therapist_id": first.get("secondary_therapist_id"),
         "secondary_therapist_data": first.get("secondary_therapist_data"),
+        "tertiary_therapist_id": first.get("tertiary_therapist_id"),
+        "tertiary_therapist_data": first.get("tertiary_therapist_data"),
         "service_arrangement_id": first.get("service_arrangement_id"),
         "service_arrangement_data": first.get("service_arrangement_data") or {},
         "services": flatten_services(sessions),
@@ -315,6 +321,7 @@ def session_from_booking(booking: Any) -> dict[str, Any]:
     extra_price = _to_decimal(getattr(booking, "price_for_extra_minutes", 0))
     addon_price = _to_decimal(getattr(booking, "addon_price", 0))
     sec_id = getattr(booking, "secondary_therapist_id", None)
+    tert_id = getattr(booking, "tertiary_therapist_id", None)
     arr_id = _to_str_id(getattr(booking, "service_arrangement_id", None))
     sid = _to_str_id(getattr(booking, "id", None))
     return {
@@ -324,6 +331,8 @@ def session_from_booking(booking: Any) -> dict[str, Any]:
         "therapist_data": dict(getattr(booking, "therapist_data", None) or {}),
         "secondary_therapist_id": _to_str_id(sec_id),
         "secondary_therapist_data": getattr(booking, "secondary_therapist_data", None) if sec_id else None,
+        "tertiary_therapist_id": _to_str_id(tert_id),
+        "tertiary_therapist_data": getattr(booking, "tertiary_therapist_data", None) if tert_id else None,
         "service_arrangement_id": arr_id,
         "service_arrangement_data": dict(getattr(booking, "service_arrangement_data", None) or {}),
         "service_name": getattr(booking, "service_name", None) or ", ".join(filter(None, (e.get("name") or (e.get("service_data") or {}).get("name") or "" for e in entries))),
@@ -366,7 +375,7 @@ def therapist_busy_windows(booking: Any, therapist_id: Any) -> list[tuple[dateti
     windows: list[tuple[datetime, datetime]] = []
     if isinstance(raw, list) and raw and all(isinstance(s, dict) for s in raw):
         for s in raw:
-            if tid not in (_to_str_id(s.get("therapist_id")), _to_str_id(s.get("secondary_therapist_id"))):
+            if tid not in (_to_str_id(s.get("therapist_id")), _to_str_id(s.get("secondary_therapist_id")), _to_str_id(s.get("tertiary_therapist_id"))):
                 continue
             s_start, s_end = session_window(s)
             if s_start and s_end:
@@ -375,6 +384,7 @@ def therapist_busy_windows(booking: Any, therapist_id: Any) -> list[tuple[dateti
     ids = {
         _to_str_id(getattr(booking, "therapist_id", None)),
         _to_str_id(getattr(booking, "secondary_therapist_id", None)),
+        _to_str_id(getattr(booking, "tertiary_therapist_id", None)),
     }
     start = getattr(booking, "appointment_start", None)
     end = getattr(booking, "appointment_end", None)
@@ -422,6 +432,7 @@ def cache_sessions_payload(sessions: list[dict[str, Any]]) -> list[dict[str, Any
     for s in sessions:
         sd = s.get("therapist_data") or {}
         sec = s.get("secondary_therapist_data") or {}
+        tert = s.get("tertiary_therapist_data") or {}
         ad = s.get("service_arrangement_data") or {}
         names = [
             str((e.get("service_data") or {}).get("name") or (e.get("service_data") or {}).get("service_name") or "")
@@ -436,6 +447,10 @@ def cache_sessions_payload(sessions: list[dict[str, Any]]) -> list[dict[str, Any
                 "secondary_therapist_id": str(s["secondary_therapist_id"]) if s.get("secondary_therapist_id") else None,
                 "secondary_therapist_name": str(
                     sec.get("name") or sec.get("full_name") or sec.get("therapist_name") or ""
+                ),
+                "tertiary_therapist_id": str(s["tertiary_therapist_id"]) if s.get("tertiary_therapist_id") else None,
+                "tertiary_therapist_name": str(
+                    tert.get("name") or tert.get("full_name") or tert.get("therapist_name") or ""
                 ),
                 "service_arrangement_id": str(s["service_arrangement_id"]) if s.get("service_arrangement_id") else None,
                 "service_arrangement_name": str(

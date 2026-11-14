@@ -797,8 +797,8 @@ async def list_all_vouchers(
     redeemed_to: str | None = Query(default=None, description="[view] Redeemed on/before (YYYY-MM-DD, Kuwait date)."),
     activated_from: str | None = Query(default=None, description="[view] Activated on/after (YYYY-MM-DD, Kuwait date)."),
     activated_to: str | None = Query(default=None, description="[view] Activated on/before (YYYY-MM-DD, Kuwait date)."),
-    period_from: str | None = Query(default=None, description="[view] Sales window start: created OR redeemed on/after (YYYY-MM-DD)."),
-    period_to: str | None = Query(default=None, description="[view] Sales window end: created OR redeemed on/before (YYYY-MM-DD)."),
+    period_from: str | None = Query(default=None, description="[view] Sales window start: created OR activated OR redeemed on/after (YYYY-MM-DD)."),
+    period_to: str | None = Query(default=None, description="[view] Sales window end: created OR activated OR redeemed on/before (YYYY-MM-DD)."),
 ) -> JSONResponse:
     """List all gift vouchers. Requires USH_TOKEN only, not filtered by created_by."""
     from fastapi.params import Query as QueryParam

@@ -171,12 +171,20 @@ async def _build_one_session(
     if not arr_data.get("arrangement_type"):
         arr_data["arrangement_type"] = (entries[0].get("service_arrangement_data") or {}).get("arrangement_type", "")
 
-    therapist_data, secondary_data = await asyncio.gather(
+    therapist_data, secondary_data, tertiary_data = await asyncio.gather(
         _therapist_snapshot(ushauth, item.therapist_id, item.therapist_data, item.therapist_name),
         _therapist_snapshot(
             ushauth, item.secondary_therapist_id, item.secondary_therapist_data, item.secondary_therapist_name
         )
         if item.secondary_therapist_id
+        else asyncio.sleep(0, result=None),
+        _therapist_snapshot(
+            ushauth,
+            getattr(item, "tertiary_therapist_id", None),
+            getattr(item, "tertiary_therapist_data", None),
+            getattr(item, "tertiary_therapist_name", None),
+        )
+        if getattr(item, "tertiary_therapist_id", None)
         else asyncio.sleep(0, result=None),
     )
 
@@ -195,6 +203,8 @@ async def _build_one_session(
         extra_unit_price=primary_sd.get("price_for_extra_minutes"),
         secondary_therapist_id=item.secondary_therapist_id,
         secondary_therapist_data=secondary_data,
+        tertiary_therapist_id=getattr(item, "tertiary_therapist_id", None),
+        tertiary_therapist_data=tertiary_data,
         session_id=item.session_id,
     )
 
@@ -216,7 +226,7 @@ async def _check_session_availability(
             return
         r_start, _ = session_window(session)
         assert r_start is not None
-        for tid in unique_ids([session.get("therapist_id"), session.get("secondary_therapist_id")]):
+        for tid in unique_ids([session.get("therapist_id"), session.get("secondary_therapist_id"), session.get("tertiary_therapist_id")]):
             res = await ushauth.check_booking_therapist_availability(
                 therapist_id=str(tid),
                 appointment_date=appointment_date,
@@ -234,7 +244,7 @@ async def _check_session_availability(
     arr_data = session.get("service_arrangement_data") or {}
     required = entries_required_therapists([{"service_arrangement_data": arr_data}])
     therapist_ids = unique_ids(
-        [session.get("therapist_id"), session.get("secondary_therapist_id")]
+        [session.get("therapist_id"), session.get("secondary_therapist_id"), session.get("tertiary_therapist_id")]
     )
     res = await ushauth.check_appointment_availability(
         service_arrangement_id=str(arr_id),

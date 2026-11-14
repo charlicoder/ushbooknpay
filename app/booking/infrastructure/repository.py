@@ -63,6 +63,7 @@ def _therapist_involved(therapist_ids: list[uuid.UUID]):
     conds = [
         Booking.therapist_id.in_(therapist_ids),
         Booking.secondary_therapist_id.in_(therapist_ids),
+        Booking.tertiary_therapist_id.in_(therapist_ids),
     ]
     sessions_text = cast(Booking.sessions, Text)
     for tid in therapist_ids:
@@ -228,6 +229,7 @@ class BookingRepository:
                 or_(
                     Booking.therapist_id == therapist_id,
                     Booking.secondary_therapist_id == therapist_id,
+                    Booking.tertiary_therapist_id == therapist_id,
                 )
             )
 

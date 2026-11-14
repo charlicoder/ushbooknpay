@@ -164,19 +164,30 @@ def _build_one(
         or (item_sd.get("service_category") or item_sd.get("category") or "")
     )
     is_pkg_component = bool(getattr(item, "package_id", None))
-    base_price = str(
-        (
-            db_service.get("base_price")
-            or item.base_price
-            or item_sd.get("base_price")
-            or "0"
+    home_svc_p = None
+    if is_home_service:
+        home_svc_p = (
+            db_service.get("home_service_price")
+            or item_sd.get("home_service_price")
+            or getattr(item, "home_service_price", None)
         )
-        if is_pkg_component
+    base_price = str(
+        home_svc_p
+        if home_svc_p is not None and str(home_svc_p).strip() != ""
         else (
-            item.base_price
-            or db_service.get("base_price")
-            or item_sd.get("base_price")
-            or "0"
+            (
+                db_service.get("base_price")
+                or item.base_price
+                or item_sd.get("base_price")
+                or "0"
+            )
+            if is_pkg_component
+            else (
+                item.base_price
+                or db_service.get("base_price")
+                or item_sd.get("base_price")
+                or "0"
+            )
         )
     )
     base_duration = int(
@@ -192,16 +203,24 @@ def _build_one(
         "category": service_category,
         "base_price": base_price,
         "base_duration": base_duration,
+        "no_of_therapists_needed": int(db_service.get("no_of_therapists_needed") or item_sd.get("no_of_therapists_needed") or 1),
         **item_sd,
         "is_eligible_for_loyalty": is_eligible,
         "loyalty_points": loyalty_points,
         "price_in_points": price_in_points,
     }
+    if is_home_service:
+        service_data["home_service_price"] = base_price
+        service_data["home_loyalty_points"] = db_service.get("home_loyalty_points") or item_sd.get("home_loyalty_points") or loyalty_points
+        service_data["home_price_in_points"] = db_service.get("home_price_in_points") or item_sd.get("home_price_in_points") or price_in_points
+        if db_service.get("home_price_for_extra_minutes") is not None:
+            service_data["home_price_for_extra_minutes"] = db_service.get("home_price_for_extra_minutes")
+        service_data["use_home_loyalty_points"] = True
     if full_details:
         # Sessions store the FULL service details (ushauth is the source of truth);
         # keys computed above / supplied by the client keep precedence.
         service_data = {**db_service, **service_data}
-        for key in ("extra_minutes", "price_for_extra_minutes"):
+        for key in ("extra_minutes", "price_for_extra_minutes", "no_of_therapists_needed"):
             if key in db_service and db_service[key] is not None:
                 service_data[key] = db_service[key]
         # For home service bookings, use home_price_for_extra_minutes as the

@@ -135,13 +135,18 @@ class Booking(Base):
         JSONB, nullable=True, default=dict
     )
 
-    # ── Secondary Therapist (couple_room / double_room bookings) ──────────
-    # Two guests take the same service at once, so the booking carries a second
-    # therapist.  NULL for every other booking; therapist_id stays the primary.
+    # ── Secondary & Tertiary Therapists (couple rooms or multi-therapist home services)
+    # Primary therapist stays in therapist_id/therapist_data.
     secondary_therapist_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
     secondary_therapist_data: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    tertiary_therapist_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    tertiary_therapist_data: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True
     )
 
@@ -330,6 +335,13 @@ class Booking(Base):
             "appointment_date",
             postgresql_where=text("secondary_therapist_id IS NOT NULL"),
         ),
+        # Sparse index for tertiary therapist
+        Index(
+            "ix_bookings_tertiary_therapist_date",
+            "tertiary_therapist_id",
+            "appointment_date",
+            postgresql_where=text("tertiary_therapist_id IS NOT NULL"),
+        ),
         # Fast lookup by status
         Index("ix_bookings_status", "status"),
         # Fast lookup by booking_type
@@ -377,10 +389,12 @@ class Booking(Base):
 
     @property
     def therapist_ids(self) -> list[uuid.UUID]:
-        """Assigned therapist IDs: primary first, then the secondary (if any)."""
+        """Assigned therapist IDs: primary first, then secondary and tertiary (if any)."""
         ids = [self.therapist_id]
         if self.secondary_therapist_id:
             ids.append(self.secondary_therapist_id)
+        if self.tertiary_therapist_id:
+            ids.append(self.tertiary_therapist_id)
         return ids
 
     def __repr__(self) -> str:

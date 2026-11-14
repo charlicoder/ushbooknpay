@@ -42,7 +42,7 @@ class DeskFilters:
     redeemed_to: str | None = None
     activated_from: str | None = None
     activated_to: str | None = None
-    # Sales report window: created in range OR redeemed in range
+    # Sales report window: created in range OR activated in range OR redeemed in range
     period_from: str | None = None
     period_to: str | None = None
 
@@ -206,8 +206,12 @@ def build_conditions(f: DeskFilters) -> list[Any]:
         p_start = _parse_filter_date(f.period_from, end_of_day=False) if f.period_from else None
         p_end = _parse_filter_date(f.period_to, end_of_day=True) if f.period_to else None
         created_in = and_(*([G.created_at >= p_start] if p_start else []), *([G.created_at <= p_end] if p_end else []))
+        activated_in = and_(*([G.activation_datetime >= p_start] if p_start else []), *([G.activation_datetime <= p_end] if p_end else []))
         redeemed_in = _redeemed_range_clause(f.period_from, f.period_to)
-        conds.append(or_(created_in, redeemed_in) if redeemed_in is not None else created_in)
+        period_parts = [created_in, activated_in]
+        if redeemed_in is not None:
+            period_parts.append(redeemed_in)
+        conds.append(or_(*period_parts))
     return conds
 
 

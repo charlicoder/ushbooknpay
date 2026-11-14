@@ -599,6 +599,8 @@ class BookingService:
         therapist_data: dict | None = None,
         secondary_therapist_id: uuid.UUID | None = None,
         secondary_therapist_data: dict | None = None,
+        tertiary_therapist_id: uuid.UUID | None = None,
+        tertiary_therapist_data: dict | None = None,
         appointment_start: datetime,
         appointment_end: datetime,
         duration_minutes: int,
@@ -692,21 +694,22 @@ class BookingService:
             )
 
         # ── Double-booking check (with row lock) ─────────────────────────
-        # Couple/double bookings occupy two therapists: both must be free.
-        if secondary_therapist_id and secondary_therapist_id == therapist_id:
-            raise ValidationError("The secondary therapist must differ from the primary therapist.")
+        # Multi-therapist bookings occupy up to 3 therapists: all must be free and unique.
+        all_assigned = [tid for tid in (therapist_id, secondary_therapist_id, tertiary_therapist_id) if tid]
+        if len(all_assigned) != len(set(all_assigned)):
+            raise ValidationError("All assigned therapists must be unique.")
         if sessions:
             # Per-session windows (a therapist may serve several non-overlapping sessions).
             for sess in sessions:
                 s_start, s_end = session_window(sess)
-                for t_id in filter(None, (sess.get("therapist_id"), sess.get("secondary_therapist_id"))):
+                for t_id in filter(None, (sess.get("therapist_id"), sess.get("secondary_therapist_id"), sess.get("tertiary_therapist_id"))):
                     if await self._repo.check_therapist_overlap(uuid.UUID(str(t_id)), s_start, s_end):
                         raise DoubleBookingError(
                             f"Therapist {t_id} is already booked for the requested slot.",
                             code="DOUBLE_BOOKING",
                         )
         else:
-            for assigned_therapist_id in filter(None, (therapist_id, secondary_therapist_id)):
+            for assigned_therapist_id in filter(None, (therapist_id, secondary_therapist_id, tertiary_therapist_id)):
                 is_conflicting = await self._repo.check_therapist_overlap(
                     assigned_therapist_id,
                     appointment_start,
@@ -734,6 +737,8 @@ class BookingService:
             therapist_data=therapist_data or {},
             secondary_therapist_id=secondary_therapist_id,
             secondary_therapist_data=(secondary_therapist_data or {}) if secondary_therapist_id else None,
+            tertiary_therapist_id=tertiary_therapist_id,
+            tertiary_therapist_data=(tertiary_therapist_data or {}) if tertiary_therapist_id else None,
             appointment_date=local_midnight(appointment_start),
             appointment_start=appointment_start,
             appointment_end=appointment_end,
@@ -923,6 +928,8 @@ class BookingService:
         therapist_data: dict | None = None,
         secondary_therapist_id: uuid.UUID | None = None,
         secondary_therapist_data: dict | None = None,
+        tertiary_therapist_id: uuid.UUID | None = None,
+        tertiary_therapist_data: dict | None = None,
         secondary_therapist_provided: bool = False,
         branch_id: uuid.UUID | None = None,
         branch_data: dict | None = None,
@@ -1015,6 +1022,9 @@ class BookingService:
             sec_id = mirror.get("secondary_therapist_id")
             booking.secondary_therapist_id = uuid.UUID(str(sec_id)) if sec_id else None
             booking.secondary_therapist_data = mirror.get("secondary_therapist_data") if sec_id else None
+            tert_id = mirror.get("tertiary_therapist_id")
+            booking.tertiary_therapist_id = uuid.UUID(str(tert_id)) if tert_id else None
+            booking.tertiary_therapist_data = mirror.get("tertiary_therapist_data") if tert_id else None
             booking.addons = mirror["addons"]
             booking.appointment_start = mirror["appointment_start"]
             booking.appointment_end = mirror["appointment_end"]
@@ -1619,6 +1629,8 @@ class BookingService:
         therapist_data: dict | None = None,
         secondary_therapist_id: uuid.UUID | None = None,
         secondary_therapist_data: dict | None = None,
+        tertiary_therapist_id: uuid.UUID | None = None,
+        tertiary_therapist_data: dict | None = None,
         secondary_provided: bool = False,
     ) -> Booking:
         """
