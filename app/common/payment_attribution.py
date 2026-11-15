@@ -205,22 +205,34 @@ def apply_attribution(obj: Any) -> None:
     has = lambda name: hasattr(obj, name)  # noqa: E731
 
     if has("payment_through"):
-        obj.payment_through = normalise_through(getattr(obj, "payment_through", None))
+        through = normalise_through(getattr(obj, "payment_through", None))
+        if through is None:
+            through = normalise_through(getattr(obj, "source", None))
+            if through is None and has("payment_data"):
+                pdata = getattr(obj, "payment_data", None)
+                if isinstance(pdata, dict):
+                    through = normalise_through(pdata.get("payment_through") or pdata.get("source"))
+        obj.payment_through = through
 
     provider = None
     if has("payment_provider"):
         raw_provider = getattr(obj, "payment_provider", None)
         provider = normalise_provider(raw_provider)
         if provider is None:
-            # derive from gateway / method hints when the provider label itself is unclear
+            # derive from gateway / method / data hints when the provider label itself is unclear
             hint = gateway_text(
                 getattr(obj, "payment_gateway", None) if has("payment_gateway") else None,
                 getattr(obj, "payment_method", None) if has("payment_method") else None,
+                getattr(obj, "payment_data", None) if has("payment_data") else None,
             )
             if "boubyan" in hint:
                 provider = PROVIDER_BOUBYAN
             elif "deema" in hint:
                 provider = PROVIDER_TAP
+            elif "myfatoorah" in hint or "fatoorah" in hint:
+                provider = PROVIDER_MYFATOORAH
+            elif getattr(obj, "payment_through", None) in (THROUGH_USHWEB, THROUGH_USHSPA) and _is_paid(obj):
+                provider = PROVIDER_MYFATOORAH
         obj.payment_provider = provider
 
     if has("payment_method"):
@@ -244,7 +256,11 @@ def apply_attribution(obj: Any) -> None:
     if has("payment_gateway"):
         gw = str(getattr(obj, "payment_gateway", "") or "").strip()
         if gw.lower() in {"", "other", "unknown", "none", "null"}:
-            obj.payment_gateway = None
+            pdata = getattr(obj, "payment_data", None)
+            if isinstance(pdata, dict) and pdata.get("payment_gateway"):
+                obj.payment_gateway = str(pdata.get("payment_gateway")).strip()
+            else:
+                obj.payment_gateway = None
 
 
 METHOD_BY_KEY = {_key(v): v for v in METHOD_VALUES}

@@ -493,12 +493,19 @@ class GiftVoucher(Base):
             "delivered_at": _to_local_tz(self.delivered_at).isoformat() if self.delivered_at else None,
             "delivery_result": self.delivery_result or None,
             "reschedule_count": self.reschedule_count or 0,
+            "activation_datetime": (
+                _to_local_tz(self.activation_datetime).isoformat()
+                if self.activation_datetime
+                else None
+            ),
         }
 
+    to_dict = to_snapshot
 
-# Stamp activation_datetime the first time status becomes ACTIVE, regardless of which
-# code path (create, payment success, scheduled delivery, admin update) sets the status.
+
+# Stamp activation_datetime the first time status becomes ACTIVE or SCHEDULED,
+# regardless of which code path (create, payment success, admin update) sets the status.
 @event.listens_for(GiftVoucher.status, "set")
 def _stamp_activation_datetime(target: GiftVoucher, value, oldvalue, initiator) -> None:
-    if value == "active" and target.activation_datetime is None:
+    if value in ("active", "scheduled") and target.activation_datetime is None:
         target.activation_datetime = datetime.now(timezone.utc)

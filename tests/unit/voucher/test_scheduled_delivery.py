@@ -253,3 +253,55 @@ async def test_cannot_reschedule_non_scheduled_voucher():
     with pytest.raises(ValidationError) as exc:
         await svc.reschedule_voucher(voucher.id, new_date)
     assert "Only vouchers in 'scheduled' status can be rescheduled" in str(exc.value)
+
+
+def test_scheduled_voucher_activation_datetime_stamped():
+    """Verify activation_datetime is automatically stamped when status becomes 'scheduled'."""
+    # 1. Model event listener stamps activation_datetime when status is set to scheduled
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        status="scheduled",
+        delivery_mode="scheduled",
+        total_amount=Decimal("40.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+    )
+    assert voucher.activation_datetime is not None
+    assert voucher.to_dict()["activation_datetime"] is not None
+
+
+@pytest.mark.asyncio
+async def test_update_status_pending_to_scheduled_stamps_activation_datetime():
+    """When a payment_pending voucher with scheduled delivery settles, status becomes scheduled and activation_datetime is stored."""
+    voucher = GiftVoucher(
+        id=uuid.uuid4(),
+        status="payment_pending",
+        delivery_mode="scheduled",
+        scheduled_delivery_at=datetime.now(KUWAIT_TZ) + timedelta(days=5),
+        total_amount=Decimal("50.000"),
+        currency="KWD",
+        sender_id=uuid.uuid4(),
+    )
+    voucher.activation_datetime = None  # Ensure it starts as None
+
+    mock_session = AsyncMock()
+    svc = GiftVoucherService(mock_session)
+    svc._repo.get_by_id = AsyncMock(return_value=voucher)
+    svc._repo.flush = AsyncMock()
+    svc._emit_status_event = AsyncMock()
+
+    mock_scheduler = AsyncMock()
+    mock_scheduler.create_voucher_schedule = AsyncMock(return_value=("sched-name", "arn:sched"))
+
+    with patch("app.voucher.application.voucher_service.get_scheduler_client", return_value=mock_scheduler):
+        updated = await svc.update_status(
+            voucher.id,
+            GiftVoucherStatus.ACTIVE.value,
+            payment_id="pay_123",
+            payment_through="ushdesk",
+        )
+        # Target status was redirected to scheduled
+        assert updated.status == GiftVoucherStatus.SCHEDULED.value
+        assert updated.activation_datetime is not None
+        assert updated.to_dict()["activation_datetime"] is not None
+

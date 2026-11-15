@@ -1168,6 +1168,23 @@ class BookingService:
             booking.internal_notes = internal_notes
 
         # ── Payment status & Meta ────────────────────────────────────────
+        if payment_data is not None:
+            booking.payment_data = {**(booking.payment_data or {}), **payment_data}
+        if payment_id is not None:
+            booking.payment_id = payment_id
+        if payment_provider is not None:
+            booking.payment_provider = payment_provider
+        if payment_gateway is not None:
+            booking.payment_gateway = payment_gateway
+        if payment_through is not None:
+            booking.payment_through = payment_through
+        if payment_method is not None:
+            booking.payment_method = payment_method
+        if payment_url is not None:
+            booking.payment_url = payment_url
+        if payment_type is not None:
+            booking.payment_type = payment_type
+
         if payment_status is not None:
             # If cancelling a paid booking without refund, keep payments and payment status unchanged
             is_currently_paid = str(getattr(booking, "payment_status", "")).lower().strip() in ("paid", "success")
@@ -1215,22 +1232,6 @@ class BookingService:
                         )
                 except Exception as exc:
                     logger.warning("sync_booking_payment_status_failed", error=str(exc))
-        if payment_data is not None:
-            booking.payment_data = {**(booking.payment_data or {}), **payment_data}
-        if payment_id is not None:
-            booking.payment_id = payment_id
-        if payment_provider is not None:
-            booking.payment_provider = payment_provider
-        if payment_gateway is not None:
-            booking.payment_gateway = payment_gateway
-        if payment_through is not None:
-            booking.payment_through = payment_through
-        if payment_method is not None:
-            booking.payment_method = payment_method
-        if payment_url is not None:
-            booking.payment_url = payment_url
-        if payment_type is not None:
-            booking.payment_type = payment_type
         if created_by_user is not None:
             booking.created_by_user = created_by_user
         if created_by_user_data is not None:
@@ -1570,6 +1571,24 @@ class BookingService:
         if is_course_booking(booking):
             return None
 
+        # Skip invoice generation for loyalty bookings
+        is_loyalty = (
+            p_status == "rewarded"
+            or b_type == "loyalty"
+            or p_type == "rewarded"
+            or p_method == "loyalty_points"
+            or str(getattr(booking, "payment_provider", "") or "").strip().lower() == "loyalty"
+            or bool(
+                getattr(booking, "loyalty_data", None)
+                and (
+                    getattr(booking, "loyalty_data", {}).get("points_cost")
+                    or getattr(booking, "loyalty_data", {}).get("booking_type") == "loyalty"
+                )
+            )
+        )
+        if is_loyalty:
+            return None
+
         if booking.invoice_number:
             try:
                 from app.payment.infrastructure.models import Payment
@@ -1734,6 +1753,21 @@ class BookingService:
 
         current_status = BookingStatus(booking.status)
 
+        is_loyalty = (
+            str(getattr(booking, "payment_status", "") or "").lower() == "rewarded"
+            or str(getattr(booking, "payment_type", "") or "").lower() == "rewarded"
+            or str(getattr(booking, "booking_type", "") or "").lower() == "loyalty"
+            or str(getattr(booking, "payment_provider", "") or "").lower() == "loyalty"
+            or str(getattr(booking, "payment_method", "") or "").lower() == "loyalty_points"
+            or bool(
+                getattr(booking, "loyalty_data", None)
+                and (
+                    getattr(booking, "loyalty_data", {}).get("points_cost")
+                    or getattr(booking, "loyalty_data", {}).get("booking_type") == "loyalty"
+                )
+            )
+        )
+
         # ── Idempotency guard ────────────────────────────────────────────────
         # If the booking is already confirmed (e.g. because PATCH /status/ was
         # called before POST /payments/ — the common "Paid on desk" flow) simply
@@ -1743,9 +1777,15 @@ class BookingService:
         if current_status == BookingStatus.CONFIRMED:
             if payment_data is not None:
                 booking.payment_data = {**(booking.payment_data or {}), **payment_data}
-                booking.payment_status = PaymentStatus.SUCCESS.value
+                if is_loyalty:
+                    booking.payment_status = PaymentStatus.REWARDED.value
+                    booking.payment_provider = "loyalty"
+                    booking.payment_method = "loyalty_points"
+                else:
+                    booking.payment_status = PaymentStatus.SUCCESS.value
                 await self._repo.update(booking)
-            await self._ensure_booking_invoice(booking)
+            if not is_loyalty:
+                await self._ensure_booking_invoice(booking)
             logger.info(
                 "booking_already_confirmed_payment_data_merged",
                 booking_id=str(booking.id),
@@ -1758,7 +1798,12 @@ class BookingService:
         machine.transition_to(BookingStatus.CONFIRMED)
 
         booking.status = BookingStatus.CONFIRMED.value
-        booking.payment_status = PaymentStatus.SUCCESS.value
+        if is_loyalty:
+            booking.payment_status = PaymentStatus.REWARDED.value
+            booking.payment_provider = "loyalty"
+            booking.payment_method = "loyalty_points"
+        else:
+            booking.payment_status = PaymentStatus.SUCCESS.value
         if payment_data is not None:
             booking.payment_data = {**(booking.payment_data or {}), **payment_data}
 
@@ -1776,7 +1821,8 @@ class BookingService:
         )
 
         await self._ensure_booking_loyalty_details(booking)
-        await self._ensure_booking_invoice(booking)
+        if not is_loyalty:
+            await self._ensure_booking_invoice(booking)
         ev_data = _build_booking_event_data(booking)
         await self._enqueue_event(BookingConfirmedEvent(**_safe_event_kwargs(BookingConfirmedEvent, ev_data)))
 
@@ -2502,9 +2548,18 @@ class BookingService:
                 or str(getattr(booking, "payment_status", "")).lower().strip() in ("pending", "payment_pending", "unpaid", "not_initiated", "cancelled")
                 or str(getattr(booking, "status", "")).lower().strip() == "cancelled"
             )
+            is_loyalty = (
+                str(getattr(booking, "booking_type", "")).lower() == "loyalty"
+                or str(getattr(booking, "payment_type", "")).lower() == "rewarded"
+                or str(getattr(booking, "payment_provider", "")).lower() == "loyalty"
+                or str(getattr(booking, "payment_method", "")).lower() == "loyalty_points"
+                or str(getattr(booking, "payment_status", "")).lower() == "rewarded"
+                or bool(getattr(booking, "loyalty_data", None))
+            )
             if (
                 not payments
                 and not is_cancellation_or_unpaid
+                and not is_loyalty
                 and target_status in ("success", "paid")
                 and getattr(booking, "total_amount", None)
                 and getattr(booking, "customer_id", None)

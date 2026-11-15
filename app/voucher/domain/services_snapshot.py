@@ -80,9 +80,25 @@ def normalise_service_entry(raw: Any, position: int) -> dict[str, Any] | None:
         data = {k: v for k, v in raw.items() if k not in ("addons", "extra_time", "price_for_extra_time", "position", "service_id")}
         if raw.get("service_id") and not data.get("id"):
             data["id"] = raw["service_id"]
+    service_data_dict = dict(data or {})
+    # Synchronize base_price and price across service_data and entry
+    base_price_val = (
+        service_data_dict.get("base_price")
+        or service_data_dict.get("price")
+        or raw.get("base_price")
+        or raw.get("price")
+        or (raw.get("service_arrangement_data") or {}).get("effective_price")
+        or (raw.get("service_arrangement_data") or {}).get("price")
+    )
+    if base_price_val is not None:
+        if "base_price" not in service_data_dict:
+            service_data_dict["base_price"] = str(base_price_val)
+        if "price" not in service_data_dict:
+            service_data_dict["price"] = str(base_price_val)
+
     entry: dict[str, Any] = {
         "service_id": None,
-        "service_data": dict(data or {}),
+        "service_data": service_data_dict,
         "addons": [a for a in (normalise_addon(x) for x in (raw.get("addons") or [])) if a],
         "extra_time": max(_to_int(raw.get("extra_time")), 0),
         "price_for_extra_time": (
@@ -90,6 +106,17 @@ def normalise_service_entry(raw: Any, position: int) -> dict[str, Any] | None:
         ),
         "position": position,
     }
+    if raw.get("service_arrangement_id"):
+        entry["service_arrangement_id"] = str(raw["service_arrangement_id"])
+    if raw.get("service_arrangement_data"):
+        entry["service_arrangement_data"] = raw["service_arrangement_data"]
+    if raw.get("branch_id"):
+        entry["branch_id"] = str(raw["branch_id"])
+    if raw.get("branch_data"):
+        entry["branch_data"] = raw["branch_data"]
+    if base_price_val is not None:
+        entry["base_price"] = str(base_price_val)
+        entry["price"] = str(base_price_val)
     entry["service_id"] = _service_id_str({**raw, "service_data": entry["service_data"]})
     if entry["service_id"] is None and not entry["service_data"]:
         return None

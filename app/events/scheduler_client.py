@@ -121,6 +121,13 @@ class SchedulerClient:
         Returns:
             (schedule_name, schedule_arn)
         """
+        if not voucher_id or str(voucher_id).strip().lower() in ("none", "null", ""):
+            raise ValueError(f"Invalid voucher_id for scheduler: {voucher_id!r}")
+        try:
+            uuid.UUID(str(voucher_id).strip())
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError(f"voucher_id must be a valid UUID for scheduler: {voucher_id!r}") from exc
+
         schedule_name = f"voucher-delivery-{voucher_id}"
         group_name = self._settings.AWS_SCHEDULER_GROUP_NAME or "ush-gift-delivery"
         schedule_expr = self.format_schedule_expression(scheduled_delivery_at)
@@ -202,6 +209,13 @@ class SchedulerClient:
         """
         Update an existing schedule with a new delivery time.
         """
+        if not voucher_id or str(voucher_id).strip().lower() in ("none", "null", ""):
+            raise ValueError(f"Invalid voucher_id for scheduler: {voucher_id!r}")
+        try:
+            uuid.UUID(str(voucher_id).strip())
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError(f"voucher_id must be a valid UUID for scheduler: {voucher_id!r}") from exc
+
         group_name = self._settings.AWS_SCHEDULER_GROUP_NAME or "ush-gift-delivery"
         schedule_expr = self.format_schedule_expression(new_scheduled_delivery_at)
         target_arn = self._get_target_sqs_arn()

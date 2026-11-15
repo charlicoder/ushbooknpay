@@ -602,6 +602,47 @@ async def create_payment(
     # ── 3b. Course subscription purchase → activation (idempotent, deduped) ──
     if payment_for == PaymentFor.COURSE_SUBSCRIPTION.value:
         return await _create_course_subscription_payment(body, parsed_gateway, session, settings)
+
+    # ── 3c. Loyalty booking check (do not create payment record for loyalty redemptions) ──
+    is_loyalty_booking = (
+        str(body.payment_method or "").lower() == "loyalty_points"
+        or str(body.payment_provider or "").lower() == "loyalty"
+        or (
+            booking is not None
+            and (
+                str(getattr(booking, "payment_status", "") or "").lower() == "rewarded"
+                or str(getattr(booking, "payment_type", "") or "").lower() == "rewarded"
+                or str(getattr(booking, "booking_type", "") or "").lower() == "loyalty"
+                or str(getattr(booking, "payment_provider", "") or "").lower() == "loyalty"
+                or str(getattr(booking, "payment_method", "") or "").lower() == "loyalty_points"
+                or bool(
+                    getattr(booking, "loyalty_data", None)
+                    and (
+                        getattr(booking, "loyalty_data", {}).get("points_cost")
+                        or getattr(booking, "loyalty_data", {}).get("booking_type") == "loyalty"
+                    )
+                )
+            )
+        )
+    )
+    if is_loyalty_booking:
+        logger.info(
+            "loyalty_booking_payment_record_creation_skipped",
+            booking_id=str(booking_id) if booking_id else None,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "message": "Payment record creation skipped for loyalty booking.",
+                "data": {
+                    "booking_id": str(booking_id) if booking_id else None,
+                    "payment_status": "rewarded",
+                    "payment_provider": "loyalty",
+                    "payment_method": "loyalty_points",
+                },
+            },
+        )
     # ── 4. Normalise classification fields ────────────────────────────
     payment_provider_val = body.payment_provider or parsed_gateway.get("payment_provider") or None
     if payment_provider_val:

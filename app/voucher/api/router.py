@@ -184,8 +184,18 @@ def _extract_reschedule_count(v: Any) -> int:
 
 
 def _extract_activation_datetime(v: Any) -> datetime | None:
-    ad = getattr(v, "activation_datetime", None)
-    return ad if isinstance(ad, datetime) else None
+    if isinstance(v, dict):
+        ad = v.get("activation_datetime")
+    else:
+        ad = getattr(v, "activation_datetime", None)
+    if isinstance(ad, datetime):
+        return ad
+    if isinstance(ad, str):
+        try:
+            return datetime.fromisoformat(ad)
+        except Exception:
+            return None
+    return None
 
 
 def _extract_referral(v: Any) -> tuple[uuid.UUID | None, str | None, str | None]:

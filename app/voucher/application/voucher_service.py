@@ -240,6 +240,7 @@ class GiftVoucherService:
                 resolved_expire_date = _default_expire_date()
 
         voucher = GiftVoucher(
+            id=uuid.uuid4(),
             gift_category=category,
             delivery_mode=delivery_mode,
             scheduled_delivery_at=scheduled_delivery_at,
@@ -288,21 +289,13 @@ class GiftVoucherService:
             expire_date=resolved_expire_date,
         )
 
+        if initial_status in (GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.SCHEDULED.value):
+            if voucher.activation_datetime is None:
+                voucher.activation_datetime = datetime.now(tz=timezone.utc)
+
         if initial_status == GiftVoucherStatus.REDEEMED.value:
             voucher.redeemed_at = datetime.now(tz=timezone.utc)
             voucher.redeemed_by = created_by
-
-        if initial_status == GiftVoucherStatus.SCHEDULED.value and scheduled_delivery_at:
-            try:
-                scheduler = get_scheduler_client()
-                sched_name, sched_arn = await scheduler.create_voucher_schedule(
-                    str(voucher.id),
-                    scheduled_delivery_at,
-                )
-                voucher.delivery_schedule_name = sched_name
-                voucher.delivery_schedule_arn = sched_arn
-            except Exception as e:
-                logger.error("voucher_schedule_creation_error", voucher_id=str(voucher.id), error=str(e))
 
         creator_name, creator_role = resolve_history_actor(
             payment_through=payment_through,
@@ -343,6 +336,19 @@ class GiftVoucherService:
                     )
                     continue
                 raise
+
+        if initial_status == GiftVoucherStatus.SCHEDULED.value and scheduled_delivery_at:
+            try:
+                scheduler = get_scheduler_client()
+                sched_name, sched_arn = await scheduler.create_voucher_schedule(
+                    str(voucher.id),
+                    scheduled_delivery_at,
+                )
+                voucher.delivery_schedule_name = sched_name
+                voucher.delivery_schedule_arn = sched_arn
+                await self._repo.flush()
+            except Exception as e:
+                logger.error("voucher_schedule_creation_error", voucher_id=str(voucher.id), error=str(e))
 
         logger.info(
             "gift_voucher_created",
@@ -490,6 +496,8 @@ class GiftVoucherService:
             voucher.is_digital_gift_opened = is_digital_gift_opened
 
         if target_status == GiftVoucherStatus.ACTIVE:
+            if voucher.activation_datetime is None:
+                voucher.activation_datetime = datetime.now(tz=timezone.utc)
             # Store gateway reference string and full response snapshot
             if payment_id is not None:
                 voucher.payment_id = payment_id
@@ -497,6 +505,8 @@ class GiftVoucherService:
                 voucher.payment_data = {**(voucher.payment_data or {}), **payment_data}
 
         elif target_status == GiftVoucherStatus.SCHEDULED:
+            if voucher.activation_datetime is None:
+                voucher.activation_datetime = datetime.now(tz=timezone.utc)
             if payment_id is not None:
                 voucher.payment_id = payment_id
             if payment_data is not None:
@@ -761,7 +771,9 @@ class GiftVoucherService:
 
                 voucher.status = target_status.value
 
-                if target_status == GiftVoucherStatus.ACTIVE:
+                if target_status in (GiftVoucherStatus.ACTIVE, GiftVoucherStatus.SCHEDULED):
+                    if voucher.activation_datetime is None:
+                        voucher.activation_datetime = datetime.now(tz=timezone.utc)
                     if "payment_id" in updates and updates["payment_id"] is not None:
                         voucher.payment_id = updates["payment_id"]
                     if "payment_data" in updates and updates["payment_data"] is not None:

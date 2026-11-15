@@ -601,6 +601,8 @@ async def create_booking(
     is_loyalty_booking = (
         booking_type_str == "loyalty"
         or (body.payment_type and str(body.payment_type).lower() == "rewarded")
+        or (body.payment_method and str(body.payment_method).lower() == "loyalty_points")
+        or (body.payment_provider and str(body.payment_provider).lower() == "loyalty")
         or body.reward_id is not None
         or bool(body.loyalty_data and (body.loyalty_data.get("points_cost") or body.loyalty_data.get("reward_id")))
     )
@@ -1120,6 +1122,28 @@ async def create_booking(
             except Exception as exc:
                 logger.warning("course_arrangement_lookup_failed", arrangement_id=str(_course_arr_id), error=str(exc))
 
+    # Loyalty redemption bookings: zero price, provider="loyalty", method="loyalty_points"
+    loyalty_payment_fields: dict[str, Any] = {}
+    if is_loyalty_booking:
+        pricing = PricingBreakdown(
+            arrangement_price=Decimal("0.000"),
+            price_for_extra_minutes=Decimal("0.000"),
+            addon_price=Decimal("0.000"),
+            discount=Decimal("0.000"),
+            tax=Decimal("0.000"),
+            fees=Decimal("0.000"),
+            total=Decimal("0.000"),
+            currency=pricing.currency if pricing else "KWD",
+        )
+        loyalty_payment_fields = {
+            "payment_id": None,
+            "payment_provider": "loyalty",
+            "payment_gateway": None,
+            "payment_through": body.payment_through or "ushspa",
+            "payment_method": "loyalty_points",
+            "payment_url": None,
+        }
+
     addon_records = []
     if body.selected_addons:
         for a in body.selected_addons:
@@ -1268,9 +1292,17 @@ async def create_booking(
     idempotency_key = body.idempotency_key or request.headers.get("Idempotency-Key")
 
     # ── Resolve invoice_number & payment_number ──────────────────────────
-    resolved_invoice_number: str | None = body.invoice_number or (body.payment_data or {}).get("invoice_number") or (body.voucher_data or {}).get("invoice_number")
-    resolved_payment_number: str | None = body.payment_number or (body.payment_data or {}).get("payment_number") or (body.voucher_data or {}).get("payment_number")
-    if (not resolved_invoice_number or not resolved_payment_number) and body.payment_id:
+    resolved_invoice_number: str | None = (
+        None
+        if is_loyalty_booking
+        else (body.invoice_number or (body.payment_data or {}).get("invoice_number") or (body.voucher_data or {}).get("invoice_number"))
+    )
+    resolved_payment_number: str | None = (
+        None
+        if is_loyalty_booking
+        else (body.payment_number or (body.payment_data or {}).get("payment_number") or (body.voucher_data or {}).get("payment_number"))
+    )
+    if not is_loyalty_booking and (not resolved_invoice_number or not resolved_payment_number) and body.payment_id:
         try:
             p_stmt = select(Payment.invoice_number, Payment.payment_number).where(
                 (Payment.id == uuid.UUID(str(body.payment_id)))
@@ -1287,10 +1319,14 @@ async def create_booking(
             pass
 
     merged_payment_data = dict(body.payment_data or {})
-    if resolved_payment_number:
-        merged_payment_data["payment_number"] = resolved_payment_number
-    if resolved_invoice_number:
-        merged_payment_data["invoice_number"] = resolved_invoice_number
+    if not is_loyalty_booking:
+        if resolved_payment_number:
+            merged_payment_data["payment_number"] = resolved_payment_number
+        if resolved_invoice_number:
+            merged_payment_data["invoice_number"] = resolved_invoice_number
+    else:
+        merged_payment_data.pop("payment_number", None)
+        merged_payment_data.pop("invoice_number", None)
 
     # ── 7. Create booking record ────────────────────────────────────────
     try:
@@ -1317,12 +1353,12 @@ async def create_booking(
             addons=addon_records,
             sessions=_session_plan.sessions if _session_plan is not None else None,
             customer_notes=body.customer_notes or body.customer_message or None,
-            payment_id=course_payment_fields.get("payment_id", body.payment_id),
-            payment_provider=course_payment_fields.get("payment_provider", body.payment_provider),
-            payment_gateway=course_payment_fields.get("payment_gateway", body.payment_gateway),
-            payment_through=course_payment_fields.get("payment_through", body.payment_through),
-            payment_method=course_payment_fields.get("payment_method", body.payment_method),
-            payment_url=course_payment_fields.get("payment_url", body.payment_url),
+            payment_id=course_payment_fields.get("payment_id", loyalty_payment_fields.get("payment_id", body.payment_id)),
+            payment_provider=course_payment_fields.get("payment_provider", loyalty_payment_fields.get("payment_provider", body.payment_provider)),
+            payment_gateway=course_payment_fields.get("payment_gateway", loyalty_payment_fields.get("payment_gateway", body.payment_gateway)),
+            payment_through=course_payment_fields.get("payment_through", loyalty_payment_fields.get("payment_through", body.payment_through)),
+            payment_method=course_payment_fields.get("payment_method", loyalty_payment_fields.get("payment_method", body.payment_method)),
+            payment_url=course_payment_fields.get("payment_url", loyalty_payment_fields.get("payment_url", body.payment_url)),
             payment_data=merged_payment_data,
             idempotency_key=idempotency_key,
             booking_type=booking_type_str,
@@ -1350,23 +1386,24 @@ async def create_booking(
 
         # Link any existing Payment record to this new booking
         try:
-            if body.payment_id:
-                await booking_service._session.execute(
-                    update(Payment)
-                    .where(
-                        (Payment.id == uuid.UUID(str(body.payment_id)))
-                        | (Payment.payment_id == str(body.payment_id))
+            if not is_loyalty_booking:
+                if body.payment_id:
+                    await booking_service._session.execute(
+                        update(Payment)
+                        .where(
+                            (Payment.id == uuid.UUID(str(body.payment_id)))
+                            | (Payment.payment_id == str(body.payment_id))
+                        )
+                        .values(booking_id=booking.id)
                     )
-                    .values(booking_id=booking.id)
-                )
-                await booking_service._session.commit()
-            elif resolved_payment_number:
-                await booking_service._session.execute(
-                    update(Payment)
-                    .where(Payment.payment_number == resolved_payment_number)
-                    .values(booking_id=booking.id)
-                )
-                await booking_service._session.commit()
+                    await booking_service._session.commit()
+                elif resolved_payment_number:
+                    await booking_service._session.execute(
+                        update(Payment)
+                        .where(Payment.payment_number == resolved_payment_number)
+                        .values(booking_id=booking.id)
+                    )
+                    await booking_service._session.commit()
         except Exception:
             pass
 
@@ -1430,6 +1467,8 @@ async def create_booking(
         or payment_type_str == "rewarded"
         or _booking_pstatus == "rewarded"
         or bool(body.loyalty_data)
+        or (getattr(booking, "payment_provider", None) or "").lower() == "loyalty"
+        or (getattr(booking, "payment_method", None) or "").lower() == "loyalty_points"
     )
     if (
         not inv_num_res
@@ -2401,18 +2440,40 @@ async def update_booking_status(
     if not user_data:
         user_data = {"source": body.source, "reason": body.reason} if body.source else None
 
+    payment_data_dict = body.payment_data or body.payments_data or {}
+    resolved_payment_provider = body.payment_provider or payment_data_dict.get("payment_provider")
+    resolved_payment_through = body.payment_through or payment_data_dict.get("payment_through")
+    resolved_payment_gateway = body.payment_gateway or payment_data_dict.get("payment_gateway")
+    resolved_payment_method = body.payment_method or payment_data_dict.get("payment_method")
+    resolved_payment_id = body.payment_id or payment_data_dict.get("payment_id") or payment_data_dict.get("invoice_id")
+
+    if not resolved_payment_through and body.source and "ushspa" in str(body.source).lower():
+        resolved_payment_through = "ushspa"
+
+    is_loyalty_update = (
+        (resolved_payment_provider and str(resolved_payment_provider).lower() == "loyalty")
+        or (resolved_payment_method and str(resolved_payment_method).lower() == "loyalty_points")
+        or (body.payment_type and str(body.payment_type).lower() == "rewarded")
+        or (payment_status and str(payment_status.value if hasattr(payment_status, "value") else payment_status).lower() == "rewarded")
+    )
+    if not is_loyalty_update and resolved_payment_through == "ushspa" and (payment_status == PaymentStatus.SUCCESS or payment_data_dict.get("is_paid")):
+        if not resolved_payment_provider:
+            resolved_payment_provider = "myfatoorah"
+        if not resolved_payment_method:
+            resolved_payment_method = "knet_card"
+
     updated = await booking_service.update_status(
         booking_id=booking_id,
         new_status=body.status,
         payment_status=payment_status,
-        payment_id=body.payment_id,
-        payment_provider=body.payment_provider,
-        payment_gateway=body.payment_gateway,
-        payment_through=body.payment_through,
-        payment_method=body.payment_method,
+        payment_id=resolved_payment_id,
+        payment_provider=resolved_payment_provider,
+        payment_gateway=resolved_payment_gateway,
+        payment_through=resolved_payment_through,
+        payment_method=resolved_payment_method,
         payment_url=body.payment_url,
         payment_type=body.payment_type,
-        payment_data=body.payment_data,
+        payment_data=payment_data_dict or body.payment_data,
         reason=body.reason,
         source=body.source,
         changed_by=user_id,

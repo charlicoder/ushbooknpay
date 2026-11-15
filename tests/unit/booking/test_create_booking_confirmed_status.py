@@ -249,6 +249,8 @@ async def test_api_create_loyalty_booking_creates_zero_invoice_and_payment(monke
     created_booking.currency = "KWD"
     created_booking.invoice_number = None
     created_booking.payment_number = None
+    created_booking.payment_provider = "loyalty"
+    created_booking.payment_method = "loyalty_points"
     created_booking.duration_minutes = 60
     created_booking.extra_minutes = 0
     created_booking.total_duration = 60
@@ -331,3 +333,131 @@ async def test_api_create_loyalty_booking_creates_zero_invoice_and_payment(monke
     assert len(added_payments) == 0
     assert response.data.payment_status == "rewarded"
     assert response.data.payment_id is None
+    assert response.data.payment_provider == "loyalty"
+    assert response.data.payment_method == "loyalty_points"
+
+
+@pytest.mark.asyncio
+async def test_api_create_home_service_loyalty_booking_sets_provider_method_and_no_invoice_payment():
+    """
+    When home service booking appointment using loyalty points:
+    - Don't create payment and invoice record
+    - Update payment provider as loyalty and payment method as loyalty_points
+    """
+    mock_service = MagicMock(spec=BookingService)
+    created_booking = MagicMock(spec=Booking)
+    cust_id = uuid.uuid4()
+    bid = uuid.uuid4()
+    tid = uuid.uuid4()
+    created_booking.id = bid
+    created_booking.booking_number = "BK-HOME-LOYALTY"
+    created_booking.customer_id = cust_id
+    created_booking.total_amount = Decimal("0.000")
+    created_booking.status = "confirmed"
+    created_booking.payment_status = "rewarded"
+    created_booking.payment_type = "rewarded"
+    created_booking.booking_type = "home_service"
+    created_booking.payment_provider = "loyalty"
+    created_booking.payment_method = "loyalty_points"
+    created_booking.payment_id = None
+    created_booking.payment_data = {}
+    created_booking.service_data = {"name": "Home Spa Ritual"}
+    created_booking.branch_data = {"name": "Home Service"}
+    created_booking.service_arrangement_data = None
+    created_booking.loyalty_data = {"points_cost": 100, "booking_type": "loyalty"}
+    created_booking.currency = "KWD"
+    created_booking.invoice_number = None
+    created_booking.payment_number = None
+    created_booking.duration_minutes = 60
+    created_booking.extra_minutes = 0
+    created_booking.total_duration = 60
+    created_booking.addons_duration = 0
+    created_booking.addons = []
+    created_booking.customer_notes = None
+    created_booking.internal_notes = None
+    created_booking.reward_id = None
+    created_booking.voucher_id = None
+    created_booking.voucher_data = None
+    created_booking.created_at = None
+    created_booking.created_by_user = "customer"
+    created_booking.created_by_user_data = None
+
+    mock_session = AsyncMock()
+    mock_scalars_obj = MagicMock()
+    mock_scalars_obj.first = MagicMock(return_value=None)
+    mock_scalar = MagicMock()
+    mock_scalar.scalars = MagicMock(return_value=mock_scalars_obj)
+    mock_session.execute = AsyncMock(return_value=mock_scalar)
+    mock_session.add = MagicMock()
+    mock_session.commit = AsyncMock()
+    mock_service._session = mock_session
+    mock_service.create_booking = AsyncMock(return_value=created_booking)
+
+    mock_ushauth = AsyncMock()
+    mock_ushauth.check_booking_therapist_availability = AsyncMock(return_value={"available": "yes", "therapist_id": str(tid)})
+    mock_ushauth.check_appointment_availability = AsyncMock(return_value={"available": "yes", "therapist_id": str(tid)})
+    mock_ushauth.get_customer_profile = AsyncMock(return_value={"data": {"user": {"first_name": "Fatima", "last_name": "Al-Sabah", "email": "fatima@example.com", "phone_number": "+96511223344"}}})
+    mock_ushauth.get_therapist = AsyncMock(return_value={"data": {"id": str(tid), "name": "Fatima", "full_name": "Fatima"}})
+    mock_ushauth.create_appointment_cache = AsyncMock()
+
+    mock_request = MagicMock(spec=Request)
+    mock_request.headers = Headers()
+
+    body = CreateBookingRequest(
+        customer_id=cust_id,
+        service_id=uuid.uuid4(),
+        therapist_id=tid,
+        appointment_date="2026-11-20",
+        appointment_time="10:00:00",
+        base_price="0.000",
+        base_duration=60,
+        booking_type="home_service",
+        payment_type="rewarded",
+        payment_status="rewarded",
+        loyalty_points=100,
+        price_in_points=100,
+        loyalty_data={"points_cost": 100, "booking_type": "loyalty"},
+    )
+
+    mock_current_user = MagicMock()
+    mock_current_user.sub = str(cust_id)
+    mock_settings = MagicMock()
+
+    mock_ushanr = AsyncMock()
+    mock_ushanr.create_or_get_booking_invoice_data = AsyncMock()
+    mock_ushanr.aclose = AsyncMock()
+
+    with patch("app.integrations.ushanr_client.UshanrClient", return_value=mock_ushanr), \
+         patch("app.api.v1.payments.generate_payment_number", AsyncMock(return_value="PMT/2026/11/000001")), \
+         patch("app.loyalty.application.services.LoyaltyService.redeem_points", AsyncMock()):
+
+        response = await create_booking(
+            request=mock_request,
+            body=body,
+            current_user=mock_current_user,
+            booking_service=mock_service,
+            ushauth=mock_ushauth,
+            settings=mock_settings,
+        )
+
+    # 1. No invoice created
+    mock_ushanr.create_or_get_booking_invoice_data.assert_not_called()
+    assert created_booking.invoice_number is None
+    assert response.data.invoice_number is None
+
+    # 2. No Payment record added
+    added_payments = [
+        call.args[0] for call in mock_session.add.call_args_list
+        if isinstance(call.args[0], Payment)
+    ]
+    assert len(added_payments) == 0
+
+    # 3. Provider and method are updated as loyalty and loyalty_points
+    assert mock_service.create_booking.call_args.kwargs["payment_provider"] == "loyalty"
+    assert mock_service.create_booking.call_args.kwargs["payment_method"] == "loyalty_points"
+    assert mock_service.create_booking.call_args.kwargs["booking_type"] == "home_service"
+    assert response.data.payment_provider == "loyalty"
+    assert response.data.payment_method == "loyalty_points"
+    assert response.data.payment_status == "rewarded"
+    assert response.data.payment_id is None
+

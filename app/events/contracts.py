@@ -1012,6 +1012,7 @@ class VoucherActiveEvent(BaseEvent):
     created_by_name: str | None = None
     created_by_role: str | None = None
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    activation_datetime: str | None = None
 
 
 @dataclass
@@ -1102,6 +1103,7 @@ class VoucherScheduledEvent(BaseEvent):
     created_by_name: str | None = None
     created_by_role: str | None = None
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    activation_datetime: str | None = None
 
 
 @dataclass
@@ -1208,6 +1210,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
     created_by_name: str | None = None
     created_by_role: str | None = None
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    activation_datetime: str | None = None
 
     # Note: secret_code intentionally omitted — not yet delivered at this stage
 
@@ -1302,6 +1305,7 @@ class VoucherRedeemedEvent(BaseEvent):
     created_by_name: str | None = None
     created_by_role: str | None = None
     created_by_user_data: dict[str, Any] = field(default_factory=dict)
+    activation_datetime: str | None = None
 
     # Note: secret_code intentionally omitted from redemption event
 
