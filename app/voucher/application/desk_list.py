@@ -207,8 +207,9 @@ def build_conditions(f: DeskFilters) -> list[Any]:
         p_end = _parse_filter_date(f.period_to, end_of_day=True) if f.period_to else None
         created_in = and_(*([G.created_at >= p_start] if p_start else []), *([G.created_at <= p_end] if p_end else []))
         activated_in = and_(*([G.activation_datetime >= p_start] if p_start else []), *([G.activation_datetime <= p_end] if p_end else []))
+        scheduled_in = and_(*([G.scheduled_delivery_at >= p_start] if p_start else []), *([G.scheduled_delivery_at <= p_end] if p_end else []))
         redeemed_in = _redeemed_range_clause(f.period_from, f.period_to)
-        period_parts = [created_in, activated_in]
+        period_parts = [created_in, activated_in, scheduled_in]
         if redeemed_in is not None:
             period_parts.append(redeemed_in)
         conds.append(or_(*period_parts))
@@ -421,7 +422,7 @@ async def fetch_stats(session: AsyncSession, filters: DeskFilters) -> dict[str, 
                 func.count().filter(_STATUS == "active"),
                 func.count().filter(_IS_REDEEMED),
                 func.count().filter(_STATUS == "expired"),
-                func.coalesce(func.sum(amount).filter(_STATUS.in_(["active", "redeemed"])), 0),
+                func.coalesce(func.sum(amount).filter(not_(or_(_IS_PENDING, _STATUS == "cancelled"))), 0),
                 func.coalesce(func.sum(amount).filter(_IS_PENDING), 0),
                 func.max(G.currency),
                 func.coalesce(func.sum(amount), 0),

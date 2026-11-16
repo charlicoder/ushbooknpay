@@ -226,3 +226,34 @@ Watch the logs for availability_ledger_mismatch. Once it stays clean, set AVAILA
 Optionally run rebuild_slot_ledger from cron every 10 minutes.
 Later, set APPOINTMENT_CACHE_ENFORCE_CONFLICTS=true. Check for existing double-bookings first, because re-syncing an already-overbooked booking would then return 409.
 ```
+
+```
+# Script 1: Update Voucher Activation Date with Creation Date
+5WP9EY
+B078T5
+E6QCIT
+CX8AU6
+R99D59
+OILJ1G
+HE6Z13
+YN9LOL
+S6DJN6
+
+# . Apply changes (ushbooknpay):
+python scripts/update_voucher_activation_date.py --apply
+
+```
+
+```
+Script 2: Delete Pending Gift Vouchers by Date Range (ushbooknpay)
+
+# 1. Preview pending vouchers for a specific date range (dry-run):
+python scripts/delete_pending_vouchers.py --from-date 2026-10-01 --to-date 2026-10-31
+
+# 2. Preview pending vouchers up to a certain date:
+python scripts/delete_pending_vouchers.py --to-date 2026-11-15
+
+# 3. Apply deletion with automatic backup:
+python scripts/delete_pending_vouchers.py --from-date 2026-10-01 --to-date 2026-11-15 --apply
+
+```

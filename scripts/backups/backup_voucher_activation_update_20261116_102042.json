@@ -1,0 +1,83 @@
+[
+  {
+    "id": "f9f19ef3-0518-4815-83d2-f788d9664695",
+    "secret_code": "B078T5",
+    "voucher_number": "VOU/2026/11/000047",
+    "status": "active",
+    "created_at": "2026-11-03T10:06:05.417598+00:00",
+    "old_activation_datetime": "2026-11-04T03:26:52.851116+00:00",
+    "new_activation_datetime": "2026-11-03T10:06:05.417598+00:00"
+  },
+  {
+    "id": "def29e46-c253-4368-987c-172ae5a9c4af",
+    "secret_code": "5WP9EY",
+    "voucher_number": "VOU/2026/11/000052",
+    "status": "active",
+    "created_at": "2026-11-03T11:26:46.346839+00:00",
+    "old_activation_datetime": "2026-11-04T03:26:52.910995+00:00",
+    "new_activation_datetime": "2026-11-03T11:26:46.346839+00:00"
+  },
+  {
+    "id": "fb84a13d-7a4f-4573-b7d0-f00b99d8b142",
+    "secret_code": "E6QCIT",
+    "voucher_number": "VOU/2026/11/000077",
+    "status": "active",
+    "created_at": "2026-11-04T19:24:28.446638+00:00",
+    "old_activation_datetime": "2026-11-05T09:00:32.139162+00:00",
+    "new_activation_datetime": "2026-11-04T19:24:28.446638+00:00"
+  },
+  {
+    "id": "351157f2-35bd-452a-b296-b531769f701e",
+    "secret_code": "OILJ1G",
+    "voucher_number": "VOU/2026/11/000112",
+    "status": "active",
+    "created_at": "2026-11-06T15:58:13.036445+00:00",
+    "old_activation_datetime": "2026-11-06T21:00:24.132509+00:00",
+    "new_activation_datetime": "2026-11-06T15:58:13.036445+00:00"
+  },
+  {
+    "id": "a775ff1a-73f1-41a6-8661-1124df09fca6",
+    "secret_code": "R99D59",
+    "voucher_number": "VOU/2026/11/000119",
+    "status": "active",
+    "created_at": "2026-11-06T18:04:48.021404+00:00",
+    "old_activation_datetime": "2026-11-08T09:00:39.103978+00:00",
+    "new_activation_datetime": "2026-11-06T18:04:48.021404+00:00"
+  },
+  {
+    "id": "143c3101-dcfc-4436-96e4-9b3f5eeedb99",
+    "secret_code": "CX8AU6",
+    "voucher_number": "VOU/2026/11/000120",
+    "status": "active",
+    "created_at": "2026-11-06T18:35:00.920792+00:00",
+    "old_activation_datetime": "2026-11-06T21:00:26.106229+00:00",
+    "new_activation_datetime": "2026-11-06T18:35:00.920792+00:00"
+  },
+  {
+    "id": "be63275b-15cb-41b8-a051-99b89f13708d",
+    "secret_code": "HE6Z13",
+    "voucher_number": "VOU/2026/11/000142",
+    "status": "active",
+    "created_at": "2026-11-07T15:00:09.775389+00:00",
+    "old_activation_datetime": "2026-11-08T09:00:27.115486+00:00",
+    "new_activation_datetime": "2026-11-07T15:00:09.775389+00:00"
+  },
+  {
+    "id": "f0b10cc2-5e95-4222-828c-a4e19356f045",
+    "secret_code": "YN9LOL",
+    "voucher_number": "VOU/2026/11/000250",
+    "status": "active",
+    "created_at": "2026-11-13T18:34:20.639913+00:00",
+    "old_activation_datetime": "2026-11-15T21:00:07.151832+00:00",
+    "new_activation_datetime": "2026-11-13T18:34:20.639913+00:00"
+  },
+  {
+    "id": "b1fb349a-f4eb-44ed-9498-88aab96eab2e",
+    "secret_code": "S6DJN6",
+    "voucher_number": "VOU/2026/11/000271",
+    "status": "active",
+    "created_at": "2026-11-14T18:24:16.307926+00:00",
+    "old_activation_datetime": "2026-11-15T07:00:47.128306+00:00",
+    "new_activation_datetime": "2026-11-14T18:24:16.307926+00:00"
+  }
+]

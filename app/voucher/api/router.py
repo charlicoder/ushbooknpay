@@ -929,9 +929,9 @@ def _desk_filters(
     from app.voucher.application.desk_list import DeskFilters
 
     keys = [x.strip().lower() for x in (statuses or "").split(",") if x.strip()]
-    # The page treats "6+ statuses selected" as "no status filter"
+    # The page treats all 7 statuses selected as "no status filter"
     return DeskFilters(
-        statuses=keys if 0 < len(keys) < 6 else [],
+        statuses=keys if 0 < len(keys) < 7 else [],
         channel=channel,
         created_by=created_by,
         q=q,
