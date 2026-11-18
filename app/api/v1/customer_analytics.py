@@ -20,16 +20,19 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
 from app.booking.domain.services_snapshot import joined_service_name, service_names as service_names_of
-from app.api.deps import DBSession, OptionalUser
+from app.api.deps import DBSession, OptionalUser, RedisClient
 from app.booking.infrastructure.models import Booking
+from app.core.logging import get_logger
 from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction
 from app.payment.infrastructure.models import Payment
 from app.voucher.infrastructure.models import GiftVoucher
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/customers", tags=["Customer Analytics"])
 
@@ -156,9 +159,24 @@ class CustomerFullAnalyticsResponse(BaseModel):
 async def get_customer_analytics(
     customer_id: uuid.UUID,
     session: DBSession,
+    redis: RedisClient,
     phone: str | None = Query(default=None, description="Optional customer phone to match vouchers and bookings"),
+    refresh: bool = Query(default=False, description="Bypass cache and force recalculation"),
     _: OptionalUser = None,
 ) -> CustomerFullAnalyticsResponse:
+    cache_key = f"analytics:customer:{customer_id}:{phone or ''}"
+    if not refresh and redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return Response(
+                    content=cached,
+                    media_type="application/json",
+                    headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=60"},
+                )
+        except Exception as exc:
+            logger.debug("customer_analytics_cache_miss_error", error=str(exc))
+
     now_utc = datetime.now(timezone.utc)
 
     # ── 1. Query Loyalty Account & Transactions ──
@@ -458,7 +476,7 @@ async def get_customer_analytics(
         lifecycle_status=lifecycle,
     )
 
-    return CustomerFullAnalyticsResponse(
+    response = CustomerFullAnalyticsResponse(
         success=True,
         customer_id=str(customer_id),
         phone=phone,
@@ -467,4 +485,17 @@ async def get_customer_analytics(
         financials=financial_data,
         sales_and_bookings=sales_data,
         marketing_analytics=marketing_data,
+    )
+
+    raw_json = response.model_dump_json()
+    if redis is not None:
+        try:
+            await redis.setex(cache_key, 60, raw_json)
+        except Exception as exc:
+            logger.debug("customer_analytics_cache_save_failed", error=str(exc))
+
+    return Response(
+        content=raw_json,
+        media_type="application/json",
+        headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=60"},
     )

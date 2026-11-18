@@ -160,7 +160,20 @@ class SecureHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         response = await call_next(request)
         for header, value in self._HEADERS.items():
+            if header == "Cache-Control" and "Cache-Control" in response.headers:
+                continue
             response.headers[header] = value
+
+        if "X-Cache" not in response.headers:
+            response.headers["X-Cache"] = "MISS"
+
+        expose = response.headers.get("Access-Control-Expose-Headers")
+        if expose:
+            if "X-Cache" not in expose:
+                response.headers["Access-Control-Expose-Headers"] = f"{expose}, X-Cache"
+        else:
+            response.headers["Access-Control-Expose-Headers"] = "X-Request-ID, X-Cache"
+
         return response
 
 

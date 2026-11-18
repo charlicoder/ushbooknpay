@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
@@ -28,9 +28,12 @@ from app.booking.domain.services_snapshot import (
     joined_service_name,
     total_services_price,
 )
-from app.api.deps import DBSession, OptionalUser
+from app.api.deps import DBSession, OptionalUser, RedisClient
 from app.booking.infrastructure.models import Booking
+from app.core.logging import get_logger
 from app.payment.infrastructure.models import Payment
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/therapists", tags=["Therapist Analytics"])
 
@@ -188,8 +191,23 @@ class TherapistFullAnalyticsResponse(BaseModel):
 async def get_therapist_analytics(
     therapist_id: uuid.UUID,
     session: DBSession,
+    redis: RedisClient,
+    refresh: bool = Query(default=False, description="Bypass cache and force recalculation"),
     _: OptionalUser = None,
 ) -> TherapistFullAnalyticsResponse:
+    cache_key = f"analytics:therapist:{therapist_id}"
+    if not refresh and redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return Response(
+                    content=cached,
+                    media_type="application/json",
+                    headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=60"},
+                )
+        except Exception as exc:
+            logger.debug("therapist_analytics_cache_miss_error", error=str(exc))
+
     now_utc = datetime.now(timezone.utc)
 
     # ── 1. Query Bookings for this Therapist ──
@@ -613,7 +631,7 @@ async def get_therapist_analytics(
         for b in bookings[:20]
     ]
 
-    return TherapistFullAnalyticsResponse(
+    response = TherapistFullAnalyticsResponse(
         success=True,
         therapist_id=str(therapist_id),
         therapist_name=therapist_name,
@@ -622,4 +640,17 @@ async def get_therapist_analytics(
         financials=financial_data,
         performance=performance_data,
         recent_bookings=recent_bookings_list,
+    )
+
+    raw_json = response.model_dump_json()
+    if redis is not None:
+        try:
+            await redis.setex(cache_key, 60, raw_json)
+        except Exception as exc:
+            logger.debug("therapist_analytics_cache_save_failed", error=str(exc))
+
+    return Response(
+        content=raw_json,
+        media_type="application/json",
+        headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=60"},
     )

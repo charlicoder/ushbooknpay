@@ -24,6 +24,7 @@ from app.booking.domain.services_snapshot import (
     joined_service_name,
 )
 from app.common.utils import to_local_tz as _to_local_tz
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -1571,6 +1572,14 @@ async def update_payment(
     await session.flush()
     await session.refresh(payment)
 
+    if payment.booking_id:
+        try:
+            from app.common.redis_client import get_redis
+            r = get_redis()
+            await r.delete(f"payment_status:{payment.booking_id}")
+        except Exception as exc:
+            logger.debug("payment_status_cache_delete_failed", error=str(exc))
+
     response_data = _payment_to_detail(payment)
     return JSONResponse(
         content={"success": True, "data": response_data.model_dump(mode="json")}
@@ -1880,8 +1889,21 @@ async def get_payment_status(
     booking_id: uuid.UUID,
     current_user: CurrentUser,
     session: DBSession,
+    redis: RedisClient,
 ) -> JSONResponse:
     """Get the most recent payment status for a booking."""
+    cache_key = f"payment_status:{booking_id}"
+    if redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return JSONResponse(
+                    content=json.loads(cached),
+                    headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=600"},
+                )
+        except Exception as exc:
+            logger.debug("payment_status_cache_miss_error", error=str(exc))
+
     stmt = (
         select(Payment)
         .where(Payment.booking_id == booking_id)
@@ -1910,28 +1932,34 @@ async def get_payment_status(
         v_res = await session.execute(select(GiftVoucher.voucher_number).where(GiftVoucher.id == payment.voucher_id))
         v_num = v_res.scalar_one_or_none()
 
-    return JSONResponse(
-        content={
-            "success": True,
-            "data": {
-                "payment_id": str(payment.id),
-                "payment_number": getattr(payment, "payment_number", None) or "",
-                "invoice_number": getattr(payment, "invoice_number", None),
-                "booking_id": str(payment.booking_id) if payment.booking_id else None,
-                "booking_data": b_data,
-                "voucher_id": str(payment.voucher_id) if payment.voucher_id else None,
-                "voucher_number": v_num,
-                "payment_for": payment.payment_for,
-                "payment_provider": payment.payment_provider,
-                "status": payment.status,
-                "total_amount": str(payment.total_amount),
-                "currency": payment.currency,
-                "payment_method": payment.payment_method,
-                "reference_id": payment.reference_id,
-                "created_at": _to_local_tz(payment.created_at).isoformat(),
-            },
-        }
-    )
+    content = {
+        "success": True,
+        "data": {
+            "payment_id": str(payment.id),
+            "payment_number": getattr(payment, "payment_number", None) or "",
+            "invoice_number": getattr(payment, "invoice_number", None),
+            "booking_id": str(payment.booking_id) if payment.booking_id else None,
+            "booking_data": b_data,
+            "voucher_id": str(payment.voucher_id) if payment.voucher_id else None,
+            "voucher_number": v_num,
+            "payment_for": payment.payment_for,
+            "payment_provider": payment.payment_provider,
+            "status": payment.status,
+            "total_amount": str(payment.total_amount),
+            "currency": payment.currency,
+            "payment_method": payment.payment_method,
+            "reference_id": payment.reference_id,
+            "created_at": _to_local_tz(payment.created_at).isoformat(),
+        },
+    }
+
+    if redis is not None and payment.status in ("success", "failed", "cancelled", "refunded"):
+        try:
+            await redis.setex(cache_key, 600, json.dumps(content))
+        except Exception as exc:
+            logger.debug("payment_status_cache_save_failed", error=str(exc))
+
+    return JSONResponse(content=content, headers={"X-Cache": "MISS"})
 
 
 @router.post(

@@ -28,16 +28,18 @@ Routes (all under /api/v1/vouchers/):
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from app.api.deps import AppSettings, CurrentUser, DBSession, OptionalUser, RequireAppToken
+from app.api.deps import AppSettings, CurrentUser, DBSession, OptionalUser, RedisClient, RequireAppToken
 from app.clients import ushauth as ushauth_client
 from app.common.pagination import make_paginated_response
 from app.core.config import Settings, get_settings
@@ -951,6 +953,7 @@ def _desk_filters(
 async def voucher_stats(
     _: RequireAppToken,
     session: DBSession,
+    redis: RedisClient,
     statuses: str | None = Query(default=None),
     channel: str | None = Query(default=None),
     created_by: str | None = Query(default=None),
@@ -962,6 +965,22 @@ async def voucher_stats(
     activated_from: str | None = Query(default=None),
     activated_to: str | None = Query(default=None),
 ) -> JSONResponse:
+    raw_params = f"{statuses}:{channel}:{created_by}:{q}:{created_from}:{created_to}:{redeemed_from}:{redeemed_to}:{activated_from}:{activated_to}"
+    param_hash = hashlib.md5(raw_params.encode()).hexdigest()
+    cache_key = f"voucher:stats:{param_hash}"
+
+    if redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=json.loads(cached),
+                    headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=30"},
+                )
+        except Exception as exc:
+            logger.debug("voucher_stats_cache_miss_error", error=str(exc))
+
     from app.voucher.application import desk_list
 
     data = await desk_list.fetch_stats(
@@ -971,16 +990,55 @@ async def voucher_stats(
             activated_from, activated_to,
         )
     )
-    return JSONResponse(status_code=status.HTTP_200_OK, content={"success": True, "data": data})
+    content = {"success": True, "data": data}
+    if redis is not None:
+        try:
+            await redis.setex(cache_key, 30, json.dumps(content))
+        except Exception as exc:
+            logger.debug("voucher_stats_cache_save_failed", error=str(exc))
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=content,
+        headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=30"},
+    )
 
 
 @router.get("/creators/", summary="Distinct voucher creators (for the 'Created by' filter)")
 @router.get("/creators", include_in_schema=False)
-async def voucher_creators(_: RequireAppToken, session: DBSession) -> JSONResponse:
+async def voucher_creators(
+    _: RequireAppToken,
+    session: DBSession,
+    redis: RedisClient,
+) -> JSONResponse:
+    cache_key = "voucher:creators"
+    if redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=json.loads(cached),
+                    headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=60"},
+                )
+        except Exception as exc:
+            logger.debug("voucher_creators_cache_miss_error", error=str(exc))
+
     from app.voucher.application import desk_list
 
     data = await desk_list.fetch_creators(session)
-    return JSONResponse(status_code=status.HTTP_200_OK, content={"success": True, "data": data})
+    content = {"success": True, "data": data}
+    if redis is not None:
+        try:
+            await redis.setex(cache_key, 60, json.dumps(content))
+        except Exception as exc:
+            logger.debug("voucher_creators_cache_save_failed", error=str(exc))
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=content,
+        headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=60"},
+    )
 
 
 @router.get("/{voucher_id}/full/", summary="Full voucher details for the desk (app token)")

@@ -34,6 +34,7 @@ from app.booking.infrastructure.models import Booking, BookingStatusHistory, Tem
 from app.booking.infrastructure.cache_outbox import AppointmentCacheOutbox  # noqa: F401
 from app.loyalty.infrastructure.models import LoyaltyAccount, LoyaltyTransaction  # noqa: F401
 from app.common.redis_client import close_redis, get_redis
+from app.core.cache_middleware import APICacheMiddleware
 from app.core.config import get_settings
 from app.core.database import Base, dispose_engine, get_engine, get_session_factory
 from app.core.exceptions import USHBaseError
@@ -249,6 +250,7 @@ def create_application() -> FastAPI:
         limit=settings.RATE_LIMIT_REQUESTS,
         window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
     )
+    app.add_middleware(APICacheMiddleware)
     app.add_middleware(
         SecureHeadersMiddleware,
         is_production=settings.is_production,

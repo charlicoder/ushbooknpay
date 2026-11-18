@@ -9,10 +9,11 @@ Routes:
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from app.api.deps import AppSettings, DBSession, RedisClient, RequireAppToken, USHAuthDep
@@ -42,6 +43,7 @@ async def get_availability(
     session: DBSession,
     ushauth: USHAuthDep,
     settings: AppSettings,
+    redis: RedisClient,
     branch_id: uuid.UUID = Query(..., description="Branch ID"),
     service_id: uuid.UUID = Query(..., description="Service ID"),
     therapist_id: uuid.UUID | None = Query(
@@ -57,11 +59,24 @@ async def get_availability(
     Compute availability for the given service/branch combination.
 
     Algorithm:
-    1. Fetch all therapists for the service from ushauth (cached).
-    2. Fetch their schedules and existing bookings in a single batch query.
-    3. Run the O(n log n) interval engine per therapist per day.
-    4. Return structured time blocks.
+    1. Check Redis cache for recent calculation (30s TTL).
+    2. Fetch all therapists for the service from ushauth (cached).
+    3. Fetch their schedules and existing bookings in a single batch query.
+    4. Run the O(n log n) interval engine per therapist per day.
+    5. Return structured time blocks.
     """
+    cache_key = f"avail:blocks:{branch_id}:{service_id}:{therapist_id or 'all'}:{service_type}:{days_ahead}:{date.today().isoformat()}"
+    if redis is not None:
+        try:
+            cached = await redis.get(cache_key)
+            if cached:
+                return JSONResponse(
+                    content=json.loads(cached),
+                    headers={"X-Cache": "HIT", "Cache-Control": "public, max-age=30"},
+                )
+        except Exception as exc:
+            logger.debug("availability_cache_miss_error", error=str(exc))
+
     # ── Fetch catalog data ──────────────────────────────────────────────
     branch_data = await ushauth.get_branch(str(branch_id))
     service_data = await ushauth.get_service(str(service_id))
@@ -235,18 +250,27 @@ async def get_availability(
             }
         )
 
+    content = {
+        "success": True,
+        "data": result_data,
+        "meta": {
+            "branch_id": str(branch_id),
+            "service_id": str(service_id),
+            "service_duration_minutes": duration_minutes,
+            "slot_duration_minutes": settings.SLOT_DURATION_MINUTES,
+            "days_ahead": days_ahead,
+            "timezone": branch_timezone,
+            "therapist_count": len(result_data),
+        },
+    }
+
+    if redis is not None:
+        try:
+            await redis.setex(cache_key, 30, json.dumps(content))
+        except Exception as exc:
+            logger.debug("availability_cache_save_failed", error=str(exc))
+
     return JSONResponse(
-        content={
-            "success": True,
-            "data": result_data,
-            "meta": {
-                "branch_id": str(branch_id),
-                "service_id": str(service_id),
-                "service_duration_minutes": duration_minutes,
-                "slot_duration_minutes": settings.SLOT_DURATION_MINUTES,
-                "days_ahead": days_ahead,
-                "timezone": branch_timezone,
-                "therapist_count": len(result_data),
-            },
-        }
+        content=content,
+        headers={"X-Cache": "MISS", "Cache-Control": "public, max-age=30"},
     )
