@@ -195,6 +195,51 @@ def _is_therapist_user(user: Any) -> bool:
     return str(getattr(user, "role", "") or "").strip().lower() == "therapist"
 
 
+def _is_manager_user(user: Any) -> bool:
+    """True when the user is an Admin, Branch Manager, or Therapists Manager."""
+    if user is None:
+        return False
+    if getattr(user, "is_superuser", None):
+        return True
+    perms = getattr(user, "permissions", None)
+    if isinstance(perms, dict):
+        if perms.get("is_branch_manager") is True or perms.get("is_therapists_manager") is True:
+            return True
+    if getattr(user, "has_permission", None):
+        if user.has_permission("bookings.list") or user.has_permission("deskmenu.appointments.therapist_schedule"):
+            return True
+    role = str(getattr(user, "role", "") or "").strip().lower()
+    return role in ("branch manager", "therapists manager", "therapist manager", "administrator", "admin")
+
+
+def _is_admin_user(user: Any) -> bool:
+    """True when the user is an Administrator or Superuser."""
+    if user is None:
+        return False
+    if getattr(user, "is_superuser", False) is True or getattr(user, "is_superuser_flag", False) is True:
+        return True
+    user_type = _safe_str(getattr(user, "user_type", None)) or ""
+    if user_type.lower() in ("admin", "administrator", "superuser"):
+        return True
+    role = _safe_str(getattr(user, "role", None)) or ""
+    if role.lower() in ("admin", "administrator", "superuser"):
+        return True
+    codenames = getattr(user, "codenames", None)
+    if isinstance(codenames, (list, set)) and "*" in codenames:
+        return True
+    perms = getattr(user, "permissions", None)
+    if isinstance(perms, dict) and perms.get("is_superuser") is True:
+        return True
+    return False
+
+
+def _is_pure_therapist_user(user: Any) -> bool:
+    """True ONLY when the user is a therapist without manager privileges."""
+    if _is_manager_user(user):
+        return False
+    return _is_therapist_user(user)
+
+
 def _therapist_key(user: Any) -> str:
     """Therapist profile id used on bookings (falls back to the user id if ushauth did not send it)."""
     perms = getattr(user, "permissions", None)
@@ -213,8 +258,8 @@ def _booking_involves_therapist(b: object, therapist_id: str) -> bool:
 
 
 def _deny_therapist(user: Any) -> None:
-    """Therapists are read-only (plus → completed); block every other mutation."""
-    if _is_therapist_user(user):
+    """Pure therapists are read-only (plus → completed); block every other mutation."""
+    if _is_pure_therapist_user(user):
         raise HTTPException(
             status_code=403,
             detail={"code": "PERMISSION_DENIED", "message": "Therapists cannot modify bookings."},
@@ -1656,12 +1701,13 @@ async def list_bookings(
     search: str | None = Query(default=None, description="Search across customer details, notes, etc."),
 ) -> JSONResponse:
     """List bookings with filtering and pagination. Requires bookings.list permission."""
-    is_therapist = _is_therapist_user(current_user)
+    is_pure_therapist = _is_pure_therapist_user(current_user)
+    is_manager = _is_manager_user(current_user)
 
     # Enforce RBAC for employee/admin users; customers use list_my_bookings instead.
-    # Therapists are exempt: they are locked to their own bookings (today → +7 days) below.
-    if current_user.user_type in ("employee", "admin") and not is_therapist:
-        if not current_user.has_permission("bookings.list"):
+    # Pure therapists are exempt: they are locked to their own bookings (today → +7 days) below.
+    if current_user.user_type in ("employee", "admin") and not is_pure_therapist:
+        if not (current_user.has_permission("bookings.list") or is_manager):
             raise HTTPException(
                 status_code=403,
                 detail={"code": "PERMISSION_DENIED", "message": "Permission 'bookings.list' is required."},
@@ -1675,7 +1721,7 @@ async def list_bookings(
     p_page = _val(page, 1)
     p_page_size = _val(page_size, 20)
 
-    if is_therapist:
+    if is_pure_therapist:
         # Hard lock: own bookings only, within [today, today+7]; client-supplied values are ignored.
         win_from, win_to = _therapist_window_dates()
         req_from, req_to, req_date = _val(from_date), _val(to_date), _val(date)
@@ -1783,8 +1829,8 @@ async def get_booking(
     """Get full detail of a booking. Requires only the USHSPA app token (public)."""
     booking = await booking_service.get_booking(booking_id, load_history=True)
 
-    # Therapists may only open bookings they are assigned to.
-    if _is_therapist_user(current_user) and not _booking_involves_therapist(booking, _therapist_key(current_user)):
+    # Pure therapists may only open bookings they are assigned to.
+    if _is_pure_therapist_user(current_user) and not _booking_involves_therapist(booking, _therapist_key(current_user)):
         raise HTTPException(
             status_code=403,
             detail={"code": "PERMISSION_DENIED", "message": "You can only view your own bookings."},
@@ -1819,6 +1865,17 @@ async def change_session_therapist(
 ) -> JSONResponse:
     """Change therapist of one session; only that session's window is availability-checked."""
     _deny_therapist(current_user)
+
+    booking = await booking_service.get_booking(booking_id)
+    if not booking:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found.")
+
+    is_completed = str(getattr(booking, "status", "") or "").lower() == BookingStatus.COMPLETED.value
+    if is_completed and not _is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can update or change the therapist for a completed booking.",
+        )
     therapist_data = body.therapist_data
     if body.therapist_id and not therapist_data:
         try:
@@ -1909,6 +1966,18 @@ async def update_booking(
     prev_secondary_therapist = _secondary_therapist_id_out(booking)
     was_parked = str(booking.status or "").lower() == BookingStatus.PARKED.value
     parked_time_changed = True  # refined below when sessions are supplied
+
+    is_completed = str(getattr(booking, "status", "") or "").lower() == BookingStatus.COMPLETED.value
+    therapist_changing = (
+        body.therapist_id is not None
+        or body.secondary_therapist_id is not None
+        or (body.sessions is not None)
+    )
+    if is_completed and therapist_changing and not _is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can update or change the therapist for a completed booking.",
+        )
 
     # Check permission if called by non-admin customer
     user_id = uuid.UUID(current_user.sub)
@@ -2361,8 +2430,8 @@ async def update_booking_status(
     current_user: OptionalUser = None,
 ) -> JSONResponse:
     """Update booking status and dispatch SQS event."""
-    # Therapists: own bookings only, and the only transition they may perform is → completed.
-    if _is_therapist_user(current_user):
+    # Pure therapists: own bookings only, and the only transition they may perform is → completed.
+    if _is_pure_therapist_user(current_user):
         _target = str(getattr(body.status, "value", body.status) or "").strip().lower()
         if _target != "completed":
             raise HTTPException(
