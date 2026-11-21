@@ -1661,10 +1661,23 @@ class BookingService:
         """
         booking = await self._repo.get_by_id(booking_id, for_update=True)
         sessions = [dict(s) for s in get_booking_sessions(booking)]
-        target = next(
-            (s for s in sessions if str(s.get("session_id")) == str(session_id)),
-            None,
-        )
+        target = None
+        for idx, s in enumerate(sessions):
+            sid = str(s.get("session_id") or "")
+            pos = str(s.get("position") if s.get("position") is not None else "")
+            req_sid = str(session_id or "")
+            if (
+                (sid and sid == req_sid)
+                or (pos and pos == req_sid)
+                or req_sid == f"session_{idx}"
+                or req_sid == f"session_{pos}"
+                or req_sid == str(idx)
+            ):
+                target = s
+                if not s.get("session_id"):
+                    s["session_id"] = sid or str(uuid.uuid4())
+                break
+
         if target is None:
             raise ValidationError(f"Session {session_id} not found in booking.")
 
@@ -2171,8 +2184,9 @@ class BookingService:
         b = await self._repo.get_by_id(booking_id, load_history=load_history)
         try:
             from app.payment.infrastructure.models import Payment, Refund
+            from app.payment_links.infrastructure.models import PaymentLink
             p_stmt = (
-                select(Payment.payment_number, Payment.id, Payment.invoice_number, Payment.invoice_id)
+                select(Payment.payment_number, Payment.id, Payment.invoice_number, Payment.invoice_id, Payment.payment_url)
                 .where(Payment.booking_id == booking_id)
                 .order_by(Payment.created_at.desc())
             )
@@ -2187,6 +2201,41 @@ class BookingService:
                     setattr(b, "invoice_number", p_row[2])
                 if p_row[3] and not getattr(b, "invoice_id", None):
                     setattr(b, "invoice_id", str(p_row[3]))
+                if p_row[4] and not getattr(b, "payment_url", None):
+                    setattr(b, "payment_url", p_row[4])
+
+            if not getattr(b, "payment_url", None):
+                pl_stmt = (
+                    select(PaymentLink.payment_url)
+                    .where(PaymentLink.target_id == booking_id)
+                    .order_by(PaymentLink.created_at.desc())
+                )
+                pl_res = await self._session.execute(pl_stmt)
+                pl_row = pl_res.first()
+                if pl_row and pl_row[0]:
+                    setattr(b, "payment_url", pl_row[0])
+
+            # Booking created by redeeming a gift voucher: it has no payment of its own,
+            # so show the voucher's payment link (the voucher payment is the one shown by payment_number)
+            _voucher_id = getattr(b, "voucher_id", None)
+            if not getattr(b, "payment_url", None) and _voucher_id:
+                vp_stmt = (
+                    select(Payment.payment_url)
+                    .where(Payment.voucher_id == _voucher_id, Payment.payment_url.is_not(None))
+                    .order_by(Payment.created_at.desc())
+                )
+                vp_row = (await self._session.execute(vp_stmt)).first()
+                if vp_row and vp_row[0]:
+                    setattr(b, "payment_url", vp_row[0])
+                else:
+                    vl_stmt = (
+                        select(PaymentLink.payment_url)
+                        .where(PaymentLink.target_id == _voucher_id)
+                        .order_by(PaymentLink.created_at.desc())
+                    )
+                    vl_row = (await self._session.execute(vl_stmt)).first()
+                    if vl_row and vl_row[0]:
+                        setattr(b, "payment_url", vl_row[0])
 
             stmt = select(Refund.refund_number, Refund.id).where(Refund.booking_id == booking_id)
             res = await self._session.execute(stmt)

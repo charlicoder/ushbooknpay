@@ -316,6 +316,7 @@ class PaymentSettlementService:
             "gateway_payment_id": link.gateway_payment_id,
             "transaction_id": link.transaction_id,
             "paid_at": paid_at.isoformat(),
+            "payment_url": link.payment_url,
         }
         if link.invoice_number and not booking.invoice_number:
             booking.invoice_number = link.invoice_number
@@ -400,6 +401,11 @@ class PaymentSettlementService:
             await self._session.flush()
 
         link.payment_row_id = payment.id
+        if getattr(payment, "payment_number", None):
+            booking.payment_data = {
+                **(booking.payment_data or {}),
+                "payment_number": payment.payment_number,
+            }
 
         self._pending_events.append(
             PaymentLinkPaidEvent(
@@ -461,6 +467,11 @@ class PaymentSettlementService:
             await self._session.flush()
 
         link.payment_row_id = payment.id
+        if getattr(payment, "payment_number", None):
+            booking.payment_data = {
+                **(booking.payment_data or {}),
+                "payment_number": payment.payment_number,
+            }
         snapshot = {
             "payment_id": link.gateway_payment_id or str(payment.id),
             "payment_number": payment.payment_number,
@@ -510,6 +521,11 @@ class PaymentSettlementService:
         )
         if payment is not None:
             link.payment_row_id = payment.id
+        if getattr(payment, "payment_number", None):
+            booking.payment_data = {
+                **(booking.payment_data or {}),
+                "payment_number": payment.payment_number,
+            }
 
     async def _create_voucher_payment(self, link: PaymentLink, voucher: GiftVoucher, paid_at: datetime) -> Payment:
         payment = Payment(

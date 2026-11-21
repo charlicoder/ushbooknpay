@@ -705,12 +705,48 @@ class GiftVoucherService:
         if redemption:
             if old_status not in (GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.PARTIALLY_REDEEMED.value):
                 raise ValidationError("Only active or partially redeemed vouchers can be redeemed.")
-            all_ids = [str(e["service_id"]) for e in voucher_services_of(voucher) if e.get("service_id")]
+            # Resolve all redeemable service ids on this voucher.
+            # If the voucher contains a package, the redeemable services are its included services.
+            raw_entries = voucher_services_of(voucher)
+            all_ids: list[str] = []
+            package_ids: set[str] = set()
+            for e in raw_entries:
+                sid = str(e.get("service_id") or "")
+                sdata = e.get("service_data") or {}
+                inc_list = e.get("included_services") or sdata.get("included_services") or []
+                is_pkg = bool(e.get("is_packaged_services") or sdata.get("is_packaged_services") or inc_list)
+                if is_pkg and inc_list:
+                    package_ids.add(sid)
+                    for inc in inc_list:
+                        inc_id = str((inc or {}).get("id") or (inc or {}).get("service_id") or "")
+                        if inc_id and inc_id not in all_ids:
+                            all_ids.append(inc_id)
+                elif sid and sid not in all_ids:
+                    all_ids.append(sid)
+
+            if not all_ids:
+                all_ids = [str(e["service_id"]) for e in raw_entries if e.get("service_id")]
+
             already_used = used_service_ids(voucher)
             new_ids: list[str] = []
             used_entries: list[dict[str, Any]] = []
             for item in redemption.get("services") or []:
                 sid = str((item or {}).get("service_id") or "")
+                if sid in package_ids:
+                    # Redeemed as whole package: mark all component services as redeemed
+                    for pid in all_ids:
+                        if pid not in already_used and pid not in new_ids:
+                            new_ids.append(pid)
+                    used_entries.append(
+                        {
+                            "service_id": sid,
+                            "service_name": item.get("service_name"),
+                            "addon_ids": [str(a) for a in (item.get("addon_ids") or [])],
+                            "extra_time": max(int(item.get("extra_time") or 0), 0),
+                        }
+                    )
+                    continue
+
                 if sid not in all_ids:
                     raise ValidationError(f"Service {sid or '?'} is not part of this voucher.")
                 if sid in already_used or sid in new_ids:
@@ -748,6 +784,11 @@ class GiftVoucherService:
             if updates.get("redeemed_by") is not None:
                 voucher.redeemed_by = updates["redeemed_by"]
             all_used = already_used | set(new_ids)
+            if package_ids and not all(i in all_used for i in all_ids):
+                raise ValidationError(
+                    "Partial redemption is not allowed for packaged services. "
+                    "All included package services must be redeemed together."
+                )
             updates["status"] = (
                 GiftVoucherStatus.REDEEMED.value
                 if all(i in all_used for i in all_ids)

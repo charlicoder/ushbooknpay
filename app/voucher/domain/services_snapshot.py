@@ -235,14 +235,33 @@ def used_service_ids(voucher: Any) -> set[str]:
         for s in r.get("services") or []:
             if isinstance(s, dict) and s.get("service_id"):
                 used.add(str(s["service_id"]))
+    # If a package id was recorded as used, treat all its components as used too
+    for e in voucher_services_of(voucher):
+        sid = str(e.get("service_id") or "")
+        if sid in used:
+            sdata = e.get("service_data") or {}
+            inc_list = e.get("included_services") or sdata.get("included_services") or []
+            for inc in inc_list:
+                inc_id = str((inc or {}).get("id") or (inc or {}).get("service_id") or "")
+                if inc_id:
+                    used.add(inc_id)
     return used
 
 
 def remaining_service_ids(voucher: Any) -> list[str]:
     """Gifted services not redeemed yet (all of them for a never-redeemed voucher)."""
     used = used_service_ids(voucher)
-    return [
-        str(e["service_id"])
-        for e in voucher_services_of(voucher)
-        if e.get("service_id") and str(e["service_id"]) not in used
-    ]
+    rem: list[str] = []
+    for e in voucher_services_of(voucher):
+        sid = str(e.get("service_id") or "")
+        sdata = e.get("service_data") or {}
+        inc_list = e.get("included_services") or sdata.get("included_services") or []
+        is_pkg = bool(e.get("is_packaged_services") or sdata.get("is_packaged_services") or inc_list)
+        if is_pkg and inc_list:
+            for inc in inc_list:
+                inc_id = str((inc or {}).get("id") or (inc or {}).get("service_id") or "")
+                if inc_id and inc_id not in used and inc_id not in rem:
+                    rem.append(inc_id)
+        elif sid and sid not in used and sid not in rem:
+            rem.append(sid)
+    return rem
