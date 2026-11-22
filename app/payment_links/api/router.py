@@ -227,6 +227,7 @@ async def gateway_webhook(
                 except Exception as b_exc:
                     logger.warning("gateway_webhook_check_cancelled_booking_failed", error=str(b_exc))
         except Exception as exc:
+            await session.rollback()
             error_msg = str(exc)
             logger.error("gateway_webhook_callback_error", gateway=gateway, lookup_key=lookup_key, error=str(exc))
 

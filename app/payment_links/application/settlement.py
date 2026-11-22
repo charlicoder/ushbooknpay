@@ -467,11 +467,6 @@ class PaymentSettlementService:
             await self._session.flush()
 
         link.payment_row_id = payment.id
-        if getattr(payment, "payment_number", None):
-            booking.payment_data = {
-                **(booking.payment_data or {}),
-                "payment_number": payment.payment_number,
-            }
         snapshot = {
             "payment_id": link.gateway_payment_id or str(payment.id),
             "payment_number": payment.payment_number,
@@ -521,11 +516,6 @@ class PaymentSettlementService:
         )
         if payment is not None:
             link.payment_row_id = payment.id
-        if getattr(payment, "payment_number", None):
-            booking.payment_data = {
-                **(booking.payment_data or {}),
-                "payment_number": payment.payment_number,
-            }
 
     async def _create_voucher_payment(self, link: PaymentLink, voucher: GiftVoucher, paid_at: datetime) -> Payment:
         payment = Payment(
