@@ -286,8 +286,9 @@ class BookingRepository:
             except Exception:
                 pass
 
-        if search:
-            s = f"%{search.strip()}%"
+        if search and search.strip():
+            raw_q = search.strip().lstrip("#").strip()
+            s = f"%{raw_q or search.strip()}%"
             conditions.append(
                 or_(
                     Booking.booking_number.ilike(s),
@@ -300,11 +301,15 @@ class BookingRepository:
                     Booking.customer_data["phone"].astext.ilike(s),
                     Booking.customer_data["phone_number"].astext.ilike(s),
                     Booking.branch_data["branch_name"].astext.ilike(s),
+                    Booking.branch_data["name"].astext.ilike(s),
                     Booking.service_data["service_name"].astext.ilike(s),
+                    Booking.service_data["name"].astext.ilike(s),
                     # all booked services (names of secondary services live here)
                     cast(Booking.services, Text).ilike(s),
                     Booking.therapist_data["therapist_name"].astext.ilike(s),
+                    Booking.therapist_data["name"].astext.ilike(s),
                     Booking.secondary_therapist_data["therapist_name"].astext.ilike(s),
+                    Booking.secondary_therapist_data["name"].astext.ilike(s),
                 )
             )
 
