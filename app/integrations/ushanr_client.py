@@ -441,9 +441,16 @@ class UshanrClient:
             "notes": notes,
         }
         try:
-            resp = await self._client.post("/api/v1/internal/credit-note/", json=body)
+            resp = await self._client.post("/api/v1/internal/invoices/credit-note/", json=body)
             if resp.status_code in (200, 201):
                 return resp.json()
+            logger.warning(
+                "ushanr_create_credit_note_non_2xx",
+                status_code=resp.status_code,
+                source_document_type=source_document_type,
+                source_document_id=str(source_document_id),
+                response_text=resp.text[:300],
+            )
             return None
         except Exception as exc:
             logger.warning("ushanr_create_credit_note_failed", error=str(exc))

@@ -633,7 +633,7 @@ class RefundService:
         )
         await self._session.flush()
 
-        # Publish BookingRefundApprovedEvent
+        # Publish BookingRefundApprovedEvent (and create unpaid credit note in ushanr for money refunds)
         try:
             booking = await self._get_booking(refund.booking_id) if refund.booking_id else None
             payment = (
@@ -642,19 +642,77 @@ class RefundService:
                 else await lifecycle._payment_of(refund)
             )
             bdata = refund.booking_data or {}
+            voucher_id_str = str(bdata.get("voucher_id") or "")
+            voucher_num_str = str(bdata.get("voucher_number") or "")
+            src_doc_type = (
+                "booking"
+                if booking
+                else ("gift_voucher" if (bdata.get("source_type") == "gift_voucher" or voucher_id_str) else "")
+            )
+            src_doc_id = str(booking.id) if booking else voucher_id_str
             ref_num = (
                 getattr(booking, "booking_number", None)
                 or bdata.get("booking_number")
-                or bdata.get("voucher_number")
+                or voucher_num_str
                 or ""
             )
+
+            # For money refunds, create the unpaid credit note in ushanr synchronously (idempotent)
+            # matching the exact booking refund procedure (loyalty points do not create credit notes).
+            is_loyalty_method = str(refund.refund_method or "").lower().strip() in (
+                RefundMethod.LOYALTY_POINTS.value,
+                "loyalty_points",
+                "loyalty",
+                "points",
+            )
+            if not is_loyalty_method and src_doc_type and src_doc_id:
+                try:
+                    from app.integrations.ushanr_client import UshanrClient
+
+                    ushanr = UshanrClient()
+                    doc_label = f"booking {ref_num or src_doc_id}" if src_doc_type == "booking" else f"gift voucher {ref_num or src_doc_id}"
+                    cn_res = await ushanr.create_credit_note(
+                        source_document_type=src_doc_type,
+                        source_document_id=src_doc_id,
+                        refund_amount=refund.refunded_amount,
+                        cancellation_fee=refund.cancellation_fee,
+                        refund_method=refund.refund_method,
+                        refund_number=refund.refund_number,
+                        branch_id=str(refund.branch_id) if refund.branch_id else None,
+                        processed_by=str(actor_id or refund.processed_by or "staff"),
+                        record_refund_payment=False,
+                        notes=f"Approved refund {refund.refund_number} (MONEY) for {doc_label}",
+                    )
+                    if cn_res is None and src_doc_type == "gift_voucher":
+                        cn_res = await ushanr.create_credit_note(
+                            source_document_type="gift_voucher_purchase",
+                            source_document_id=src_doc_id,
+                            refund_amount=refund.refunded_amount,
+                            cancellation_fee=refund.cancellation_fee,
+                            refund_method=refund.refund_method,
+                            refund_number=refund.refund_number,
+                            branch_id=str(refund.branch_id) if refund.branch_id else None,
+                            processed_by=str(actor_id or refund.processed_by or "staff"),
+                            record_refund_payment=False,
+                            notes=f"Approved refund {refund.refund_number} (MONEY) for {doc_label}",
+                        )
+                    if isinstance(cn_res, dict):
+                        if cn_res.get("invoice_name") and not refund.credit_note_number:
+                            refund.credit_note_number = str(cn_res["invoice_name"])
+                        if cn_res.get("invoice_id") and not refund.credit_note_id:
+                            refund.credit_note_id = str(cn_res["invoice_id"])
+                        await self._session.flush()
+                    await ushanr.aclose()
+                except Exception as cn_exc:
+                    logger.warning("approve_refund_credit_note_failed", refund_number=refund.refund_number, error=str(cn_exc))
+
             from app.events.contracts import BookingRefundApprovedEvent
             event = BookingRefundApprovedEvent(
                 refund_id=str(refund.id),
                 refund_number=refund.refund_number,
                 booking_id=str(refund.booking_id or ""),
                 booking_number=ref_num,
-                booking_reference=str(ref_num or refund.booking_id or bdata.get("voucher_id") or ""),
+                booking_reference=str(ref_num or refund.booking_id or voucher_id_str or ""),
                 payment_id=str(refund.payment_id or (payment.id if payment else "")),
                 customer_id=str(refund.customer_id or ""),
                 branch_id=str(refund.branch_id or ""),
@@ -674,6 +732,10 @@ class RefundService:
                 created_at=_to_local_tz(refund.created_at).isoformat() if refund.created_at else "",
                 invoice_number=refund.invoice_number or getattr(payment, "invoice_number", "") or (booking.invoice_number if booking else ""),
                 invoice_id=getattr(refund, "credit_note_id", "") or "",
+                source_document_type=src_doc_type or "booking",
+                source_document_id=src_doc_id,
+                voucher_id=voucher_id_str,
+                voucher_number=voucher_num_str,
             )
             sqs = get_sqs_client()
             import asyncio

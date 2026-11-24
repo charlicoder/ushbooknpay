@@ -575,6 +575,10 @@ class BookingRefundCompletedEvent(BaseEvent):
     payment_amount_refunded: str = "0.000"
     booking_payment_status: str = ""
     is_fully_refunded: bool = False
+    source_document_type: str = "booking"
+    source_document_id: str = ""
+    voucher_id: str = ""
+    voucher_number: str = ""
 
 
 RefundCompletedEvent = BookingRefundCompletedEvent
@@ -610,6 +614,10 @@ class BookingRefundApprovedEvent(BaseEvent):
     created_at: str = ""
     invoice_number: str = ""
     invoice_id: str = ""
+    source_document_type: str = "booking"
+    source_document_id: str = ""
+    voucher_id: str = ""
+    voucher_number: str = ""
 
 
 RefundApprovedEvent = BookingRefundApprovedEvent

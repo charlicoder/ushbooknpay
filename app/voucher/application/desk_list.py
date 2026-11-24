@@ -243,6 +243,7 @@ class DeskVoucherItem(BaseModel):
     payment_through: str | None = None
     payment_url: str | None = None
     payment_provider: str | None = None
+    payment_method: str | None = None
     created_by: uuid.UUID | None = None
     created_by_name: str | None = None
     created_by_role: str | None = None
@@ -297,6 +298,8 @@ def _slim_columns(view: str) -> list[Any]:
         G.branch_data["name"].astext.label("br_name"),
         _jarr(G.services, "$[*].service_data.name").label("svc_names"),
         _jarr(G.addons, "$[*].duration_minutes").label("addon_durations"),
+        G.payment_data["payment_method"].astext.label("pd_method"),
+        G.payment_data["data"]["InvoiceTransactions"][0]["PaymentGateway"].astext.label("pd_gateway"),
     ]
     if view == "report":
         cols += [
@@ -305,7 +308,6 @@ def _slim_columns(view: str) -> list[Any]:
             _jarr(G.addons, "$[*].name").label("addon_names"),
             G.payment_data["invoice_number"].astext.label("pd_invoice"),
             G.payment_data["payment_number"].astext.label("pd_payment"),
-            G.payment_data["data"]["InvoiceTransactions"][0]["PaymentGateway"].astext.label("pd_gateway"),
         ]
     return cols
 
@@ -336,7 +338,9 @@ def _row_to_item(r: Any, view: str) -> DeskVoucherItem:
         "expire_date": m["expire_date"], "created_at": m["created_at"], "updated_at": m["updated_at"],
         "redeemed_at": m["redeemed_at"], "scheduled_delivery_at": m["scheduled_delivery_at"],
         "payment_through": m["payment_through"], "payment_url": m["payment_url"],
-        "payment_provider": m["payment_provider"], "created_by": m["created_by"],
+        "payment_provider": m["payment_provider"],
+        "payment_method": m["pd_method"] or m["pd_gateway"] or None,
+        "created_by": m["created_by"],
         "created_by_name": m["created_by_name"], "created_by_role": m["created_by_role"],
         "created_by_user_data": (
             {k: v for k, v in (("name", m["cbu_name"]), ("role", m["cbu_role"])) if v} or None
@@ -388,27 +392,41 @@ async def fetch_page(
     rows = (await session.execute(stmt)).all()
     items = [_row_to_item(r, view) for r in rows]
 
-    if view == "report":
-        # Same fallback the full response uses: invoice / payment numbers from the Payment table
-        missing = [it.id for it in items if not it.invoice_number or not it.payment_number]
-        if missing:
-            try:
-                from app.payment.infrastructure.models import Payment
+    # Enrich missing payment_method / payment_provider (and report invoice/payment numbers) from Payment table
+    missing_ids = [
+        it.id
+        for it in items
+        if not it.payment_method
+        or not it.payment_provider
+        or (view == "report" and (not getattr(it, "invoice_number", None) or not getattr(it, "payment_number", None)))
+    ]
+    if missing_ids:
+        try:
+            from app.payment.infrastructure.models import Payment
 
-                res = await session.execute(
-                    select(Payment.voucher_id, Payment.invoice_number, Payment.payment_number)
-                    .where(Payment.voucher_id.in_(missing))
-                    .order_by(Payment.created_at.desc())
+            res = await session.execute(
+                select(
+                    Payment.voucher_id,
+                    Payment.invoice_number,
+                    Payment.payment_number,
+                    Payment.payment_provider,
+                    Payment.payment_method,
                 )
-                seen: dict[Any, tuple[Any, Any]] = {}
-                for vid, inv, pmt in res.all():
-                    seen.setdefault(vid, (inv, pmt))
-                for it in items:
-                    inv, pmt = seen.get(it.id, (None, None))
-                    it.invoice_number = it.invoice_number or inv
-                    it.payment_number = it.payment_number or pmt
-            except Exception:  # pragma: no cover - best effort
-                pass
+                .where(Payment.voucher_id.in_(missing_ids))
+                .order_by(Payment.created_at.desc())
+            )
+            seen: dict[Any, tuple[Any, Any, Any, Any]] = {}
+            for vid, inv, pmt, prov, meth in res.all():
+                seen.setdefault(vid, (inv, pmt, prov, meth))
+            for it in items:
+                inv, pmt, prov, meth = seen.get(it.id, (None, None, None, None))
+                it.payment_provider = it.payment_provider or prov
+                it.payment_method = it.payment_method or meth
+                if view == "report":
+                    it.invoice_number = getattr(it, "invoice_number", None) or inv
+                    it.payment_number = getattr(it, "payment_number", None) or pmt
+        except Exception:  # pragma: no cover - best effort
+            pass
     return items, total
 
 

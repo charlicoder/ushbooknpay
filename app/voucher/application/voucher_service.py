@@ -732,7 +732,7 @@ class GiftVoucherService:
             net_refund_amt = max(Decimal("0.000"), total_amt - fee_dec)
 
             if net_refund_amt > Decimal("0.000"):
-                refund_record, created = await lifecycle.request_for_voucher(
+                refund_record, _ = await lifecycle.request_for_voucher(
                     voucher,
                     payment=payment,
                     refund_amount=net_refund_amt,
@@ -745,52 +745,9 @@ class GiftVoucherService:
                     actor_id=str(actor_id) if actor_id else ch_name,
                     actor_data=eff_actor_data,
                 )
-
-                # Best-effort: issue unpaid credit note in ushanr (outbound payment recorded on refund process)
-                if created or not refund_record.credit_note_number:
-                    try:
-                        from app.integrations.ushanr_client import UshanrClient
-
-                        ushanr = UshanrClient()
-                        v_ref = voucher.voucher_number or str(voucher.id)
-                        cn_res = await ushanr.create_credit_note(
-                            source_document_type="gift_voucher",
-                            source_document_id=str(voucher.id),
-                            refund_amount=net_refund_amt,
-                            cancellation_fee=fee_dec,
-                            refund_method=refund_record.refund_method,
-                            refund_number=refund_record.refund_number,
-                            branch_id=str(voucher.branch_id) if voucher.branch_id else None,
-                            processed_by=str(actor_id or ch_name),
-                            record_refund_payment=False,
-                            notes=f"Gift voucher {v_ref} cancelled by admin: {reason}",
-                        )
-                        if cn_res is None:
-                            cn_res = await ushanr.create_credit_note(
-                                source_document_type="gift_voucher_purchase",
-                                source_document_id=str(voucher.id),
-                                refund_amount=net_refund_amt,
-                                cancellation_fee=fee_dec,
-                                refund_method=refund_record.refund_method,
-                                refund_number=refund_record.refund_number,
-                                branch_id=str(voucher.branch_id) if voucher.branch_id else None,
-                                processed_by=str(actor_id or ch_name),
-                                record_refund_payment=False,
-                                notes=f"Gift voucher {v_ref} cancelled by admin: {reason}",
-                            )
-                        if isinstance(cn_res, dict):
-                            if cn_res.get("invoice_name"):
-                                refund_record.credit_note_number = str(cn_res["invoice_name"])
-                            if cn_res.get("invoice_id"):
-                                refund_record.credit_note_id = str(cn_res["invoice_id"])
-                            await self._session.flush()
-                        await ushanr.aclose()
-                    except Exception as cn_exc:
-                        logger.warning(
-                            "voucher_cancel_credit_note_failed",
-                            voucher_id=str(voucher.id),
-                            error=str(cn_exc),
-                        )
+                # Follow the exact booking cancellation procedure:
+                # Credit note is created on Approve (Money) and settled on Process,
+                # so Loyalty Points approvals or Rejections never produce stray credit notes.
         elif not is_paid_voucher:
             # Unpaid voucher: cancel any open/pending payment rows
             try:

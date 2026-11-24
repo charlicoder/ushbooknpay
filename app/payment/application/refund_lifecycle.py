@@ -709,17 +709,22 @@ class RefundLifecycle:
             c.get("name") or c.get("full_name") or f"{c.get('first_name', '')} {c.get('last_name', '')}".strip() or ""
         )
         lang = "en" if str(c.get("language_preference") or "").strip().lower().startswith("en") else "ar"
+        bdata = refund.booking_data or {}
+        voucher_id = str(bdata.get("voucher_id") or "")
+        voucher_number = str(bdata.get("voucher_number") or "")
+        source_document_type = "booking" if refund.booking_id else (
+            "gift_voucher" if (bdata.get("source_type") == "gift_voucher" or voucher_id) else "booking"
+        )
+        source_document_id = str(refund.booking_id or voucher_id or "")
         booking_number = (getattr(booking, "booking_number", None) if booking else None) or (
-            (refund.booking_data or {}).get("booking_number")
-            or (refund.booking_data or {}).get("voucher_number")
-            or ""
+            bdata.get("booking_number") or voucher_number or ""
         )
         event = BookingRefundCompletedEvent(
             refund_id=str(refund.id),
             refund_number=refund.refund_number,
             booking_id=str(refund.booking_id or ""),
             booking_number=booking_number,
-            booking_reference=str(booking_number or refund.booking_id or ""),
+            booking_reference=str(booking_number or refund.booking_id or voucher_id or ""),
             payment_id=str(payment.id) if payment else "",
             customer_id=str(refund.customer_id or ""),
             customer_name=name,
@@ -756,6 +761,10 @@ class RefundLifecycle:
             payment_amount_refunded=str(payment.amount_refunded) if payment else "0.000",
             booking_payment_status=str(getattr(booking, "payment_status", "") or "") if booking else "",
             is_fully_refunded=fully,
+            source_document_type=source_document_type,
+            source_document_id=source_document_id,
+            voucher_id=voucher_id,
+            voucher_number=voucher_number,
         )
         try:
             import asyncio
