@@ -376,27 +376,55 @@ class MyFatoorahGateway(PaymentLinkGateway):
 
     # ── PaymentRefunder ─────────────────────────────────────────────────
     async def refund_payment(self, request: RefundRequest) -> RefundResponse:
-        payload: dict[str, Any] = {
-            "Key": request.provider_payment_id,
-            "KeyType": "InvoiceId",
-            "RefundChargeOnCustomer": False,
-            "ServiceChargeOnCustomer": False,
-            "Comment": (request.reason or "Refund")[:200],
-        }
-        if request.amount is not None:
-            payload["Amount"] = float(request.amount)
-        body = await self._post("v2/MakeRefund", payload)
-        if not body.get("IsSuccess"):
+        val = str(request.provider_payment_id or "").strip()
+        is_payment_id = len(val) >= 14 or val.startswith("0")
+        primary_key_type = "PaymentId" if is_payment_id else "InvoiceId"
+        secondary_key_type = "InvoiceId" if is_payment_id else "PaymentId"
+
+        last_err_msg = ""
+        body: dict[str, Any] = {}
+        used_key_type = primary_key_type
+
+        for idx, ktype in enumerate((primary_key_type, secondary_key_type)):
+            used_key_type = ktype
+            payload: dict[str, Any] = {
+                "Key": val,
+                "KeyType": ktype,
+                "RefundChargeOnCustomer": False,
+                "ServiceChargeOnCustomer": False,
+                "Comment": (request.reason or "Refund")[:200],
+            }
+            if request.amount is not None:
+                payload["Amount"] = float(request.amount)
+
+            body = await self._post("v2/MakeRefund", payload)
+            if isinstance(body, Mapping) and body.get("IsSuccess"):
+                break
+            last_err_msg = self._error_message(body)
+            # Only retry with the alternate KeyType when MyFatoorah reports a key/lookup mismatch
+            if idx == 0 and ("key" in last_err_msg.lower() or "no transaction" in last_err_msg.lower()):
+                logger.info(
+                    "myfatoorah_refund_retry_alternate_key_type",
+                    key=val,
+                    failed_key_type=ktype,
+                    next_key_type=secondary_key_type,
+                    error=last_err_msg,
+                )
+                continue
+            break
+
+        if not isinstance(body, Mapping) or not body.get("IsSuccess"):
             raise RefundError(
-                f"MyFatoorah refund failed: {self._error_message(body)}", code="MYFATOORAH_REFUND_FAILED"
+                f"MyFatoorah refund failed: {last_err_msg or self._error_message(body)}",
+                code="MYFATOORAH_REFUND_FAILED",
             )
         data = body.get("Data") or {}
-        logger.info("myfatoorah_refund_requested", invoice_id=request.provider_payment_id)
+        logger.info("myfatoorah_refund_requested", key=val, key_type=used_key_type)
         return RefundResponse(
             is_successful=True,
             provider_refund_id=_to_str(data.get("RefundId") or data.get("RefundReference")) or None,
             failure_reason=None,
-            raw_response=body,
+            raw_response=dict(body),
         )
 
     # ── Cancel Payment Link / Invoice ───────────────────────────────────

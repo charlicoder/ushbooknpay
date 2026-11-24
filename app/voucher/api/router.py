@@ -61,6 +61,7 @@ from app.voucher.infrastructure.models import GiftVoucher
 from app.voucher.interfaces.schemas import (
     BatchDeleteVouchersRequest,
     BatchUpdateVoucherStatusRequest,
+    CancelGiftVoucherRequest,
     CreateGiftVoucherRequest,
     GiftVoucherListItem,
     GiftVoucherPublicResponse,
@@ -1633,6 +1634,116 @@ async def update_voucher_status(
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={"success": True, "data": data.model_dump(mode="json")},
+    )
+
+
+def _is_admin_caller(request: Request, body: Any = None) -> bool:
+    """Return True if the request comes from an admin/superuser (via JWT or headers)."""
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            import base64
+
+            parts = token.split(".")
+            if len(parts) >= 2:
+                padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                claims = json.loads(base64.urlsafe_b64decode(padded.encode()).decode("utf-8"))
+                if claims.get("is_superuser"):
+                    return True
+                u_type = str(claims.get("user_type") or "").strip().lower()
+                if u_type in ("admin", "superuser"):
+                    return True
+                role = str(claims.get("role") or claims.get("role_name") or "").strip().lower()
+                if role in ("admin", "administrator", "superadmin", "super_admin", "superuser", "system admin"):
+                    return True
+        except Exception:
+            pass
+
+    for h in ("X-User-Type", "x-user-type", "X-Role", "x-role", "X-User-Role", "x-user-role"):
+        val = str(request.headers.get(h) or "").strip().lower()
+        if val in ("admin", "administrator", "superadmin", "super_admin", "superuser", "system admin"):
+            return True
+
+    if body is not None:
+        b_role = str(getattr(body, "changed_by_role", None) or "").strip().lower()
+        if b_role in ("admin", "administrator", "superadmin", "super_admin", "superuser", "system admin"):
+            return True
+
+    return False
+
+
+@router.post(
+    "/{voucher_id}/cancel/",
+    summary="Cancel a gift voucher (Admin only)",
+    description=(
+        "Admin-only cancellation of a gift voucher that has not yet been redeemed/completed. "
+        "For paid/active vouchers, automatically submits a Refund Request into the standard "
+        "finance payment return workflow (/bookings/refunds) and creates a credit note in ushanr."
+    ),
+)
+@router.post(
+    "/{voucher_id}/cancel",
+    include_in_schema=False,
+)
+async def cancel_gift_voucher(
+    voucher_id: uuid.UUID,
+    body: CancelGiftVoucherRequest,
+    _: RequireAppToken,
+    session: DBSession,
+    request: Request,
+) -> JSONResponse:
+    """Cancel a gift voucher (Admin only). Paid vouchers enter the standard Refund workflow."""
+    if not _is_admin_caller(request, body):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators are permitted to cancel gift vouchers.",
+        )
+
+    actor_id, actor_name, actor_role, actor_data = _resolve_api_requester_details(request, body)
+    svc = GiftVoucherService(session)
+
+    try:
+        voucher, refund = await svc.cancel_voucher(
+            voucher_id,
+            reason=body.reason.strip(),
+            request_refund=body.request_refund,
+            cancellation_fee=body.cancellation_fee,
+            refund_method=body.refund_method,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            actor_data=actor_data,
+        )
+        await session.commit()
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+        ) from exc
+
+    data = _voucher_to_response(voucher)
+    refund_payload = None
+    if refund is not None:
+        refund_payload = {
+            "id": str(refund.id),
+            "refund_number": refund.refund_number,
+            "status": refund.status,
+            "requested_amount": str(refund.requested_amount),
+            "cancellation_fee": str(refund.cancellation_fee),
+            "refunded_amount": str(refund.refunded_amount),
+            "currency": refund.currency,
+            "credit_note_number": refund.credit_note_number,
+        }
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "success": True,
+            "data": data.model_dump(mode="json"),
+            "refund": refund_payload,
+        },
     )
 
 

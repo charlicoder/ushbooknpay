@@ -60,6 +60,10 @@ def cancellation_idempotency_key(booking_id: Any) -> str:
     return f"booking-cancel:{booking_id}"
 
 
+def voucher_cancellation_idempotency_key(voucher_id: Any) -> str:
+    return f"voucher-cancel:{voucher_id}"
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -108,6 +112,31 @@ class RefundLifecycle:
             cond = Payment.id == uuid.UUID(raw)
         except (ValueError, TypeError):
             cond = Payment.payment_id == raw
+        stmt = select(Payment).where(cond).limit(1)
+        if for_update:
+            stmt = stmt.with_for_update()
+        return (await self._session.execute(stmt)).scalars().first()
+
+    async def find_payment_for_voucher(self, voucher: Any, *, for_update: bool = False) -> Payment | None:
+        """Paid payment row for a gift voucher (success-first, newest-first)."""
+        stmt = (
+            select(Payment)
+            .where(Payment.voucher_id == voucher.id)
+            .order_by(Payment.status.in_(PAID_PAYMENT_STATUSES).desc(), Payment.created_at.desc())
+            .limit(1)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        payment = (await self._session.execute(stmt)).scalars().first()
+        if payment is not None or not getattr(voucher, "payment_id", None):
+            return payment
+        raw = str(voucher.payment_id).strip()
+        if not raw:
+            return None
+        try:
+            cond = Payment.id == uuid.UUID(raw)
+        except (ValueError, TypeError):
+            cond = (Payment.payment_id == raw) | (Payment.invoice_id == raw)
         stmt = select(Payment).where(cond).limit(1)
         if for_update:
             stmt = stmt.with_for_update()
@@ -249,6 +278,127 @@ class RefundLifecycle:
             "refund_requested",
             refund_number=refund.refund_number,
             booking_id=str(booking.id),
+            amount=str(net),
+            idempotency_key=idempotency_key,
+        )
+        return refund, True
+
+    async def request_for_voucher(
+        self,
+        voucher: Any,
+        *,
+        payment: Payment | None,
+        refund_amount: Decimal,
+        cancellation_fee: Decimal = ZERO,
+        refund_type: str = RefundType.MANUAL.value,
+        refund_method: str = RefundMethod.CASH.value,
+        reason: str | None = None,
+        notes: str | None = None,
+        idempotency_key: str | None = None,
+        actor_id: str | None = None,
+        actor_data: dict | None = None,
+    ) -> tuple[Refund, bool]:
+        """
+        Create a refund in ``requested`` state for a cancelled paid gift voucher.
+        Returns (refund, created). Idempotent per ``idempotency_key``.
+        """
+        if idempotency_key:
+            existing = (
+                await self._session.execute(select(Refund).where(Refund.idempotency_key == idempotency_key))
+            ).scalars().first()
+            if existing is not None:
+                return existing, False
+
+        net = _dec(refund_amount)
+        fee = _dec(cancellation_fee)
+        if net <= ZERO:
+            raise ValidationError("Refund amount must be greater than zero.")
+        if fee < ZERO:
+            raise ValidationError("Cancellation fee cannot be negative.")
+
+        if payment is not None:
+            total = _dec(payment.total_amount)
+            committed = await self.committed_total(payment)
+            if committed + net > total + TOLERANCE:
+                raise ValidationError(
+                    f"Refund amount {net} exceeds available refundable balance ({max(ZERO, total - committed)} "
+                    f"{payment.currency or 'KWD'})."
+                )
+
+        from app.payment.infrastructure.repository import generate_refund_number
+
+        v_inv = getattr(voucher, "invoice_number", None)
+        if not v_inv and isinstance(getattr(voucher, "payment_data", None), dict):
+            pdata = voucher.payment_data
+            v_inv = (
+                pdata.get("invoice_number")
+                or pdata.get("invoiceId")
+                or (pdata.get("data") or {}).get("InvoiceId")
+            )
+
+        sdata = getattr(voucher, "service_data", None) or {}
+        bdata = getattr(voucher, "branch_data", None) or {}
+        voucher_snapshot = {
+            "source_type": "gift_voucher",
+            "voucher_id": str(voucher.id),
+            "voucher_number": getattr(voucher, "voucher_number", None),
+            "booking_number": getattr(voucher, "voucher_number", None),
+            "status": getattr(voucher, "status", None),
+            "service_name": sdata.get("name") if isinstance(sdata, dict) else "Gift Voucher",
+            "branch_id": str(voucher.branch_id) if getattr(voucher, "branch_id", None) else None,
+            "branch_name": bdata.get("name") if isinstance(bdata, dict) else None,
+            "total_amount": str(getattr(voucher, "total_amount", "") or ""),
+            "payment_provider": getattr(voucher, "payment_provider", None),
+            "payment_through": getattr(voucher, "payment_through", None),
+        }
+
+        refund = Refund(
+            id=uuid.uuid4(),
+            refund_number=await generate_refund_number(self._session),
+            idempotency_key=idempotency_key,
+            booking_id=None,
+            booking_data=voucher_snapshot,
+            payment_id=payment.id if payment else None,
+            invoice_number=(getattr(payment, "invoice_number", None) if payment else None)
+            or (str(v_inv) if v_inv else None),
+            customer_id=getattr(voucher, "sender_id", None),
+            customer_data=getattr(voucher, "sender_data", None) or {},
+            branch_id=getattr(voucher, "branch_id", None),
+            branch_data=bdata if isinstance(bdata, dict) else {},
+            refund_type=refund_type,
+            refund_method=refund_method,
+            status=RefundStatus.REQUESTED.value,
+            requested_amount=net + fee,
+            cancellation_fee=fee,
+            refunded_amount=net,
+            currency=getattr(voucher, "currency", None) or (payment.currency if payment else "KWD"),
+            reason=reason or "Gift voucher cancellation refund",
+            notes=notes,
+            payment_gateway=(
+                (payment.payment_gateway or payment.payment_provider)
+                if payment
+                else getattr(voucher, "payment_provider", None)
+            ),
+            gateway_transaction_id=payment.transaction_id if payment else getattr(voucher, "payment_id", None),
+            processed_by=str(actor_id) if actor_id else None,
+            processed_by_data=actor_data or {},
+            processed_at=_now(),
+        )
+        self._session.add(refund)
+        await self._session.flush()
+        if payment is not None:
+            self._audit(
+                payment,
+                reason=f"Gift voucher refund {refund.refund_number} requested: {net} {refund.currency}",
+                refund=refund,
+                actor_id=actor_id,
+                actor_data=actor_data,
+                source="voucher_refund_requested",
+            )
+        logger.info(
+            "voucher_refund_requested",
+            refund_number=refund.refund_number,
+            voucher_id=str(voucher.id),
             amount=str(net),
             idempotency_key=idempotency_key,
         )
@@ -553,14 +703,16 @@ class RefundLifecycle:
         from app.events.contracts import BookingRefundCompletedEvent
 
         c = (getattr(booking, "customer_data", None) or refund.customer_data or {}) if booking else (refund.customer_data or {})
-        b = (getattr(booking, "branch_data", None) or {}) if booking else {}
-        s = (getattr(booking, "service_data", None) or {}) if booking else {}
+        b = (getattr(booking, "branch_data", None) or refund.branch_data or {}) if booking else (refund.branch_data or {})
+        s = (getattr(booking, "service_data", None) or {}) if booking else {"name": (refund.booking_data or {}).get("service_name", "")}
         name = str(
             c.get("name") or c.get("full_name") or f"{c.get('first_name', '')} {c.get('last_name', '')}".strip() or ""
         )
         lang = "en" if str(c.get("language_preference") or "").strip().lower().startswith("en") else "ar"
         booking_number = (getattr(booking, "booking_number", None) if booking else None) or (
-            (refund.booking_data or {}).get("booking_number") or ""
+            (refund.booking_data or {}).get("booking_number")
+            or (refund.booking_data or {}).get("voucher_number")
+            or ""
         )
         event = BookingRefundCompletedEvent(
             refund_id=str(refund.id),

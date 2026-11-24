@@ -119,6 +119,52 @@ class RefundService:
 
         return None
 
+    @staticmethod
+    def _is_uuid_str(val: Any) -> bool:
+        if not val:
+            return False
+        try:
+            uuid.UUID(str(val).strip())
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    @classmethod
+    def _resolve_gateway_payment_id(cls, payment: Payment, gateway_name: str) -> str | None:
+        """
+        Pick the external gateway transaction/invoice identifier for a Payment row.
+
+        ``payment.invoice_id`` often stores the internal UANR accounting invoice UUID
+        (e.g. ``d36a0def-...``) rather than the MyFatoorah numeric InvoiceId. Never pass
+        an internal UUID to external payment gateways.
+        """
+        g = (gateway_name or "").lower()
+        pdata = payment.payment_data if isinstance(payment.payment_data, dict) else {}
+        nested = pdata.get("data") if isinstance(pdata.get("data"), dict) else {}
+
+        if "fatoorah" in g or "deema" in g:
+            candidates = [
+                nested.get("InvoiceId"),
+                pdata.get("InvoiceId"),
+                pdata.get("invoiceId"),
+                pdata.get("gateway_invoice_id"),
+                payment.invoice_id,
+                payment.payment_id,
+                payment.transaction_id,
+            ]
+        else:
+            candidates = [
+                payment.payment_id,
+                payment.transaction_id,
+                payment.invoice_id,
+            ]
+
+        for c in candidates:
+            s = str(c).strip() if c is not None else ""
+            if s and not cls._is_uuid_str(s):
+                return s
+        return None
+
     def _resolve_gateway_provider(self, payment: Payment):
         prov = str(payment.payment_provider or payment.payment_gateway or "").strip().lower()
         if "fatoorah" in prov:
@@ -303,10 +349,7 @@ class RefundService:
 
         # Identify external gateway transaction id
         prov_lower = str(payment.payment_provider or payment.payment_gateway or "").lower()
-        if "fatoorah" in prov_lower or "deema" in prov_lower:
-            gateway_payment_id = payment.invoice_id or payment.payment_id or payment.transaction_id
-        else:
-            gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id
+        gateway_payment_id = self._resolve_gateway_payment_id(payment, prov_lower)
         if not gateway_payment_id:
             raise ValidationError("Payment lacks external gateway reference required for automated refund.")
 
@@ -593,14 +636,25 @@ class RefundService:
         # Publish BookingRefundApprovedEvent
         try:
             booking = await self._get_booking(refund.booking_id) if refund.booking_id else None
-            payment = await self._get_payment_for_booking(booking) if booking else None
+            payment = (
+                await self._get_payment_for_booking(booking)
+                if booking
+                else await lifecycle._payment_of(refund)
+            )
+            bdata = refund.booking_data or {}
+            ref_num = (
+                getattr(booking, "booking_number", None)
+                or bdata.get("booking_number")
+                or bdata.get("voucher_number")
+                or ""
+            )
             from app.events.contracts import BookingRefundApprovedEvent
             event = BookingRefundApprovedEvent(
                 refund_id=str(refund.id),
                 refund_number=refund.refund_number,
                 booking_id=str(refund.booking_id or ""),
-                booking_number=getattr(booking, "booking_number", None) or "",
-                booking_reference=str(getattr(booking, "booking_number", None) or (refund.booking_id or "")),
+                booking_number=ref_num,
+                booking_reference=str(ref_num or refund.booking_id or bdata.get("voucher_id") or ""),
                 payment_id=str(refund.payment_id or (payment.id if payment else "")),
                 customer_id=str(refund.customer_id or ""),
                 branch_id=str(refund.branch_id or ""),
@@ -663,11 +717,14 @@ class RefundService:
             raise ValidationError(f"Refund {refund.refund_number} is not in approved status ({refund.status}).")
 
         booking = await self._get_booking(refund.booking_id) if refund.booking_id else None
-        payment = await self._get_payment_for_booking(booking) if booking else None
+        lifecycle = RefundLifecycle(self._session)
+        payment = (
+            await self._get_payment_for_booking(booking)
+            if booking
+            else await lifecycle._payment_of(refund)
+        )
         effective_user_id = str(actor_id or refund.processed_by or "staff")
         effective_user_data = actor_data or refund.processed_by_data or {}
-
-        lifecycle = RefundLifecycle(self._session)
 
         # ── Case A: Loyalty Points ─────────────────────────────────────
         if refund.refund_method == RefundMethod.LOYALTY_POINTS.value or str(refund.refund_method).lower() in ("loyalty_points", "loyalty", "points"):
@@ -703,10 +760,13 @@ class RefundService:
 
         # ── Case B: Money (Provider Gateway / Counter) ───────────────────
         # Determine gateway/provider
+        bdata = refund.booking_data or {}
         if payment and (payment.payment_gateway or payment.payment_provider):
             gateway_name = str(payment.payment_gateway or payment.payment_provider).lower()
         elif booking and (booking.payment_gateway or booking.payment_provider):
             gateway_name = str(booking.payment_gateway or booking.payment_provider).lower()
+        elif refund.payment_gateway or bdata.get("payment_provider"):
+            gateway_name = str(refund.payment_gateway or bdata.get("payment_provider")).lower()
         else:
             gateway_name = "manual"
 
@@ -720,10 +780,7 @@ class RefundService:
             or "gateway" in str(refund.refund_method).lower()
             or "payment_link" in str(refund.refund_method).lower()
         ):
-            if "fatoorah" in gateway_name or "deema" in gateway_name:
-                gateway_payment_id = payment.invoice_id or payment.payment_id or payment.transaction_id
-            else:
-                gateway_payment_id = payment.payment_id or payment.transaction_id or payment.invoice_id
+            gateway_payment_id = self._resolve_gateway_payment_id(payment, gateway_name)
 
             if gateway_payment_id:
                 provider = self._resolve_gateway_provider(payment)
@@ -758,7 +815,7 @@ class RefundService:
             try:
                 from app.integrations.ushanr_client import UshanrClient
                 ushanr = UshanrClient()
-                await ushanr.create_credit_note(
+                cn_res = await ushanr.create_credit_note(
                     source_document_type="booking",
                     source_document_id=str(booking.id),
                     refund_amount=refund.refunded_amount,
@@ -770,9 +827,53 @@ class RefundService:
                     record_refund_payment=True,
                     notes=f"Processed refund {refund.refund_number} for booking {booking.booking_number or booking.id}",
                 )
+                if isinstance(cn_res, dict):
+                    if cn_res.get("invoice_name") and not refund.credit_note_number:
+                        refund.credit_note_number = str(cn_res["invoice_name"])
+                    if cn_res.get("invoice_id") and not refund.credit_note_id:
+                        refund.credit_note_id = str(cn_res["invoice_id"])
                 await ushanr.aclose()
             except Exception as u_exc:
                 logger.warning("credit_note_status_update_failed", refund_number=refund.refund_number, error=str(u_exc))
+        elif bdata.get("source_type") == "gift_voucher" and bdata.get("voucher_id"):
+            try:
+                from app.integrations.ushanr_client import UshanrClient
+                ushanr = UshanrClient()
+                voucher_id_str = str(bdata["voucher_id"])
+                voucher_ref = bdata.get("voucher_number") or voucher_id_str
+                cn_res = await ushanr.create_credit_note(
+                    source_document_type="gift_voucher",
+                    source_document_id=voucher_id_str,
+                    refund_amount=refund.refunded_amount,
+                    cancellation_fee=refund.cancellation_fee,
+                    refund_method=refund.refund_method,
+                    refund_number=refund.refund_number,
+                    branch_id=str(refund.branch_id) if refund.branch_id else None,
+                    processed_by=effective_user_id,
+                    record_refund_payment=True,
+                    notes=f"Processed refund {refund.refund_number} for gift voucher {voucher_ref}",
+                )
+                if cn_res is None:
+                    cn_res = await ushanr.create_credit_note(
+                        source_document_type="gift_voucher_purchase",
+                        source_document_id=voucher_id_str,
+                        refund_amount=refund.refunded_amount,
+                        cancellation_fee=refund.cancellation_fee,
+                        refund_method=refund.refund_method,
+                        refund_number=refund.refund_number,
+                        branch_id=str(refund.branch_id) if refund.branch_id else None,
+                        processed_by=effective_user_id,
+                        record_refund_payment=True,
+                        notes=f"Processed refund {refund.refund_number} for gift voucher {voucher_ref}",
+                    )
+                if isinstance(cn_res, dict):
+                    if cn_res.get("invoice_name") and not refund.credit_note_number:
+                        refund.credit_note_number = str(cn_res["invoice_name"])
+                    if cn_res.get("invoice_id") and not refund.credit_note_id:
+                        refund.credit_note_id = str(cn_res["invoice_id"])
+                await ushanr.aclose()
+            except Exception as u_exc:
+                logger.warning("voucher_credit_note_status_update_failed", refund_number=refund.refund_number, error=str(u_exc))
 
         await self._session.flush()
         logger.info("money_refund_processed", refund_number=refund.refund_number, amount=str(refund.refunded_amount))

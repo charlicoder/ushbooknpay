@@ -596,6 +596,263 @@ class GiftVoucherService:
 
         return voucher
 
+    async def cancel_voucher(
+        self,
+        voucher_id: uuid.UUID,
+        *,
+        reason: str,
+        request_refund: bool = True,
+        cancellation_fee: Decimal | None = None,
+        refund_method: str | None = None,
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+        actor_role: str | None = None,
+        actor_data: dict[str, Any] | None = None,
+    ) -> tuple[GiftVoucher, Any | None]:
+        """
+        Admin-only cancellation of a gift voucher (if not yet completed/redeemed).
+
+        Follows standard financial practice matching booking cancellation:
+          - Rejects vouchers that are already redeemed, fulfilled, expired, or cancelled.
+          - Cancels any scheduled EventBridge delivery job and any open payment links.
+          - For PAID / ACTIVE vouchers (active, scheduled, partially_redeemed, or
+            with a settled Payment row):
+              * Transitions voucher status → ``cancelled``.
+              * Creates an auditable ``Refund`` in ``requested`` status via
+                ``RefundLifecycle.request_for_voucher`` (idempotent) so Finance can
+                review, approve, execute the gateway/manual return, and settle the
+                credit note from ``/bookings/refunds``.
+              * Best-effort creates an unpaid credit note in ``ushanr``
+                (``record_refund_payment=False``); the outbound cash/gateway movement
+                is posted when the refund is processed.
+          - For UNPAID vouchers (created, payment_pending):
+              * Transitions voucher status → ``cancelled``.
+              * Marks any pending ``Payment`` rows as ``cancelled``.
+        """
+        voucher = await self._repo.get_by_id(voucher_id, for_update=True)
+        if voucher is None:
+            raise NotFoundError(f"Gift voucher {voucher_id} not found.")
+
+        try:
+            current_status = GiftVoucherStatus(voucher.status)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        if current_status in (
+            GiftVoucherStatus.FULFILLED,
+            GiftVoucherStatus.REDEEMED,
+            GiftVoucherStatus.EXPIRED,
+            GiftVoucherStatus.CANCELLED,
+        ):
+            raise ValidationError(
+                f"Gift voucher cannot be cancelled because its status is '{current_status.value}'."
+            )
+
+        # Validate against state machine
+        try:
+            GiftVoucherStateMachine.validate_transition(current_status, GiftVoucherStatus.CANCELLED)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        old_status = voucher.status
+
+        # 1. Remove any scheduled delivery trigger
+        if voucher.delivery_schedule_name:
+            try:
+                scheduler = get_scheduler_client()
+                await scheduler.delete_voucher_schedule(voucher.delivery_schedule_name)
+            except Exception as exc:
+                logger.warning("voucher_schedule_deletion_error", voucher_id=str(voucher.id), error=str(exc))
+
+        # 2. Cancel any open payment links linked to this voucher
+        try:
+            from app.payment_links.infrastructure.models import PaymentLink
+            from sqlalchemy import select as sa_select
+
+            pl_stmt = sa_select(PaymentLink).where(
+                PaymentLink.target_id == voucher.id,
+                PaymentLink.status.in_(("active", "pending", "created", "initiated")),
+            )
+            pl_rows = (await self._session.execute(pl_stmt)).scalars().all()
+            for pl in pl_rows:
+                pl.status = "cancelled"
+        except Exception as exc:
+            logger.warning("voucher_cancel_payment_links_failed", voucher_id=str(voucher.id), error=str(exc))
+
+        # 3. Determine whether the voucher was paid
+        from app.payment.application.refund_lifecycle import (
+            PAID_PAYMENT_STATUSES,
+            RefundLifecycle,
+            voucher_cancellation_idempotency_key,
+        )
+        from app.payment.domain.value_objects import PaymentTransactionStatus
+        from app.payment.infrastructure.models import Payment, PaymentStatusHistory
+
+        lifecycle = RefundLifecycle(self._session)
+        payment = await lifecycle.find_payment_for_voucher(voucher)
+        has_paid_payment = bool(
+            payment is not None
+            and str(payment.status or "").lower().strip() in PAID_PAYMENT_STATUSES
+        )
+        is_paid_voucher = (
+            current_status in (
+                GiftVoucherStatus.ACTIVE,
+                GiftVoucherStatus.SCHEDULED,
+                GiftVoucherStatus.PARTIALLY_REDEEMED,
+            )
+            or has_paid_payment
+        )
+
+        # 4. Transition voucher status → cancelled
+        voucher.status = GiftVoucherStatus.CANCELLED.value
+
+        ch_name = (
+            actor_name
+            or (actor_data or {}).get("name")
+            or (str(actor_id) if actor_id and len(str(actor_id)) < 30 else None)
+            or "Admin"
+        )
+        ch_role = actor_role or (actor_data or {}).get("role") or "Admin"
+        eff_actor_data = actor_data or {
+            "id": str(actor_id) if actor_id else "",
+            "name": ch_name,
+            "role": ch_role,
+        }
+
+        refund_record = None
+        if is_paid_voucher and request_refund:
+            total_amt = Decimal(
+                str(
+                    (payment.total_amount if payment else None)
+                    or getattr(voucher, "total_amount", None)
+                    or "0.000"
+                )
+            )
+            fee_dec = Decimal(str(cancellation_fee or "0.000"))
+            net_refund_amt = max(Decimal("0.000"), total_amt - fee_dec)
+
+            if net_refund_amt > Decimal("0.000"):
+                refund_record, created = await lifecycle.request_for_voucher(
+                    voucher,
+                    payment=payment,
+                    refund_amount=net_refund_amt,
+                    cancellation_fee=fee_dec,
+                    refund_type="manual",
+                    refund_method=refund_method or "cash",
+                    reason=reason,
+                    notes=f"Auto-generated on admin cancellation of gift voucher {voucher.voucher_number or voucher.id}",
+                    idempotency_key=voucher_cancellation_idempotency_key(voucher.id),
+                    actor_id=str(actor_id) if actor_id else ch_name,
+                    actor_data=eff_actor_data,
+                )
+
+                # Best-effort: issue unpaid credit note in ushanr (outbound payment recorded on refund process)
+                if created or not refund_record.credit_note_number:
+                    try:
+                        from app.integrations.ushanr_client import UshanrClient
+
+                        ushanr = UshanrClient()
+                        v_ref = voucher.voucher_number or str(voucher.id)
+                        cn_res = await ushanr.create_credit_note(
+                            source_document_type="gift_voucher",
+                            source_document_id=str(voucher.id),
+                            refund_amount=net_refund_amt,
+                            cancellation_fee=fee_dec,
+                            refund_method=refund_record.refund_method,
+                            refund_number=refund_record.refund_number,
+                            branch_id=str(voucher.branch_id) if voucher.branch_id else None,
+                            processed_by=str(actor_id or ch_name),
+                            record_refund_payment=False,
+                            notes=f"Gift voucher {v_ref} cancelled by admin: {reason}",
+                        )
+                        if cn_res is None:
+                            cn_res = await ushanr.create_credit_note(
+                                source_document_type="gift_voucher_purchase",
+                                source_document_id=str(voucher.id),
+                                refund_amount=net_refund_amt,
+                                cancellation_fee=fee_dec,
+                                refund_method=refund_record.refund_method,
+                                refund_number=refund_record.refund_number,
+                                branch_id=str(voucher.branch_id) if voucher.branch_id else None,
+                                processed_by=str(actor_id or ch_name),
+                                record_refund_payment=False,
+                                notes=f"Gift voucher {v_ref} cancelled by admin: {reason}",
+                            )
+                        if isinstance(cn_res, dict):
+                            if cn_res.get("invoice_name"):
+                                refund_record.credit_note_number = str(cn_res["invoice_name"])
+                            if cn_res.get("invoice_id"):
+                                refund_record.credit_note_id = str(cn_res["invoice_id"])
+                            await self._session.flush()
+                        await ushanr.aclose()
+                    except Exception as cn_exc:
+                        logger.warning(
+                            "voucher_cancel_credit_note_failed",
+                            voucher_id=str(voucher.id),
+                            error=str(cn_exc),
+                        )
+        elif not is_paid_voucher:
+            # Unpaid voucher: cancel any open/pending payment rows
+            try:
+                from sqlalchemy import select as sa_select
+
+                p_stmt = sa_select(Payment).where(Payment.voucher_id == voucher.id)
+                p_rows = (await self._session.execute(p_stmt)).scalars().all()
+                for p in p_rows:
+                    old_ps = p.status
+                    if str(old_ps or "").lower() not in PAID_PAYMENT_STATUSES and str(old_ps or "").lower() != "cancelled":
+                        p.status = PaymentTransactionStatus.CANCELLED.value
+                        self._session.add(
+                            PaymentStatusHistory(
+                                payment_id=p.id,
+                                old_status=old_ps,
+                                new_status=PaymentTransactionStatus.CANCELLED.value,
+                                source="ushdesk_admin",
+                                reason=f"Gift voucher cancelled: {reason}",
+                                change_by_user=str(actor_id or ch_name),
+                                change_by_user_data=eff_actor_data,
+                            )
+                        )
+            except Exception as p_exc:
+                logger.warning("voucher_cancel_payment_sync_failed", voucher_id=str(voucher.id), error=str(p_exc))
+
+        # 5. Record audit entry in voucher.update_history
+        note_parts = [f"Cancelled by {ch_name}: {reason}"]
+        if refund_record is not None:
+            note_parts.append(f"Refund request {refund_record.refund_number} created ({refund_record.refunded_amount} {refund_record.currency})")
+        history_entry = {
+            "action": "cancelled",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "changed_by": str(actor_id) if actor_id else "admin",
+            "changed_by_name": ch_name,
+            "changed_by_role": ch_role,
+            "performed_by_name": ch_name,
+            "performed_by_role": ch_role,
+            "user_data": eff_actor_data,
+            "old_status": old_status,
+            "new_status": GiftVoucherStatus.CANCELLED.value,
+            "note": " — ".join(note_parts),
+            "reason": reason,
+            "refund_id": str(refund_record.id) if refund_record else None,
+            "refund_number": refund_record.refund_number if refund_record else None,
+        }
+        current_history = list(voucher.update_history or [])
+        current_history.append(history_entry)
+        voucher.update_history = current_history
+
+        await self._repo.flush()
+
+        logger.info(
+            "gift_voucher_cancelled",
+            voucher_id=str(voucher.id),
+            voucher_number=voucher.voucher_number,
+            old_status=old_status,
+            is_paid=is_paid_voucher,
+            refund_number=refund_record.refund_number if refund_record else None,
+            actor_id=actor_id,
+        )
+        return voucher, refund_record
+
     async def update_delivery_status(
         self,
         voucher_id: uuid.UUID,

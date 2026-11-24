@@ -219,19 +219,31 @@ class MyFatoorahProvider:
 
     async def refund_payment(self, request: RefundRequest) -> RefundResponse:
         """Issue a full or partial refund via MakeRefund."""
-        payload: dict[str, Any] = {
-            "Key": request.provider_payment_id,
-            "KeyType": "InvoiceId",
-            "RefundChargeOnCustomer": False,
-            "ServiceChargOnCustomer": False,
-            "Amount": float(request.amount) if request.amount else None,
-            "Comment": request.reason or "Booking cancellation refund",
-        }
-        # Remove None amount for full refund
-        if payload["Amount"] is None:
-            del payload["Amount"]
+        val = str(request.provider_payment_id or "").strip()
+        is_payment_id = len(val) >= 14 or val.startswith("0")
+        primary_key_type = "PaymentId" if is_payment_id else "InvoiceId"
+        secondary_key_type = "InvoiceId" if is_payment_id else "PaymentId"
 
-        response = await self._post("v2/MakeRefund", payload)
+        response: dict[str, Any] = {}
+        for idx, ktype in enumerate((primary_key_type, secondary_key_type)):
+            payload: dict[str, Any] = {
+                "Key": val,
+                "KeyType": ktype,
+                "RefundChargeOnCustomer": False,
+                "ServiceChargeOnCustomer": False,
+                "Amount": float(request.amount) if request.amount else None,
+                "Comment": request.reason or "Booking cancellation refund",
+            }
+            if payload["Amount"] is None:
+                del payload["Amount"]
+
+            response = await self._post("v2/MakeRefund", payload)
+            if response.get("IsSuccess"):
+                break
+            err_text = str(response.get("Message") or "") + " " + str(response.get("ValidationErrors") or "")
+            if idx == 0 and ("key" in err_text.lower() or "no transaction" in err_text.lower()):
+                continue
+            break
 
         if not response.get("IsSuccess"):
             raise RefundError(

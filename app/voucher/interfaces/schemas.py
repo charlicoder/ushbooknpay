@@ -1045,6 +1045,39 @@ class UpdateGiftVoucherRequest(BaseModel):
     }
 
 
+class CancelGiftVoucherRequest(BaseModel):
+    """POST /api/v1/vouchers/{voucher_id}/cancel/ — Admin cancellation of a gift voucher."""
+
+    reason: str = Field(
+        ...,
+        min_length=3,
+        max_length=1000,
+        description="Mandatory cancellation reason for audit trail.",
+    )
+    request_refund: bool = Field(
+        default=True,
+        description=(
+            "For paid/active vouchers, submit a refund request into the standard "
+            "Refunds approval & payment return workflow (default: True)."
+        ),
+    )
+    cancellation_fee: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0.000"),
+        description="Optional cancellation fee to retain (default: 0.000).",
+    )
+    refund_method: str | None = Field(
+        default=None,
+        description="Optional preferred refund method (default: auto/cash).",
+    )
+    changed_by: str | None = Field(default=None, description="Optional actor identifier.")
+    changed_by_name: str | None = Field(default=None, description="Optional actor name.")
+    changed_by_role: str | None = Field(default=None, description="Optional actor role.")
+    change_by_user_data: dict[str, Any] | None = Field(default=None, description="Optional actor data.")
+
+    model_config = {"extra": "ignore"}
+
+
 # ── Response schemas ──────────────────────────────────────────────────────────
 
 
