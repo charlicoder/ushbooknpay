@@ -84,7 +84,7 @@ async def completed_sessions(
     try:
         d = date.fromisoformat(day)
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "`date` must be YYYY-MM-DD") from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "`date` must be YYYY-MM-DD") from exc
 
     lo = datetime.combine(d, time(0, 0), tzinfo=DEFAULT_TIMEZONE)
     hi = lo + timedelta(days=1)

@@ -769,7 +769,7 @@ async def create_gift_voucher(
         )
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)
@@ -1629,8 +1629,13 @@ async def update_voucher_status(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except ValidationError as exc:
+        logger.warning(
+            "voucher_update_validation_error",
+            voucher_id=str(voucher_id),
+            detail=exc.message,
+        )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)
@@ -1722,8 +1727,13 @@ async def cancel_gift_voucher(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except ValidationError as exc:
+        logger.warning(
+            "voucher_update_validation_error",
+            voucher_id=str(voucher_id),
+            detail=exc.message,
+        )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)
@@ -2009,8 +2019,13 @@ async def update_voucher_delivery_status(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except ValidationError as exc:
+        logger.warning(
+            "voucher_update_validation_error",
+            voucher_id=str(voucher_id),
+            detail=exc.message,
+        )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)
@@ -2193,8 +2208,13 @@ async def update_gift_voucher(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except ValidationError as exc:
+        logger.warning(
+            "voucher_update_validation_error",
+            voucher_id=str(voucher_id),
+            detail=exc.message,
+        )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)
@@ -2388,8 +2408,13 @@ async def reschedule_gift_voucher(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except ValidationError as exc:
+        logger.warning(
+            "voucher_update_validation_error",
+            voucher_id=str(voucher_id),
+            detail=exc.message,
+        )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)
@@ -2435,8 +2460,13 @@ async def activate_scheduled_gift_voucher(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except ValidationError as exc:
+        logger.warning(
+            "voucher_update_validation_error",
+            voucher_id=str(voucher_id),
+            detail=exc.message,
+        )
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         ) from exc
 
     data = _voucher_to_response(voucher)

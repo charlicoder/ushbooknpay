@@ -974,6 +974,16 @@ class UpdateGiftVoucherRequest(BaseModel):
             return None
         return v
 
+    @field_validator("redeemed_by", mode="before")
+    @classmethod
+    def coerce_invalid_redeemed_by(cls, v: Any) -> Any:
+        if v is None or v == "":
+            return None
+        try:
+            return uuid.UUID(str(v).strip())
+        except (ValueError, TypeError):
+            return None
+
     @field_validator("currency")
     @classmethod
     def normalise_currency(cls, v: str | None) -> str | None:

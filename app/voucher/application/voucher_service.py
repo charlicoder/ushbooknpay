@@ -959,38 +959,114 @@ class GiftVoucherService:
         if redemption:
             if old_status not in (GiftVoucherStatus.ACTIVE.value, GiftVoucherStatus.PARTIALLY_REDEEMED.value):
                 raise ValidationError("Only active or partially redeemed vouchers can be redeemed.")
-            # Resolve all redeemable service ids on this voucher.
+            # Resolve all redeemable service ids on this voucher (lowercased for safe UUID matching).
             # If the voucher contains a package, the redeemable services are its included services.
             raw_entries = voucher_services_of(voucher)
             all_ids: list[str] = []
             package_ids: set[str] = set()
+            raw_service_ids: set[str] = set()
             for e in raw_entries:
-                sid = str(e.get("service_id") or "")
+                sid = str(e.get("service_id") or "").strip().lower()
+                if sid:
+                    raw_service_ids.add(sid)
                 sdata = e.get("service_data") or {}
                 inc_list = e.get("included_services") or sdata.get("included_services") or []
                 is_pkg = bool(e.get("is_packaged_services") or sdata.get("is_packaged_services") or inc_list)
                 if is_pkg and inc_list:
-                    package_ids.add(sid)
+                    if sid:
+                        package_ids.add(sid)
                     for inc in inc_list:
-                        inc_id = str((inc or {}).get("id") or (inc or {}).get("service_id") or "")
+                        inc_id = str((inc or {}).get("id") or (inc or {}).get("service_id") or "").strip().lower()
                         if inc_id and inc_id not in all_ids:
                             all_ids.append(inc_id)
                 elif sid and sid not in all_ids:
+                    if is_pkg:
+                        package_ids.add(sid)
                     all_ids.append(sid)
 
             if not all_ids:
-                all_ids = [str(e["service_id"]) for e in raw_entries if e.get("service_id")]
+                all_ids = [
+                    str(e["service_id"]).strip().lower()
+                    for e in raw_entries
+                    if e.get("service_id")
+                ]
 
-            already_used = used_service_ids(voucher)
+            # If the client redeemed a packaged service whose included_services were fetched
+            # dynamically from ushauth (not embedded in voucher.services JSONB), recognise
+            # the package via redemption.package_id (or single-package voucher) and accept
+            # its component service entries cleanly.
+            redemption_pkg_id = str(redemption.get("package_id") or "").strip().lower()
+            is_dynamic_package_redemption = bool(
+                redemption_pkg_id
+                and (redemption_pkg_id in raw_service_ids or redemption_pkg_id in all_ids or redemption_pkg_id in package_ids)
+            )
+            if is_dynamic_package_redemption:
+                package_ids.add(redemption_pkg_id)
+
+            already_used = {str(u).strip().lower() for u in used_service_ids(voucher)}
             new_ids: list[str] = []
             used_entries: list[dict[str, Any]] = []
-            for item in redemption.get("services") or []:
-                sid = str((item or {}).get("service_id") or "")
-                if sid in package_ids:
-                    # Redeemed as whole package: mark all component services as redeemed
-                    for pid in all_ids:
-                        if pid not in already_used and pid not in new_ids:
-                            new_ids.append(pid)
+            redemption_items = redemption.get("services") or []
+
+            if is_dynamic_package_redemption and redemption_items:
+                # Redeeming a packaged voucher by its component services:
+                # record every component entry and mark the package / all voucher ids as used.
+                for item in redemption_items:
+                    if not isinstance(item, dict):
+                        continue
+                    comp_sid = str(item.get("service_id") or "").strip().lower()
+                    used_entries.append(
+                        {
+                            "service_id": comp_sid or redemption_pkg_id,
+                            "service_name": item.get("service_name"),
+                            "addon_ids": [str(a) for a in (item.get("addon_ids") or [])],
+                            "extra_time": max(int(item.get("extra_time") or 0), 0),
+                        }
+                    )
+                for pid in all_ids:
+                    if pid not in already_used and pid not in new_ids:
+                        new_ids.append(pid)
+                if not new_ids and redemption_pkg_id:
+                    new_ids.append(redemption_pkg_id)
+            else:
+                for item in redemption_items:
+                    sid = str((item or {}).get("service_id") or "").strip().lower()
+                    if sid in package_ids:
+                        # Redeemed as whole package: mark all component services as redeemed
+                        for pid in all_ids:
+                            if pid not in already_used and pid not in new_ids:
+                                new_ids.append(pid)
+                        used_entries.append(
+                            {
+                                "service_id": sid,
+                                "service_name": item.get("service_name"),
+                                "addon_ids": [str(a) for a in (item.get("addon_ids") or [])],
+                                "extra_time": max(int(item.get("extra_time") or 0), 0),
+                            }
+                        )
+                        continue
+
+                    # Fallback for legacy packaged vouchers where included_services wasn't stored
+                    # on the voucher and client didn't pass package_id: if voucher has 1 package
+                    # service (marked is_packaged_services) or is_full_redemption is true, accept it.
+                    if sid not in all_ids:
+                        if package_ids or bool(redemption.get("is_full_redemption")):
+                            used_entries.append(
+                                {
+                                    "service_id": sid,
+                                    "service_name": item.get("service_name"),
+                                    "addon_ids": [str(a) for a in (item.get("addon_ids") or [])],
+                                    "extra_time": max(int(item.get("extra_time") or 0), 0),
+                                }
+                            )
+                            for pid in all_ids:
+                                if pid not in already_used and pid not in new_ids:
+                                    new_ids.append(pid)
+                            continue
+                        raise ValidationError(f"Service {sid or '?'} is not part of this voucher.")
+                    if sid in already_used or sid in new_ids:
+                        raise ValidationError(f"Service {sid} has already been redeemed.")
+                    new_ids.append(sid)
                     used_entries.append(
                         {
                             "service_id": sid,
@@ -999,21 +1075,6 @@ class GiftVoucherService:
                             "extra_time": max(int(item.get("extra_time") or 0), 0),
                         }
                     )
-                    continue
-
-                if sid not in all_ids:
-                    raise ValidationError(f"Service {sid or '?'} is not part of this voucher.")
-                if sid in already_used or sid in new_ids:
-                    raise ValidationError(f"Service {sid} has already been redeemed.")
-                new_ids.append(sid)
-                used_entries.append(
-                    {
-                        "service_id": sid,
-                        "service_name": item.get("service_name"),
-                        "addon_ids": [str(a) for a in (item.get("addon_ids") or [])],
-                        "extra_time": max(int(item.get("extra_time") or 0), 0),
-                    }
-                )
             if not new_ids:
                 raise ValidationError("A redemption must include at least one service.")
 

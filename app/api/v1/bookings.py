@@ -715,7 +715,7 @@ async def create_booking(
             )
         except SessionValidationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             )
         except SessionAvailabilityError as exc:
@@ -735,7 +735,7 @@ async def create_booking(
             )
         except ServiceValidationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             )
 
@@ -848,7 +848,7 @@ async def create_booking(
             # ── Branch booking: arrangement-level availability check ─────────
             if not therapist_id_str and not therapist_ids:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="At least one therapist ID must be provided to check appointment availability.",
                 )
             try:
@@ -916,7 +916,7 @@ async def create_booking(
             # ── Home booking: therapist-only availability check ──────────────
             if not therapist_id_str:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="therapistId is required for home bookings.",
                 )
 
@@ -951,7 +951,7 @@ async def create_booking(
                 selected_therapist_id = uuid.UUID(therapist_id_str)
             except ValueError:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Invalid therapistId: {therapist_id_str}",
                 )
 
@@ -978,14 +978,14 @@ async def create_booking(
             # Use the therapist provided by the client without an availability check.
             if not therapist_id_str:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="therapistId is required when no service arrangement is provided.",
                 )
             try:
                 selected_therapist_id = uuid.UUID(therapist_id_str)
             except ValueError:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Invalid therapistId: {therapist_id_str}",
                 )
 
@@ -1087,7 +1087,7 @@ async def create_booking(
             )
         except CoreValidationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=exc.message,
             ) from exc
         _tot_price_dec = max(Decimal("0.000"), _subtotal_dec - disc_dec)
@@ -1163,7 +1163,7 @@ async def create_booking(
             )
         except CoreValidationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=exc.message,
             ) from exc
         _final_tot = (
@@ -1996,7 +1996,7 @@ async def change_session_therapist(
     except DoubleBookingError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except CoreValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
     # Keep the ushauth appointment cache in sync (per-session rows)
     try:
@@ -2122,7 +2122,7 @@ async def update_booking(
             )
         except ServiceValidationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             )
 
@@ -2135,7 +2135,7 @@ async def update_booking(
         )
         if _upd_appt_date is None:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="appointment_date is required when updating sessions.",
             )
         try:
@@ -2161,7 +2161,7 @@ async def update_booking(
                 _upd_session_plan = await plan_sessions(ushauth, body.sessions, check_availability=True, **_plan_kwargs)
         except SessionValidationError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             )
         except SessionAvailabilityError as exc:

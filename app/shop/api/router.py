@@ -206,7 +206,7 @@ async def update_delivery_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         )
     return order_to_detail(order)
 
@@ -332,7 +332,7 @@ async def create_order(
         )
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         )
     return order_to_detail(order)
 
@@ -444,7 +444,7 @@ async def confirm_received(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.message
         )
     return order_to_public_tracking(order)
 

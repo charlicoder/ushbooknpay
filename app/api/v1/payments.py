@@ -468,7 +468,7 @@ async def _create_course_subscription_payment(
 
     if not body.course_subscription_id:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="course_subscription_id is required when payment_for is 'course_subscription'.",
         )
     service = CourseSubscriptionService(session, settings)
@@ -484,7 +484,7 @@ async def _create_course_subscription_payment(
         )
     if status_str not in (PaymentTransactionStatus.SUCCESS.value, "paid", "completed"):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Only successful or failed payments can be recorded for a course subscription.",
         )
 
