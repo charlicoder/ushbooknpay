@@ -392,6 +392,10 @@ class Settings(BaseSettings):
             "The expiry date is reset on every qualifying booking confirmation."
         ),
     )
+    DISCOUNT_REQUESTED_BY: str = Field(
+        default="",
+        description="Comma-separated list of names authorized to request discounts.",
+    )
 
 
     # ── 10. Operational Tunables ─────────────────────────────────────────
@@ -401,6 +405,16 @@ class Settings(BaseSettings):
     CATALOG_CACHE_TTL_SECONDS: int = Field(default=300, ge=10)
 
     # ── Convenience ──────────────────────────────────────────────────────
+    @property
+    def discount_requested_by_list(self) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for part in (self.DISCOUNT_REQUESTED_BY or "").split(","):
+            name = part.strip()
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(name)
+        return out
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"

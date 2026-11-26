@@ -191,6 +191,9 @@ class Booking(Base):
     discount: Mapped[Decimal] = mapped_column(
         Numeric(precision=10, scale=3), nullable=False, default=Decimal("0.000")
     )
+    discount_requested_by: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, default=None
+    )
     tax: Mapped[Decimal] = mapped_column(
         Numeric(precision=10, scale=3), nullable=False, default=Decimal("0.000")
     )

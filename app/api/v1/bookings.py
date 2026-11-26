@@ -122,6 +122,10 @@ def _services_out(b: object) -> list[BookingServiceResponse]:
                 service_arrangement_id=str(e["service_arrangement_id"]) if e.get("service_arrangement_id") else None,
                 service_arrangement_data=e.get("service_arrangement_data") if isinstance(e.get("service_arrangement_data"), dict) else {},
                 base_price=str(e["base_price"]) if e.get("base_price") is not None else None,
+                original_base_price=str(e["original_base_price"]) if e.get("original_base_price") is not None else None,
+                original_price=str(e["original_price"]) if e.get("original_price") is not None else None,
+                discount_amount=str(e["discount_amount"]) if e.get("discount_amount") is not None else None,
+                discounted_price=str(e["discounted_price"]) if e.get("discounted_price") is not None else None,
                 duration_minutes=int(e.get("duration_minutes") or 0),
                 position=idx,
                 session_id=str(e["session_id"]) if e.get("session_id") else None,
@@ -338,6 +342,7 @@ def _booking_to_list_item(b: object) -> BookingListItem:
         total_amount=str(b.total_amount),
         total_price=str(b.total_amount),
         discount=str(b.discount),
+        discount_requested_by=_safe_str(getattr(b, "discount_requested_by", None)),
         arrangement_price=str(b.arrangement_price),
         addon_price=str(b.addon_price),
         currency=b.currency,
@@ -445,6 +450,7 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
             price_for_extra_minutes=str(b.price_for_extra_minutes),
             addon_price=str(b.addon_price),
             discount=str(b.discount),
+            discount_requested_by=_safe_str(getattr(b, "discount_requested_by", None)),
             tax=str(b.tax),
             fees=str(b.fees),
             total=str(b.total_amount),
@@ -453,6 +459,7 @@ def _booking_to_detail(booking: object) -> BookingDetailResponse:
         total_amount=str(b.total_amount),
         total_price=str(b.total_amount),
         discount=str(b.discount),
+        discount_requested_by=_safe_str(getattr(b, "discount_requested_by", None)),
         arrangement_price=str(b.arrangement_price),
         addon_price=str(b.addon_price),
         currency=b.currency,
@@ -1043,14 +1050,27 @@ async def create_booking(
 
     # ── 5. Build pricing and addons ─────────────────────────────────────
     # Single service: legacy client price. Multi-service: sum of the services' prices.
+    from app.common.discount_utils import (
+        apply_proportional_discount_to_booking,
+        to_decimal as _disc_dec,
+        validate_discount,
+    )
+    from app.core.config import get_settings as _get_book_settings
+
+    raw_discount_requested_by = (
+        body.discount_requested_by
+        or (body.pricing_details.get("discount_requested_by") if body.pricing_details else None)
+        or (body.pricing_details.get("discountRequestedBy") if body.pricing_details else None)
+    )
+    validated_discount_requested_by: str | None = None
+
     if _session_plan is not None:
         # Multi-session: server computes prices from session planner (source of truth)
         _svcs_price, _add_price_dec, _ext_price_dec = totals_as_decimals(_session_plan)
-        _tot_price_dec = _svcs_price + _add_price_dec + _ext_price_dec
+        _subtotal_dec = _svcs_price + _add_price_dec + _ext_price_dec
         arr_price = str(_svcs_price)
         add_price = str(_add_price_dec)
         ext_price = str(_ext_price_dec)
-        tot_price = str(_tot_price_dec)
         curr = body.currency or "KWD"
         disc_price = str(
             body.discount
@@ -1058,14 +1078,27 @@ async def create_booking(
             or (body.pricing_details.get("discount_amount") if body.pricing_details else None)
             or "0"
         )
+        try:
+            disc_dec, validated_discount_requested_by = validate_discount(
+                subtotal=_subtotal_dec,
+                discount=_disc_dec(disc_price),
+                discount_requested_by=raw_discount_requested_by,
+                allowed_requesters=_get_book_settings().discount_requested_by_list,
+            )
+        except CoreValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=exc.message,
+            ) from exc
+        _tot_price_dec = max(Decimal("0.000"), _subtotal_dec - disc_dec)
         pricing = PricingBreakdown(
             arrangement_price=Decimal(arr_price),
             price_for_extra_minutes=Decimal(ext_price),
             addon_price=Decimal(add_price),
-            discount=Decimal(disc_price),
+            discount=disc_dec,
             tax=Decimal("0.000"),
             fees=Decimal("0.000"),
-            total=Decimal(tot_price),
+            total=_tot_price_dec,
             currency=curr,
         )
     else:
@@ -1115,14 +1148,37 @@ async def create_booking(
             or (body.pricing_details.get("discount_amount") if body.pricing_details else None)
             or "0"
         )
+        _arr_dec = _disc_dec(arr_price)
+        _ext_dec = _disc_dec(ext_price)
+        _add_dec = _disc_dec(add_price)
+        _subtotal_dec = _arr_dec + _ext_dec + _add_dec
+        if _subtotal_dec <= Decimal("0.000"):
+            _subtotal_dec = _disc_dec(tot_price) + _disc_dec(disc_price)
+        try:
+            disc_dec, validated_discount_requested_by = validate_discount(
+                subtotal=_subtotal_dec,
+                discount=_disc_dec(disc_price),
+                discount_requested_by=raw_discount_requested_by,
+                allowed_requesters=_get_book_settings().discount_requested_by_list,
+            )
+        except CoreValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=exc.message,
+            ) from exc
+        _final_tot = (
+            max(Decimal("0.000"), _subtotal_dec - disc_dec)
+            if disc_dec > Decimal("0.000")
+            else _disc_dec(tot_price)
+        )
         pricing = PricingBreakdown(
-            arrangement_price=Decimal(arr_price),
-            price_for_extra_minutes=Decimal(ext_price),
-            addon_price=Decimal(add_price),
-            discount=Decimal(disc_price),
+            arrangement_price=_arr_dec,
+            price_for_extra_minutes=_ext_dec,
+            addon_price=_add_dec,
+            discount=disc_dec,
             tax=Decimal("0.000"),
             fees=Decimal("0.000"),
-            total=Decimal(tot_price),
+            total=_final_tot,
             currency=curr,
         )
 
@@ -1204,6 +1260,19 @@ async def create_booking(
                     "name": getattr(a, "name", ""),
                     "price": str(getattr(a, "price", "0")),
                 })
+
+    # Apply proportional discount across included services, addons, and sessions
+    sessions_for_booking = _session_plan.sessions if _session_plan is not None else None
+    if not is_course_redemption and not is_loyalty_booking and pricing.discount > Decimal("0.000"):
+        service_entries, addon_records, _disc_sessions, _ = apply_proportional_discount_to_booking(
+            service_entries=service_entries,
+            addons=addon_records,
+            sessions=sessions_for_booking,
+            extra_price=pricing.price_for_extra_minutes,
+            discount=pricing.discount,
+        )
+        if _session_plan is not None:
+            sessions_for_booking = _disc_sessions
 
     # ── 6. Assemble metadata ────────────────────────────────────────────
     # customer_data is already resolved above (from body.customer_id or current_user).
@@ -1364,6 +1433,13 @@ async def create_booking(
             pass
 
     merged_payment_data = dict(body.payment_data or {})
+    if pricing.discount > Decimal("0.000"):
+        merged_payment_data["discount"] = str(pricing.discount)
+        if validated_discount_requested_by:
+            merged_payment_data["discount_requested_by"] = validated_discount_requested_by
+        merged_payment_data["subtotal"] = str(
+            (pricing.arrangement_price + pricing.addon_price + pricing.price_for_extra_minutes + pricing.fees).quantize(Decimal("0.001"))
+        )
     if not is_loyalty_booking:
         if resolved_payment_number:
             merged_payment_data["payment_number"] = resolved_payment_number
@@ -1395,8 +1471,9 @@ async def create_booking(
             addons_duration=int(body.addons_duration or 0) if body.addons_duration is not None else None,
             base_price=Decimal(str(_svcs_price)) if _session_plan is not None else (Decimal(str(fallback_base)) if fallback_base is not None else None),
             pricing=pricing,
+            discount_requested_by=validated_discount_requested_by,
             addons=addon_records,
-            sessions=_session_plan.sessions if _session_plan is not None else None,
+            sessions=sessions_for_booking,
             customer_notes=body.customer_notes or body.customer_message or None,
             payment_id=course_payment_fields.get("payment_id", loyalty_payment_fields.get("payment_id", body.payment_id)),
             payment_provider=course_payment_fields.get("payment_provider", loyalty_payment_fields.get("payment_provider", body.payment_provider)),
@@ -1630,6 +1707,7 @@ async def create_booking(
             total_amount=str(booking.total_amount),
             total_price=str(booking.total_amount),
             discount=str(booking.discount),
+            discount_requested_by=_safe_str(getattr(booking, "discount_requested_by", None)),
             arrangement_price=str(booking.arrangement_price),
             addon_price=str(booking.addon_price),
             currency=str(booking.currency) if isinstance(getattr(booking, "currency", None), str) else "KWD",
@@ -1638,6 +1716,7 @@ async def create_booking(
                 price_for_extra_minutes=str(booking.price_for_extra_minutes),
                 addon_price=str(booking.addon_price),
                 discount=str(booking.discount),
+                discount_requested_by=_safe_str(getattr(booking, "discount_requested_by", None)),
                 tax=str(booking.tax),
                 fees=str(booking.fees),
                 total=str(booking.total_amount),

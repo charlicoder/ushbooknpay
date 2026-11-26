@@ -42,6 +42,11 @@ class AddonSchema(BaseModel):
     addon_id: str
     name: str
     price: str
+    original_price: str | None = None
+    discount_amount: str | None = None
+    discounted_price: str | None = None
+
+    model_config = {"extra": "allow"}
 
 
 _MAX_SNAPSHOT_BYTES = 32_768  # per snapshot dict (service_data / service_arrangement_data)
@@ -117,9 +122,15 @@ class BookingServiceResponse(BaseModel):
     service_arrangement_id: str | None = None
     service_arrangement_data: dict[str, Any] | None = None
     base_price: str | None = None
+    original_base_price: str | None = None
+    original_price: str | None = None
+    discount_amount: str | None = None
+    discounted_price: str | None = None
     duration_minutes: int = 0
     position: int = 0
     session_id: str | None = None
+
+    model_config = {"extra": "allow"}
 
 
 class BookingSessionItem(BaseModel):
@@ -231,6 +242,7 @@ class PricingBreakdownSchema(BaseModel):
     price_for_extra_minutes: str = "0.000"
     addon_price: str
     discount: str
+    discount_requested_by: str | None = None
     tax: str
     fees: str
     total: str
@@ -509,6 +521,7 @@ class CreateBookingRequest(BaseModel):
     # Pricing & Duration
     pricing_details: dict[str, Any] | None = Field(default=None, alias="pricingDetails")
     discount: str | Decimal | float | None = Field(default=None, alias="discount")
+    discount_requested_by: str | None = Field(default=None, alias="discountRequestedBy", max_length=255)
     total_price: str | Decimal | float | None = Field(default=None, alias="totalPrice")
     total_duration: int | None = Field(default=None, alias="totalDuration")
     currency: str = Field(default="KWD")
@@ -1344,6 +1357,7 @@ class BookingListItem(BaseModel):
     total_amount: str
     total_price: str | None = None
     discount: str | None = None
+    discount_requested_by: str | None = None
     arrangement_price: str | None = None
     addon_price: str | None = None
     currency: str
@@ -1435,6 +1449,7 @@ class BookingDetailResponse(BaseModel):
     total_amount: str | None = None
     total_price: str | None = None
     discount: str | None = None
+    discount_requested_by: str | None = None
     arrangement_price: str | None = None
     addon_price: str | None = None
     currency: str = "KWD"
@@ -1501,6 +1516,7 @@ class CreateBookingDataResponse(BaseModel):
     total_amount: str | None = None
     total_price: str | None = None
     discount: str | None = None
+    discount_requested_by: str | None = None
     arrangement_price: str | None = None
     addon_price: str | None = None
     currency: str = "KWD"

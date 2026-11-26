@@ -233,6 +233,9 @@ class GiftVoucher(Base):
         default=Decimal("0.000"),
         server_default=text("0.000"),
     )
+    discount_requested_by: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, default=None
+    )
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KWD")
 
     # ── Personalisation ───────────────────────────────────────────────────
@@ -459,6 +462,7 @@ class GiftVoucher(Base):
             "total_duration": self.total_duration,
             "total_amount": str(self.total_amount),
             "discount": str(getattr(self, "discount", "0.000")),
+            "discount_requested_by": getattr(self, "discount_requested_by", None),
             "currency": self.currency,
             "gift_message": self.gift_message,
             "gift_from": self.gift_from,

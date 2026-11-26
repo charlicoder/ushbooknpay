@@ -1,0 +1,16 @@
+{
+  "id": "f8d6b5c7-77dc-4ff1-a941-ce9a31322c02",
+  "booking_number": "BOK/2026/11/000311",
+  "status": "completed",
+  "payment_status": "pending",
+  "payment_provider": "myfatoorah",
+  "payment_provider_group": "MyFatoorah",
+  "payment_source": "myfatoorah",
+  "payment_method": "knet_card",
+  "payment_through": "ushdesk",
+  "payment_url": "https://portal.myfatoorah.com/KWT/ie/060917288723733886479-f9c0db31",
+  "payment_link_id": "fe605e61-5806-4538-9f22-b1f968cc7db3",
+  "invoice_number": null,
+  "payment_data": {},
+  "updated_at": "2026-11-25T17:04:13.842478+00:00"
+}

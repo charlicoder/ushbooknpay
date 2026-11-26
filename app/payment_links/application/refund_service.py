@@ -107,6 +107,14 @@ class PaymentLinkRefundService:
                 actor_data,
             )
         elif link.target_type == PaymentLinkTarget.GIFT_VOUCHER.value:
+            _v = (
+                await self._session.execute(select(GiftVoucher).where(GiftVoucher.id == link.target_id))
+            ).scalar_one_or_none()
+            if _v is not None and Decimal(str(getattr(_v, "discount", 0) or "0.000")) > Decimal("0.000"):
+                raise ValidationError(
+                    f"Refunds are not allowed for discounted gift vouchers (discount: {Decimal(str(_v.discount)):.3f} KWD). "
+                    "Cancellation is permitted without refund."
+                )
             refund = await self._refund_voucher_payment(payment, amount, reason, actor_id, actor_data)
         else:
             raise ValidationError("Refunds are not supported for this payment link target.")

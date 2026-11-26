@@ -83,6 +83,17 @@ class RefundService:
             raise NotFoundError(f"Booking {booking_id} not found.")
         return booking
 
+    @staticmethod
+    def _assert_not_discounted(entity: Any, label: str = "booking") -> None:
+        if entity is None:
+            return
+        disc = Decimal(str(getattr(entity, "discount", 0) or "0.000"))
+        if disc > Decimal("0.000"):
+            raise ValidationError(
+                f"Refunds are not allowed for discounted {label}s (discount: {disc:.3f} KWD). "
+                "Cancellation is permitted without refund."
+            )
+
     async def _get_payment_for_booking(self, booking: Booking) -> Payment | None:
         stmt = (
             select(Payment)
@@ -257,6 +268,7 @@ class RefundService:
         completed instead of creating a duplicate.
         """
         booking = await self._get_booking(booking_id)
+        self._assert_not_discounted(booking, "booking")
         payment = await self._get_payment_for_booking(booking)
 
         requested_amount = Decimal(str(req.refund_amount))
@@ -329,6 +341,7 @@ class RefundService:
         or an immediate final status from the provider response).
         """
         booking = await self._get_booking(booking_id)
+        self._assert_not_discounted(booking, "booking")
         payment = await self._get_payment_for_booking(booking)
         if not payment:
             raise ValidationError("No payment record found for this booking to process a gateway refund.")
@@ -568,6 +581,7 @@ class RefundService:
     ) -> tuple[Refund, bool]:
         """Create a refund record in requested status on booking cancellation."""
         booking = await self._get_booking(booking_id)
+        self._assert_not_discounted(booking, "booking")
         payment = None
         if payment_id:
             try:
@@ -623,6 +637,15 @@ class RefundService:
     ) -> Refund:
         """Approve a requested refund with refund method (money or loyalty_points) and approved amount."""
         refund = await self.get_refund_by_id(refund_id)
+        if refund.booking_id:
+            _bk = await self._get_booking(refund.booking_id)
+            self._assert_not_discounted(_bk, "booking")
+        if getattr(refund, "voucher_id", None):
+            from app.voucher.infrastructure.models import GiftVoucher
+            _v_res = await self._session.execute(
+                select(GiftVoucher).where(GiftVoucher.id == refund.voucher_id)
+            )
+            self._assert_not_discounted(_v_res.scalar_one_or_none(), "gift voucher")
         lifecycle = RefundLifecycle(self._session)
         refund = await lifecycle.approve(
             refund,
@@ -780,6 +803,15 @@ class RefundService:
             raise ValidationError(f"Refund {refund.refund_number} is not in approved status ({refund.status}).")
 
         booking = await self._get_booking(refund.booking_id) if refund.booking_id else None
+        if booking is not None:
+            self._assert_not_discounted(booking, "booking")
+        if getattr(refund, "voucher_id", None):
+            from app.voucher.infrastructure.models import GiftVoucher
+            _v_res = await self._session.execute(
+                select(GiftVoucher).where(GiftVoucher.id == refund.voucher_id)
+            )
+            _voucher = _v_res.scalar_one_or_none()
+            self._assert_not_discounted(_voucher, "gift voucher")
         lifecycle = RefundLifecycle(self._session)
         payment = (
             await self._get_payment_for_booking(booking)

@@ -229,6 +229,7 @@ class DeskVoucherItem(BaseModel):
     status: str
     total_amount: str
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str = "KWD"
     total_duration: int = 0
     extra_time: int = 0
@@ -281,6 +282,7 @@ def _jarr(col, path: str):
 def _slim_columns(view: str) -> list[Any]:
     cols: list[Any] = [
         G.id, G.voucher_number, G.secret_code, G.public_token, G.status, G.total_amount, G.discount,
+        G.discount_requested_by,
         G.currency, G.total_duration, G.extra_time, G.gift_category, G.delivery_status, G.delivery_mode,
         G.expire_date, G.created_at, G.updated_at, G.redeemed_at, G.scheduled_delivery_at,
         G.payment_through, G.payment_url, G.payment_provider, G.created_by, G.created_by_name,
@@ -332,6 +334,7 @@ def _row_to_item(r: Any, view: str) -> DeskVoucherItem:
         "id": m["id"], "voucher_number": m["voucher_number"], "secret_code": m["secret_code"],
         "public_token": m["public_token"], "status": m["status"], "total_amount": str(m["total_amount"]),
         "discount": str(m["discount"] if m["discount"] is not None else "0.000"),
+        "discount_requested_by": m["discount_requested_by"],
         "currency": m["currency"], "total_duration": m["total_duration"] or 0,
         "extra_time": m["extra_time"] or 0, "gift_category": m["gift_category"],
         "delivery_status": m["delivery_status"], "delivery_mode": m["delivery_mode"],

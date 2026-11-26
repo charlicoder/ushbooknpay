@@ -151,6 +151,11 @@ class CreateGiftVoucherRequest(BaseModel):
         ge=0,
         description="Discount amount (KWD) already deducted from total_amount.",
     )
+    discount_requested_by: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Name of the authorized person who requested the discount (from DISCOUNT_REQUESTED_BY).",
+    )
     currency: str = Field(default="KWD", max_length=3, description="Currency code.")
 
     # ── Recipient ─────────────────────────────────────────────────────
@@ -1121,6 +1126,7 @@ class GiftVoucherResponse(BaseModel):
     total_duration: int
     total_amount: str  # String to preserve KWD 3-decimal precision
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str
     gift_message: str | None = None
     gift_from: str | None = None
@@ -1232,6 +1238,7 @@ class GiftVoucherListItem(BaseModel):
     status: str
     total_amount: str
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str
     expire_date: LocalDateTime
     extra_time: int = 0

@@ -976,6 +976,7 @@ class VoucherActiveEvent(BaseEvent):
     total_duration: int = 0
     total_amount: str = ""
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str = "KWD"
 
     # ── Personalisation ───────────────────────────────────────────────
@@ -1068,6 +1069,7 @@ class VoucherScheduledEvent(BaseEvent):
     total_duration: int = 0
     total_amount: str = ""
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str = "KWD"
 
     # ── Personalisation ───────────────────────────────────────────────
@@ -1174,6 +1176,7 @@ class VoucherPaymentPendingEvent(BaseEvent):
     total_duration: int = 0
     total_amount: str = ""
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str = "KWD"
 
     # ── Personalisation ───────────────────────────────────────────────
@@ -1267,6 +1270,7 @@ class VoucherRedeemedEvent(BaseEvent):
     total_duration: int = 0
     total_amount: str = ""
     discount: str = "0.000"
+    discount_requested_by: str | None = None
     currency: str = "KWD"
 
     # ── Personalisation ───────────────────────────────────────────────

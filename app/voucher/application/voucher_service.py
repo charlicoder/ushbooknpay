@@ -84,6 +84,7 @@ class GiftVoucherService:
         services: list[dict[str, Any]] | None = None,
         total_amount: Decimal,
         discount: Decimal = Decimal("0.000"),
+        discount_requested_by: str | None = None,
         sender_id: uuid.UUID,
         sender_data: dict[str, Any],
         branch_id: uuid.UUID | None = None,
@@ -196,6 +197,23 @@ class GiftVoucherService:
 
         # Multi-service: wrap the legacy single-service fields when no list is given, then
         # mirror the legacy columns from the list so old consumers keep working.
+        from app.common.discount_utils import (
+            apply_proportional_discount_to_voucher,
+            to_decimal as _disc_dec,
+            validate_discount,
+        )
+        from app.core.config import get_settings as _get_voucher_settings
+
+        _disc_in = _disc_dec(discount)
+        _tot_in = _disc_dec(total_amount)
+        _subtotal_in = _tot_in + _disc_in
+        validated_discount, validated_discount_requested_by = validate_discount(
+            subtotal=_subtotal_in,
+            discount=_disc_in,
+            discount_requested_by=discount_requested_by,
+            allowed_requesters=_get_voucher_settings().discount_requested_by_list,
+        )
+
         service_entries = normalise_services(
             services,
             service_id=service_id,
@@ -204,7 +222,20 @@ class GiftVoucherService:
             extra_time=extra_time,
             price_for_extra_time=price_for_extra_time,
         )
-        if services and service_entries:
+        if validated_discount > Decimal("0.000"):
+            service_entries, addons = apply_proportional_discount_to_voucher(
+                service_entries=service_entries,
+                addons=addons,
+                discount=validated_discount,
+            )
+            if service_entries:
+                _mirror = mirror_legacy_fields(service_entries)
+                service_id = _mirror["service_id"]
+                service_data = _mirror["service_data"]
+                addons = _mirror["addons"] or addons
+                extra_time = _mirror["extra_time"]
+                price_for_extra_time = _mirror["price_for_extra_time"]
+        elif services and service_entries:
             _mirror = mirror_legacy_fields(service_entries)
             service_id = _mirror["service_id"]
             service_data = _mirror["service_data"]
@@ -264,7 +295,8 @@ class GiftVoucherService:
             price_for_extra_time=price_for_extra_time,
             total_duration=total_duration,
             total_amount=total_amount,
-            discount=discount,
+            discount=validated_discount,
+            discount_requested_by=validated_discount_requested_by,
             currency=currency,
             sender_id=sender_id,
             sender_data=sender_data,
@@ -720,7 +752,15 @@ class GiftVoucherService:
         }
 
         refund_record = None
-        if is_paid_voucher and request_refund:
+        is_discounted_voucher = Decimal(str(getattr(voucher, "discount", 0) or 0)) > Decimal("0.000")
+        if is_paid_voucher and request_refund and is_discounted_voucher:
+            logger.info(
+                "voucher_cancel_refund_blocked_discounted",
+                voucher_id=str(voucher.id),
+                voucher_number=voucher.voucher_number,
+                discount=str(voucher.discount),
+            )
+        elif is_paid_voucher and request_refund:
             total_amt = Decimal(
                 str(
                     (payment.total_amount if payment else None)
