@@ -489,6 +489,7 @@ class RefundService:
         if credit_note_id:
             refund.credit_note_id = str(credit_note_id)
         await self._session.flush()
+        await RefundLifecycle(self._session).sync_refund_payment_credit_note(refund)
         return refund
 
     async def _publish_refund_event(
@@ -937,6 +938,7 @@ class RefundService:
             except Exception as u_exc:
                 logger.warning("voucher_credit_note_status_update_failed", refund_number=refund.refund_number, error=str(u_exc))
 
+        await lifecycle.sync_refund_payment_credit_note(refund)
         await self._session.flush()
         logger.info("money_refund_processed", refund_number=refund.refund_number, amount=str(refund.refunded_amount))
         return refund

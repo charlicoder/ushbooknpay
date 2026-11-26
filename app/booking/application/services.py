@@ -1168,22 +1168,74 @@ class BookingService:
             booking.internal_notes = internal_notes
 
         # ── Payment status & Meta ────────────────────────────────────────
-        if payment_data is not None:
-            booking.payment_data = {**(booking.payment_data or {}), **payment_data}
-        if payment_id is not None:
-            booking.payment_id = payment_id
+        from app.common.payment_attribution import normalise_provider
+
+        prev_provider = str(getattr(booking, "payment_provider", "") or "").strip().lower()
+        norm_incoming_provider = normalise_provider(payment_provider) if payment_provider else None
+        if norm_incoming_provider is None and payment_provider:
+            raw_prov = str(payment_provider).strip().lower()
+            if "knet" in raw_prov:
+                norm_incoming_provider = "knet_pos"
+            elif "boubyan" in raw_prov:
+                norm_incoming_provider = "boubyan"
+            elif "fatoorah" in raw_prov or "paymentlink" in raw_prov or "directlink" in raw_prov:
+                norm_incoming_provider = "myfatoorah"
+            elif "deema" in raw_prov or "tap" in raw_prov:
+                norm_incoming_provider = "tap"
+            else:
+                norm_incoming_provider = payment_provider
+
+        provider_changed = bool(
+            norm_incoming_provider and prev_provider and norm_incoming_provider != prev_provider
+        )
+        is_non_link_provider = bool(
+            norm_incoming_provider and norm_incoming_provider in ("knet_pos", "boubyan", "cash", "other")
+        )
+
         if payment_provider is not None:
-            booking.payment_provider = payment_provider
+            booking.payment_provider = norm_incoming_provider
         if payment_gateway is not None:
             booking.payment_gateway = payment_gateway
         if payment_through is not None:
             booking.payment_through = payment_through
         if payment_method is not None:
             booking.payment_method = payment_method
+        if payment_id is not None:
+            booking.payment_id = payment_id
         if payment_url is not None:
-            booking.payment_url = payment_url
+            booking.payment_url = payment_url or None
         if payment_type is not None:
             booking.payment_type = payment_type
+
+        if payment_data is not None:
+            if provider_changed or is_non_link_provider:
+                # Replace stale gateway fields (e.g. old MyFatoorah payment_url / InvoiceId) cleanly
+                clean_prev = {
+                    k: v
+                    for k, v in (booking.payment_data or {}).items()
+                    if k not in (
+                        "payment_url",
+                        "paymentUrl",
+                        "invoice_url",
+                        "InvoiceURL",
+                        "InvoiceId",
+                        "invoiceId",
+                        "gateway_invoice_id",
+                        "data",
+                    )
+                }
+                booking.payment_data = {**clean_prev, **payment_data}
+            else:
+                booking.payment_data = {**(booking.payment_data or {}), **payment_data}
+
+        # When switching to a different provider or settling via non-link provider (e.g. KNET POS / Boubyan),
+        # cancel any open gateway payment links and clear stale payment_url.
+        if (provider_changed or is_non_link_provider) and (
+            payment_status in (PaymentStatus.SUCCESS, "success", "paid") or provider_changed
+        ):
+            if is_non_link_provider or not payment_url:
+                await self._cancel_booking_payment_links(booking)
+                booking.payment_url = None
 
         if payment_status is not None:
             # If cancelling a paid booking without refund, keep payments and payment status unchanged
@@ -1205,17 +1257,12 @@ class BookingService:
                     from app.payment.domain.value_objects import PaymentTransactionStatus
 
                     p_stat_str = p_stat_val
-                    if p_stat_str in ("refunded", "cancelled"):
-                        target_status = (
-                            PaymentTransactionStatus.REFUNDED.value
-                            if p_stat_str == "refunded"
-                            else PaymentTransactionStatus.CANCELLED.value
-                        )
+                    if p_stat_str == "cancelled":
                         await self._sync_booking_payment_status(
                             booking,
-                            target_status,
+                            PaymentTransactionStatus.CANCELLED.value,
                             source=source,
-                            reason=reason or f"Booking {booking.status} - payment status updated to {target_status}",
+                            reason=reason or f"Booking {booking.status} - payment status updated to cancelled",
                             change_by_user=effective_changed_by,
                             change_by_user_data=effective_changed_user_data,
                             correlation_id=correlation_id,
@@ -1230,6 +1277,8 @@ class BookingService:
                             change_by_user_data=effective_changed_user_data,
                             correlation_id=correlation_id,
                         )
+                        # Ensure an invoice exists in ushanr and is linked to booking & payments
+                        await self._ensure_booking_invoice(booking)
                 except Exception as exc:
                     logger.warning("sync_booking_payment_status_failed", error=str(exc))
         if created_by_user is not None:
@@ -2572,9 +2621,30 @@ class BookingService:
                             p.booking_id = booking.id
                             payments.append(p)
 
-            # 3. For each payment, transition status and record history
+            # 3. For each payment, transition status, sync updated provider/method metadata, and record history
+            pdata_b = booking.payment_data if isinstance(getattr(booking, "payment_data", None), dict) else {}
+            tx_id = pdata_b.get("transaction_id") or pdata_b.get("reference_id") or getattr(booking, "payment_id", None)
+            ref_id = pdata_b.get("reference_id") or pdata_b.get("transaction_id")
             for p in payments:
                 old_status = p.status
+                if target_status in ("success", "paid"):
+                    if getattr(booking, "payment_provider", None):
+                        p.payment_provider = booking.payment_provider
+                    if getattr(booking, "payment_gateway", None):
+                        p.payment_gateway = booking.payment_gateway
+                    if getattr(booking, "payment_method", None):
+                        p.payment_method = booking.payment_method
+                    if getattr(booking, "payment_through", None):
+                        p.payment_through = booking.payment_through
+                    p.payment_url = getattr(booking, "payment_url", None)
+                    if pdata_b:
+                        p.payment_data = pdata_b
+                    if tx_id:
+                        p.transaction_id = str(tx_id)
+                    if ref_id:
+                        p.reference_id = str(ref_id)
+                    if not p.paid_at:
+                        p.paid_at = datetime.now(timezone.utc)
                 if old_status != target_status:
                     p.status = target_status
                     history = PaymentStatusHistory(
@@ -2633,6 +2703,7 @@ class BookingService:
                             v_num = v_res.scalar_one_or_none()
                         except Exception:
                             pass
+                    b_type_norm = str(getattr(booking, "booking_type", "") or "").lower().strip()
                     payment = Payment(
                         payment_number=pmt_number,
                         booking_id=booking.id,
@@ -2651,11 +2722,15 @@ class BookingService:
                         total_duration=int(computed_duration),
                         currency=booking.currency or "KWD",
                         status=target_status,
-                        payment_for="branch_service",
+                        payment_for="home_service" if b_type_norm in ("home_service", "home") else "branch_service",
                         payment_provider=getattr(booking, "payment_provider", None) or "Other",
-                        payment_through=getattr(booking, "payment_through", None) or "ushspa",
+                        payment_through=getattr(booking, "payment_through", None) or "ushdesk",
                         payment_gateway=getattr(booking, "payment_gateway", None) or "Other",
                         payment_method=getattr(booking, "payment_method", None) or "card",
+                        payment_url=getattr(booking, "payment_url", None),
+                        transaction_id=str(tx_id) if tx_id else None,
+                        reference_id=str(ref_id) if ref_id else None,
+                        paid_at=datetime.now(timezone.utc),
                         payment_data=booking.payment_data,
                         created_by_user=str(change_by_user) if change_by_user else (source if source else None),
                         created_by_user_data=change_by_user_data,

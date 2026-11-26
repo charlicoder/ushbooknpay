@@ -208,18 +208,15 @@ class PaymentLinkRefundService:
 
         old = payment.status
         payment.amount_refunded = already + amount
-        payment.status = (
-            PaymentTransactionStatus.REFUNDED.value
-            if payment.amount_refunded >= total
-            else PaymentTransactionStatus.PARTIALLY_REFUNDED.value
-        )
+        # Standard accounting principle: keep original payment record intact;
+        # create an offsetting negative payment record for the refunded amount.
         self._session.add(
             PaymentStatusHistory(
                 payment_id=payment.id,
                 old_status=old,
                 new_status=payment.status,
                 source="ushdesk",
-                reason=f"Gateway refund {refund_number}",
+                reason=f"Gateway refund {refund_number}: -{amount} {payment.currency} (original payment kept intact)",
                 provider_reference=result.provider_refund_id,
                 correlation_id=refund_number,
                 change_by_user=actor_id,
@@ -228,9 +225,19 @@ class PaymentLinkRefundService:
         )
         await self._session.flush()
 
+        from app.payment.application.refund_lifecycle import RefundLifecycle
+
+        await RefundLifecycle(self._session).create_refund_payment_entry(
+            refund,
+            original_payment=payment,
+            provider_reference=result.provider_refund_id,
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
+
         if (
             voucher is not None
-            and payment.status == PaymentTransactionStatus.REFUNDED.value
+            and payment.amount_refunded >= total
             and voucher.status == GiftVoucherStatus.ACTIVE.value
         ):
             await GiftVoucherService(self._session).update_status(

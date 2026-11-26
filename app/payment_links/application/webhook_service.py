@@ -322,11 +322,7 @@ class PaymentWebhookService:
                 reverted = Decimal(str(refund.refunded_amount))
                 old = payment.status
                 payment.amount_refunded = max(Decimal("0"), Decimal(str(payment.amount_refunded or 0)) - reverted)
-                payment.status = (
-                    PaymentTransactionStatus.SUCCESS.value
-                    if payment.amount_refunded == 0
-                    else PaymentTransactionStatus.PARTIALLY_REFUNDED.value
-                )
+                # Keep original payment status intact (standard accounting principle)
                 self._session.add(
                     PaymentStatusHistory(
                         payment_id=payment.id,

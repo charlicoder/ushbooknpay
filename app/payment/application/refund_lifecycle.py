@@ -95,10 +95,10 @@ class RefundLifecycle:
     # ── Lookups ───────────────────────────────────────────────────────────
 
     async def find_payment_for_booking(self, booking: Any, *, for_update: bool = False) -> Payment | None:
-        """Paid payment row for a booking (success-first, newest-first)."""
+        """Original positive paid payment row for a booking (success-first, newest-first)."""
         stmt = (
             select(Payment)
-            .where(Payment.booking_id == booking.id)
+            .where(Payment.booking_id == booking.id, Payment.total_amount > ZERO)
             .order_by(Payment.status.in_(PAID_PAYMENT_STATUSES).desc(), Payment.created_at.desc())
             .limit(1)
         )
@@ -118,10 +118,10 @@ class RefundLifecycle:
         return (await self._session.execute(stmt)).scalars().first()
 
     async def find_payment_for_voucher(self, voucher: Any, *, for_update: bool = False) -> Payment | None:
-        """Paid payment row for a gift voucher (success-first, newest-first)."""
+        """Original positive paid payment row for a gift voucher (success-first, newest-first)."""
         stmt = (
             select(Payment)
-            .where(Payment.voucher_id == voucher.id)
+            .where(Payment.voucher_id == voucher.id, Payment.total_amount > ZERO)
             .order_by(Payment.status.in_(PAID_PAYMENT_STATUSES).desc(), Payment.created_at.desc())
             .limit(1)
         )
@@ -599,15 +599,14 @@ class RefundLifecycle:
             fee = max(await self._retained_fee(payment), _dec(refund.cancellation_fee))
             booking_target = max(ZERO, _dec(payment.total_amount) - fee)
             fully = booking_target > ZERO and _dec(payment.amount_refunded) + TOLERANCE >= booking_target
-            if _dec(payment.amount_refunded) + TOLERANCE >= _dec(payment.total_amount):
-                payment.status = PaymentTransactionStatus.REFUNDED.value
-            elif _dec(payment.amount_refunded) > ZERO:
-                payment.status = PaymentTransactionStatus.PARTIALLY_REFUNDED.value
+            # Standard accounting principle: keep the original payment record intact
+            # (never overwrite its status to refunded / partially_refunded).
+            # Record the refund as a separate offsetting negative payment entry linked to the credit note.
             self._audit(
                 payment,
                 reason=(
-                    f"Refund {refund.refund_number} completed: {refund.refunded_amount} {refund.currency} "
-                    f"(total refunded {payment.amount_refunded}/{booking_target})"
+                    f"Refund {refund.refund_number} completed: -{refund.refunded_amount} {refund.currency} "
+                    f"(total refunded {payment.amount_refunded}/{booking_target}; original payment kept intact)"
                 ),
                 refund=refund,
                 actor_id=actor_id,
@@ -615,6 +614,21 @@ class RefundLifecycle:
                 source=source,
                 provider_reference=provider_reference or refund.gateway_refund_id,
                 old_status=old_payment_status,
+            )
+            await self.create_refund_payment_entry(
+                refund,
+                original_payment=payment,
+                provider_reference=provider_reference or refund.gateway_refund_id,
+                actor_id=actor_id,
+                actor_data=actor_data,
+            )
+        elif payment is None and not is_loyalty:
+            await self.create_refund_payment_entry(
+                refund,
+                original_payment=None,
+                provider_reference=provider_reference or refund.gateway_refund_id,
+                actor_id=actor_id,
+                actor_data=actor_data,
             )
         elif payment is not None and is_loyalty:
             # Keep original payment as paid/success
@@ -694,6 +708,163 @@ class RefundLifecycle:
         await self._session.flush()
         logger.warning("refund_failed", refund_number=refund.refund_number, reason=reason, source=source)
         return refund
+
+    async def create_refund_payment_entry(
+        self,
+        refund: Refund,
+        *,
+        original_payment: Payment | None = None,
+        provider_reference: str | None = None,
+        actor_id: str | None = None,
+        actor_data: dict | None = None,
+    ) -> Payment | None:
+        """
+        Idempotently create an offsetting negative Payment record for a completed money refund.
+
+        Follows standard accounting practice: the original positive payment row remains
+        completely intact (status='success'), while the outbound refund is recorded as a
+        separate negative Payment row (-refund.refunded_amount) linked to the credit note.
+        """
+        refund_amt = _dec(refund.refunded_amount)
+        if refund_amt <= ZERO:
+            return None
+
+        # Idempotency: check if a negative payment row already exists for this refund_number
+        existing = (
+            await self._session.execute(
+                select(Payment).where(
+                    Payment.reference_id == refund.refund_number,
+                    Payment.total_amount < ZERO,
+                ).limit(1)
+            )
+        ).scalars().first()
+        if existing is not None:
+            changed = False
+            if refund.credit_note_number and not existing.invoice_number:
+                existing.invoice_number = refund.credit_note_number
+                changed = True
+            if refund.credit_note_id and not existing.invoice_id:
+                existing.invoice_id = str(refund.credit_note_id)
+                changed = True
+            if changed:
+                await self._session.flush()
+            return existing
+
+        customer_id = (
+            (original_payment.customer_id if original_payment else None)
+            or refund.customer_id
+        )
+        if not customer_id:
+            logger.warning("refund_negative_payment_skipped_no_customer", refund_number=refund.refund_number)
+            return None
+
+        from app.payment.infrastructure.repository import generate_payment_number
+
+        bdata = refund.booking_data if isinstance(refund.booking_data, dict) else {}
+        voucher_uuid = original_payment.voucher_id if original_payment else None
+        if voucher_uuid is None and bdata.get("voucher_id"):
+            try:
+                voucher_uuid = uuid.UUID(str(bdata["voucher_id"]))
+            except (ValueError, TypeError):
+                voucher_uuid = None
+
+        voucher_num = (
+            (original_payment.voucher_number if original_payment else None)
+            or bdata.get("voucher_number")
+        )
+        payment_for = (
+            original_payment.payment_for
+            if original_payment and original_payment.payment_for
+            else ("gift_voucher" if voucher_uuid else "branch_service")
+        )
+
+        neg_payment = Payment(
+            payment_number=await generate_payment_number(self._session),
+            booking_id=refund.booking_id or (original_payment.booking_id if original_payment else None),
+            booking_data=original_payment.booking_data if original_payment else (refund.booking_data or {}),
+            voucher_id=voucher_uuid,
+            voucher_number=str(voucher_num) if voucher_num else None,
+            voucher_data=original_payment.voucher_data if original_payment else None,
+            course_subscription_id=original_payment.course_subscription_id if original_payment else None,
+            customer_id=customer_id,
+            customer_data=(original_payment.customer_data if original_payment else None) or (refund.customer_data or {}),
+            sender_id=original_payment.sender_id if original_payment else None,
+            sender_data=original_payment.sender_data if original_payment else None,
+            recipient_id=original_payment.recipient_id if original_payment else None,
+            recipient_phone=original_payment.recipient_phone if original_payment else None,
+            recipient_data=original_payment.recipient_data if original_payment else None,
+            service_id=original_payment.service_id if original_payment else None,
+            service_data=original_payment.service_data if original_payment else None,
+            branch_id=(original_payment.branch_id if original_payment else None) or refund.branch_id,
+            branch_data=(original_payment.branch_data if original_payment else None) or (refund.branch_data or {}),
+            branch_name=original_payment.branch_name if original_payment else (
+                (refund.branch_data or {}).get("name") if isinstance(refund.branch_data, dict) else None
+            ),
+            service_arrangement_id=original_payment.service_arrangement_id if original_payment else None,
+            service_arrangement_data=original_payment.service_arrangement_data if original_payment else None,
+            total_amount=-refund_amt,
+            total_duration=0,
+            currency=refund.currency or (original_payment.currency if original_payment else "KWD"),
+            status=PaymentTransactionStatus.REFUNDED.value,
+            payment_for=payment_for,
+            payment_provider=(original_payment.payment_provider if original_payment else None) or refund.payment_gateway,
+            payment_gateway=(original_payment.payment_gateway if original_payment else None) or refund.payment_gateway,
+            payment_through=(original_payment.payment_through if original_payment else None) or "ushdesk",
+            payment_method=refund.refund_method or (original_payment.payment_method if original_payment else "money"),
+            payment_id=refund.refund_number,
+            reference_id=refund.refund_number,
+            transaction_id=str(provider_reference or refund.gateway_refund_id or refund.reference_number or refund.refund_number),
+            invoice_number=refund.credit_note_number,
+            invoice_id=str(refund.credit_note_id) if refund.credit_note_id else None,
+            paid_at=refund.completed_at or _now(),
+            payment_data={
+                "is_refund_payment": True,
+                "refund_id": str(refund.id),
+                "refund_number": refund.refund_number,
+                "original_payment_id": str(original_payment.id) if original_payment else None,
+                "original_payment_number": original_payment.payment_number if original_payment else None,
+                "credit_note_number": refund.credit_note_number,
+                "credit_note_id": str(refund.credit_note_id) if refund.credit_note_id else None,
+                "reason": refund.reason,
+            },
+            created_by_user=str(actor_id) if actor_id else (refund.processed_by or "system"),
+            created_by_user_data=actor_data or refund.processed_by_data or {},
+        )
+        self._session.add(neg_payment)
+        await self._session.flush()
+        logger.info(
+            "refund_negative_payment_created",
+            payment_number=neg_payment.payment_number,
+            refund_number=refund.refund_number,
+            total_amount=str(neg_payment.total_amount),
+            invoice_number=neg_payment.invoice_number,
+        )
+        return neg_payment
+
+    async def sync_refund_payment_credit_note(self, refund: Refund) -> None:
+        """Link the credit note number & ID onto the negative refund Payment row, if present."""
+        if not refund.credit_note_number and not refund.credit_note_id:
+            return
+        neg = (
+            await self._session.execute(
+                select(Payment).where(
+                    Payment.reference_id == refund.refund_number,
+                    Payment.total_amount < ZERO,
+                ).limit(1)
+            )
+        ).scalars().first()
+        if neg is not None:
+            if refund.credit_note_number:
+                neg.invoice_number = refund.credit_note_number
+            if refund.credit_note_id:
+                neg.invoice_id = str(refund.credit_note_id)
+            pdata = dict(neg.payment_data or {})
+            if refund.credit_note_number:
+                pdata["credit_note_number"] = refund.credit_note_number
+            if refund.credit_note_id:
+                pdata["credit_note_id"] = str(refund.credit_note_id)
+            neg.payment_data = pdata
+            await self._session.flush()
 
     # ── Event ─────────────────────────────────────────────────────────────
 

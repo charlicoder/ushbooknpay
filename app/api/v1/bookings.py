@@ -2603,9 +2603,8 @@ async def update_booking_status(
     _reason_str = (body.reason or "").strip().lower()
     _source_str = (body.source or "").strip().lower()
     if (
-        (payment_status == PaymentStatus.SUCCESS or status == BookingStatus.CONFIRMED)
+        payment_status == PaymentStatus.SUCCESS
         and _source_str in ("ushdesk", "desk", "ushspa app")
-        and (_reason_str in ("paid on desk", "payment success", "online payment") or not _reason_str)
     ):
         try:
             await ushauth.update_appointment_cache_status_by_booking_id(

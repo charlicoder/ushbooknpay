@@ -765,19 +765,28 @@ class CourseSubscriptionService:
         if payment is not None:
             old_status = payment.status
             payment.amount_refunded = amount
-            payment.status = "refunded"
+            # Standard accounting principle: keep original payment intact; record negative payment entry.
             self._session.add(
                 PaymentStatusHistory(
                     payment_id=payment.id,
                     old_status=old_status,
-                    new_status="refunded",
+                    new_status=payment.status,
                     source="course_subscription_refund",
-                    reason=reason,
+                    reason=f"{reason} (-{amount} {sub.currency or 'KWD'}; original payment kept intact)",
                     correlation_id=str(sub.id),
                     change_by_user=actor_id,
                     change_by_user_data=actor_data,
                 )
             )
+        await self._session.flush()
+        from app.payment.application.refund_lifecycle import RefundLifecycle
+
+        await RefundLifecycle(self._session).create_refund_payment_entry(
+            refund,
+            original_payment=payment,
+            actor_id=actor_id,
+            actor_data=actor_data,
+        )
         sub.status = CourseSubscriptionStatus.REFUNDED.value
         sub.refund_id = refund.id
         sub.refunded_at = now
